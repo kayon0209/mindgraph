@@ -556,36 +556,47 @@ if len(st.session_state.messages) == 0:
 else:
     st.markdown('<div class="chat-container">', unsafe_allow_html=True)
     
-    for msg in st.session_state.messages:
+    # 修3：对话中也显示快捷问题（折叠形式）
+    with st.expander("💡 常见问题", expanded=False):
+        suggestions = [
+            "差旅费报销标准是多少？",
+            "发票丢了怎么办？",
+            "打车费能报销吗？",
+            "超标住宿需要什么手续？",
+            "报销需要哪些材料？"
+        ]
+        cols = st.columns(3)
+        for i, sug in enumerate(suggestions[:3]):
+            with cols[i]:
+                if st.button(sug, key=f"chat_sug_{i}", use_container_width=True):
+                    st.session_state.quick_question = sug
+                    st.rerun()
+        cols2 = st.columns(2)
+        for i, sug in enumerate(suggestions[3:]):
+            with cols2[i]:
+                if st.button(sug, key=f"chat_sug_{i+3}", use_container_width=True):
+                    st.session_state.quick_question = sug
+                    st.rerun()
+    
+    # 修1：使用 Streamlit 原生 chat_message 渲染，支持 Markdown
+    for idx, msg in enumerate(st.session_state.messages):
         is_user = msg["role"] == "user"
-        avatar = "👤" if is_user else "🤖"
-        
-        st.markdown(f"""
-        <div class="message">
-            <div class="message-avatar {'user' if is_user else 'assistant'}">{avatar}</div>
-            <div class="message-content">{msg['content']}</div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # 参考来源
-        if not is_user and msg.get("sources"):
-            st.markdown('<div class="message"><div class="message-avatar" style="visibility: hidden;"></div><div class="message-content">', unsafe_allow_html=True)
-            st.markdown('<div class="sources"><div class="sources-title">参考来源</div>', unsafe_allow_html=True)
+        with st.chat_message("user" if is_user else "assistant"):
+            # 使用 st.markdown 原生渲染，支持 **加粗**、列表等
+            st.markdown(msg["content"])
             
-            for i, s in enumerate(msg["sources"], 1):
-                dist = f"{s.distance:.0%}" if s.distance is not None else "—"
-                sec = f" · {s.section_path}" if getattr(s, "section_path", None) else ""
-                st.markdown(f"""
-                <div class="source-item">
-                    <div class="source-header">
-                        <span class="source-name">{i}. {s.name}{sec}</span>
-                        <span class="source-score">匹配度 {dist}</span>
-                    </div>
-                    <div class="source-text">{s.text[:120]}...</div>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            st.markdown('</div></div></div>', unsafe_allow_html=True)
+            # 参考来源
+            if not is_user and msg.get("sources"):
+                with st.expander("📎 参考来源", expanded=False):
+                    for i, s in enumerate(msg["sources"], 1):
+                        dist = f"{s.distance:.0%}" if s.distance is not None else "—"
+                        sec = getattr(s, "section_path", "") or ""
+                        # 修2：使用 s.source 而不是 s.name
+                        source_title = f"**{i}. {s.source}**"
+                        if sec:
+                            source_title += f" · {sec}"
+                        st.markdown(f"{source_title} `匹配度 {dist}`")
+                        st.caption(s.text[:200] + "…" if len(s.text) > 200 else s.text)
     
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -605,7 +616,8 @@ if prompt and _has_key and n_chunks > 0:
     st.session_state.messages.append({"role": "user", "content": prompt})
     
     try:
-        with st.spinner(""):
+        # 修4：spinner 加提示文字
+        with st.spinner("正在查询制度文档，请稍候…"):
             out = ask(_api_key, prompt)
         st.session_state.messages.append({
             "role": "assistant",
