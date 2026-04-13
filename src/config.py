@@ -22,7 +22,7 @@ if not ZHIPU_API_KEY:
     )
 
 CHROMA_DIR = ROOT / "data" / "chroma"
-DOCS_DIR = ROOT / "docs"
+DOCS_DIR = ROOT / "knowledge"  # 知识库文档目录
 # PRD v1：用户上传的制度 Markdown（与 docs/ 一并入库）
 UPLOAD_DIR = ROOT / "data" / "uploads"
 
