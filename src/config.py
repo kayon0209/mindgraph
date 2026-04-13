@@ -1,0 +1,26 @@
+"""项目路径与环境变量（从项目根目录 `.env` 加载）。"""
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(ROOT / ".env")
+
+ZHIPU_API_KEY: str = (os.getenv("ZHIPU_API_KEY") or "").strip()
+
+CHROMA_DIR = ROOT / "data" / "chroma"
+DOCS_DIR = ROOT / "docs"
+# PRD v1：用户上传的制度 Markdown（与 docs/ 一并入库）
+UPLOAD_DIR = ROOT / "data" / "uploads"
+
+COLLECTION_NAME = "expense_kb"
+CHAT_MODEL = "glm-5.1"
+EMBED_MODEL = "embedding-3"
+
+# 检索与生成（与 PRD-v1 对齐：Top-K=3，余弦距离阈值 0.5）
+DEFAULT_TOP_K = 3
+SIMILARITY_THRESHOLD = 0.5
+MAX_CONTEXT_CHARS = 6000
