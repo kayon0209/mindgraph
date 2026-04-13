@@ -1,0 +1,16 @@
+{
+  "env": {
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "200000",
+    "CLAUDE_CODE_DISABLE_1M_CONTEXT": "1"
+  },
+  "permissions": {
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./data/chroma/**)",
+      "Read(./.venv/**)",
+      "Read(./__pycache__/**)",
+      "Read(./.git/**)"
+    ]
+  }
+}

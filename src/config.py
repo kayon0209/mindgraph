@@ -11,13 +11,23 @@ load_dotenv(ROOT / ".env")
 
 ZHIPU_API_KEY: str = (os.getenv("ZHIPU_API_KEY") or "").strip()
 
+if not ZHIPU_API_KEY:
+    import warnings
+    warnings.warn(
+        "未检测到 ZHIPU_API_KEY。请在项目根目录创建 `.env` 文件并设置：\n"
+        "  ZHIPU_API_KEY=你的密钥\n"
+        "申请地址：https://open.bigmodel.cn/",
+        RuntimeWarning,
+        stacklevel=2,
+    )
+
 CHROMA_DIR = ROOT / "data" / "chroma"
 DOCS_DIR = ROOT / "docs"
 # PRD v1：用户上传的制度 Markdown（与 docs/ 一并入库）
 UPLOAD_DIR = ROOT / "data" / "uploads"
 
 COLLECTION_NAME = "expense_kb"
-CHAT_MODEL = "glm-5.1"
+CHAT_MODEL = "glm-4.5-air"
 EMBED_MODEL = "embedding-3"
 
 # 检索与生成（与 PRD-v1 对齐：Top-K=3，余弦距离阈值 0.5）

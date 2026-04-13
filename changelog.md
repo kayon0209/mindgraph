@@ -1,5 +1,24 @@
 # Changelog
 
+## v4 — 多 Embedding 后端支持（2026-04-13）
+
+- 新增 `src/embedder.py`：统一 Embedding 接口，支持多种后端（zhipu / local / openai）。
+- 新增 `src/local_embedder.py`：本地 BGE-large-zh-v1.5 模型支持，无需 API 额度。
+- 更新 `src/rag_engine.py`：使用统一 embedder 接口。
+- 更新 `.env.example`：添加 `EMBED_BACKEND` 配置说明。
+- 更新 `README.md`：详细说明 Embedding 后端切换方法。
+- 更新 `requirements.txt`：添加 `sentence-transformers` 依赖。
+
+## v3 — 评测模块 + 安全加固（2026-04-13）
+
+- 生成模型从 `glm-5.1` 降级为 `glm-4.5-air`，大幅降低 API 调用成本。
+- 新增 `evaluation/test_cases.py`：30 题标准测试集（直接查规则 10、边界/特殊 8、知识库外 6、模糊/口语化 6）+ 4 题对抗性测试。
+- 新增 `evaluation/scorer.py`：关键词匹配 + LLM 幻觉检测混合评分（0.6:0.4 权重）。
+- 新增 `evaluation/runner.py`：CLI 评测运行器，支持按类别/题号筛选、关闭 LLM 检测，输出 JSON 报告。
+- `config.py` 新增 API Key 缺失警告（启动时即提示，不静默失败）。
+- `.gitignore` 新增 `evaluation/results/` 忽略评测结果文件。
+- README 重写：强调用户需自行申请 API Key 并在 `.env` 中配置，确保 clone 后可直接运行。
+
 ## v2 — RAG 与智谱接入（2026-04-11）
 
 - 新增 `src/config.py`：加载 `.env` 中的 `ZHIPU_API_KEY`，配置 `docs/`、`data/chroma/` 路径及模型名（`glm-4-flash`、`embedding-3`）。

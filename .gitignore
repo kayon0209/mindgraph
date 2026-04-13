@@ -8,3 +8,4 @@ __pycache__/
 data/chroma/
 data/uploads/*
 !data/uploads/.gitkeep
+evaluation/results/

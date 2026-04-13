@@ -1,4 +1,4 @@
-"""Chroma 向量检索 + 智谱 embedding-3 / glm-4-flash 生成回答。"""
+"""Chroma 向量检索 + 智谱 glm-4.5-air 生成回答（经济型模型，节省成本）。"""
 from __future__ import annotations
 
 import hashlib
@@ -20,6 +20,7 @@ from config import (
     SIMILARITY_THRESHOLD,
     UPLOAD_DIR,
 )
+from embedder import embed_texts, embed_query, get_backend_type
 
 
 @dataclass
@@ -39,24 +40,6 @@ class RAGAnswer:
 
 def _client(api_key: str) -> ZhipuAI:
     return ZhipuAI(api_key=api_key)
-
-
-def embed_texts(client: ZhipuAI, texts: Sequence[str]) -> List[List[float]]:
-    """批量向量化；智谱单次最多 64 条。"""
-    if not texts:
-        return []
-    out: List[List[float]] = []
-    batch_size = 64
-    for i in range(0, len(texts), batch_size):
-        batch = list(texts[i : i + batch_size])
-        resp = client.embeddings.create(input=batch, model=EMBED_MODEL)
-        ordered = sorted(resp.data, key=lambda x: x.index if x.index is not None else 0)
-        out.extend([item.embedding for item in ordered])
-    return out
-
-
-def embed_query(client: ZhipuAI, text: str) -> List[float]:
-    return embed_texts(client, [text])[0]
 
 
 def _get_collection(persist_dir: str, create: bool = True):
