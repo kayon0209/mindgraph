@@ -18,7 +18,7 @@
 
 ```bash
 # 1. 克隆项目
-git clone https://github.com/pleaselikeme/expense-rag-qa.git
+git clone https://github.com/kayon09/expense-rag-qa.git
 cd expense-rag-qa
 
 # 2. 创建虚拟环境
@@ -76,4 +76,4 @@ expense-rag-qa/
 
 ---
 
-**GitHub**: https://github.com/pleaselikeme/expense-rag-qa
+**GitHub**: https://github.com/kayon09/expense-rag-qa
