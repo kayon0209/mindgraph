@@ -69,6 +69,7 @@ expense-rag-qa/
 ## 截图
 
 ![界面预览](./assets/screenshot_main.png)
+![界面预览](./assets/主界面.png)
 
 ## 许可证
 
