@@ -1,0 +1,44 @@
+2026-04-27 17:15:45.016 No ASGI app assignments found in D:\demo\expense-rag-qa\src\app.py
+2026-04-27 17:15:45.481 Filtered 217 packages down to 1 candidates for component scanning
+2026-04-27 17:15:45.481 Scanning 1 candidate packages for component manifests using 1 worker threads
+2026-04-27 17:15:45.619 Found 0 component manifests total
+2026-04-27 17:15:45.619 No asset roots to watch
+2026-04-27 17:15:45.619 File watching not started
+2026-04-27 17:15:45.619 Starting new event loop for server
+2026-04-27 17:15:45.620 Starting server...
+2026-04-27 17:15:45.621 Serving static content from D:\Software (Èí¼þ)\Python\Python312\Lib\site-packages\streamlit\static
+2026-04-27 17:15:45.626 Server started on port 8501
+2026-04-27 17:15:45.627 Runtime state: RuntimeState.INITIAL -> RuntimeState.NO_SESSIONS_CONNECTED
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://198.18.0.1:8501
+  External URL: http://95.169.166.174:8501
+
+2026-04-27 17:15:46.910 Setting up signal handler
+2026-04-27 17:15:46.945 No singleton. Registering one.
+2026-04-27 17:15:46.947 Watcher created for D:\demo\expense-rag-qa\src\app.py
+2026-04-27 17:15:46.947 AppSession initialized (id=9c4ff09b-7316-4806-a851-2039000ed8a9)
+2026-04-27 17:15:46.947 Created new session for client 2476369923776. Session ID: 9c4ff09b-7316-4806-a851-2039000ed8a9
+2026-04-27 17:15:46.947 Runtime state: RuntimeState.NO_SESSIONS_CONNECTED -> RuntimeState.ONE_OR_MORE_SESSIONS_CONNECTED
+2026-04-27 17:15:46.947 Received the following back message:
+rerun_script {
+  widget_states {
+  }
+  page_script_hash: "f6db870c7a1f09439c7f93aebabe8887"
+  context_info {
+    timezone: "Asia/Shanghai"
+    timezone_offset: -480
+    locale: "zh-CN"
+    url: "http://localhost:8501/"
+    is_embedded: false
+    color_scheme: "dark"
+  }
+}
+
+2026-04-27 17:15:46.947 Beginning script thread
+2026-04-27 17:15:46.948 Running script
+2026-04-27 17:15:46.948 Disconnecting files for session with ID 9c4ff09b-7316-4806-a851-2039000ed8a9
+2026-04-27 17:15:46.949 Sessions still active: dict_keys([])
+2026-04-27 17:15:46.949 Files: 0; Sessions with files: 0

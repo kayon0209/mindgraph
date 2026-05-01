@@ -5,7 +5,12 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .mypy_cache/
+.cache/
 data/chroma/
+data/users.json
+data/employees.json
+data/sessions.json
+data/avatars/
 data/uploads/*
 !data/uploads/.gitkeep
 evaluation/results/

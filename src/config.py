@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
 
 ZHIPU_API_KEY: str = (os.getenv("ZHIPU_API_KEY") or "").strip()
+AUTH_MODE: str = (os.getenv("AUTH_MODE") or "demo").strip().lower()
 
 if not ZHIPU_API_KEY:
     import warnings
@@ -25,8 +26,12 @@ CHROMA_DIR = ROOT / "data" / "chroma"
 DOCS_DIR = ROOT / "knowledge"  # 知识库文档目录
 # PRD v1：用户上传的制度 Markdown（与 docs/ 一并入库）
 UPLOAD_DIR = ROOT / "data" / "uploads"
+USERS_FILE = ROOT / "data" / "users.json"
+EMPLOYEES_FILE = ROOT / "data" / "employees.json"
+AVATAR_DIR = ROOT / "data" / "avatars"
+SESSIONS_FILE = ROOT / "data" / "sessions.json"
 
-COLLECTION_NAME = "expense_kb"
+COLLECTION_NAME = "expense_kb_v2"
 CHAT_MODEL = "glm-4.5-air"
 EMBED_MODEL = "embedding-3"
 

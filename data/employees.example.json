@@ -1,0 +1,9 @@
+[
+  {
+    "employee_id": "E00001",
+    "real_name": "内部员工",
+    "department": "财务部",
+    "title": "员工",
+    "email": "employee@example.internal"
+  }
+]

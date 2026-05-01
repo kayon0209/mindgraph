@@ -1,6 +1,6 @@
 # 企业报销知识问答系统
 
-基于 RAG 技术的企业报销政策智能问答助手，支持本地 Embedding 模型，无需 API 额度即可运行。
+基于 RAG 技术的企业报销政策智能问答助手，支持智谱或本地 Embedding 后端。
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://python.org)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.28+-red.svg)](https://streamlit.io)
@@ -11,7 +11,7 @@
 - 💬 **自然语言查询**：员工用日常语言提问，无需学习关键词
 - 📚 **答案带引用**：每个回答都标注来源文档，防止 AI 幻觉
 - 🛡️ **安全防护**：自动拒绝薪资、考勤等非报销类问题
-- 💰 **零 API 成本**：本地 BGE 模型，无需购买 Embedding 额度
+- 💰 **灵活成本**：可用智谱 embedding-3，也可切换本地 BGE 模型降低 Embedding 成本
 - 📊 **97% 问题覆盖率**：34 题评测集验证，企业级可靠性
 
 ## 快速开始
@@ -56,8 +56,8 @@ expense-rag-qa/
 | 组件 | 技术 |
 |------|------|
 | 前端 | Streamlit |
-| 向量库 | ChromaDB |
-| Embedding | BAAI/bge-large-zh-v1.5（本地）|
+| 向量库 | SQLite + NumPy 本地向量检索 |
+| Embedding | 智谱 embedding-3 / BAAI/bge-large-zh-v1.5（本地）/ Hash Embedding（兜底）|
 | 大模型 | 智谱 GLM-4.5-Air |
 
 ## 文档
@@ -68,7 +68,7 @@ expense-rag-qa/
 
 ## 截图
 
-![界面预览](./assets/images/screenshot.png)
+![界面预览](./assets/screenshot_main.png)
 
 ## 许可证
 

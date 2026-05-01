@@ -28,7 +28,7 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from config import ZHIPU_API_KEY, CHAT_MODEL
-from rag_engine import ask, retrieve, build_context
+from rag_engine import ask, build_context
 from zhipuai import ZhipuAI
 
 from evaluation.test_cases import ALL_CASES, STANDARD_CASES, ADVERSARIAL_CASES
@@ -66,9 +66,8 @@ def run_evaluation(
             rag_ans = ask(api_key, q)
             answer = rag_ans.answer
 
-            # 获取检索上下文（用于幻觉检测）
-            sources = retrieve(api_key, q)
-            context = build_context(sources) if sources else ""
+            # 复用 ask() 已经拿到的检索上下文，避免拒答题和评测阶段重复调用 Embedding API。
+            context = build_context(rag_ans.sources) if rag_ans.sources else ""
         except Exception as e:
             answer = f"系统错误：{e}"
             context = ""

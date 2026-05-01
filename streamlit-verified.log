@@ -1,0 +1,348 @@
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://198.18.0.1:8501
+  External URL: http://95.169.166.174:8501
+
+[Embedder] 使用后端: zhipu
++------------------------- Traceback (most recent call last) --------------------------+
+| D:\Software                                                                          |
+| (软件)\Python\Python312\Lib\site-packages\streamlit\runtime\scriptrunner\exec_code.p |
+| y:129 in exec_func_with_error_handling                                               |
+|                                                                                      |
+| D:\Software                                                                          |
+| (软件)\Python\Python312\Lib\site-packages\streamlit\runtime\scriptrunner\script_runn |
+| er.py:689 in code_to_exec                                                            |
+|                                                                                      |
+| D:\demo\expense-rag-qa\src\app.py:380 in <module>                                    |
+|                                                                                      |
+|   377     force_rebuild = st.checkbox("强制重建索引", value=False)                   |
+|   378     if st.button("重建知识库索引", type="primary", use_container_width=True, d |
+|   379         with st.spinner("正在读取制度文档并写入向量库..."):                    |
+| > 380             result = build_index(api_key, force=force_rebuild)                 |
+|   381         if result.get("ok"):                                                   |
+|   382             st.success(result.get("message", "索引已更新"))                    |
+|   383             st.rerun()                                                         |
+|                                                                                      |
+| D:\demo\expense-rag-qa\src\rag_engine.py:120 in build_index                          |
+|                                                                                      |
+|   117     ids = [_chunk_id(m) for m in metadatas]                                    |
+|   118                                                                                |
+|   119     zhipu = _client(api_key)                                                   |
+| > 120     embeddings = embed_texts(zhipu, texts)                                     |
+|   121                                                                                |
+|   122     collection.add(                                                            |
+|   123         ids=ids,                                                               |
+|                                                                                      |
+| D:\demo\expense-rag-qa\src\embedder.py:86 in embed_texts                             |
+|                                                                                      |
+|   83                                                                                 |
+|   84 def embed_texts(client, texts: Sequence[str]) -> List[List[float]]:             |
+|   85     """批量向量化。"""                                                          |
+| > 86     return _get_backend().embed_texts(client, texts)                            |
+|   87                                                                                 |
+|   88                                                                                 |
+|   89 def embed_query(client, text: str) -> List[float]:                              |
+|                                                                                      |
+| D:\demo\expense-rag-qa\src\embedder.py:48 in embed_texts                             |
+|                                                                                      |
+|   45         batch_size = 64                                                         |
+|   46         for i in range(0, len(texts), batch_size):                              |
+|   47             batch = list(texts[i:i + batch_size])                               |
+| > 48             resp = client.embeddings.create(input=batch, model=EMBED_MODEL)     |
+|   49             ordered = sorted(resp.data, key=lambda x: x.index if x.index is not |
+|   50             out.extend([item.embedding for item in ordered])                    |
+|   51         return out                                                              |
+|                                                                                      |
+| D:\Software                                                                          |
+| (软件)\Python\Python312\Lib\site-packages\zhipuai\api_resource\embeddings.py:38 in   |
+| create                                                                               |
+|                                                                                      |
+|   35         _cast_type = EmbeddingsResponded                                        |
+|   36         if disable_strict_validation:                                           |
+|   37             _cast_type = object                                                 |
+| > 38         return self._post(                                                      |
+|   39             "/embeddings",                                                      |
+|   40             body={                                                              |
+|   41                 "input": input,                                                 |
+|                                                                                      |
+| D:\Software                                                                          |
+| (软件)\Python\Python312\Lib\site-packages\zhipuai\core\_http_client.py:809 in post   |
+|                                                                                      |
+|   806             method="post", url=path, json_data=body, files=to_httpx_files(file |
+|   807         )                                                                      |
+|   808                                                                                |
+| > 809         return cast(ResponseT, self.request(cast_type, opts, stream=stream, st |
+|   810                                                                                |
+|   811     def patch(                                                                 |
+|   812             self,                                                              |
+|                                                                                      |
+| D:\Software                                                                          |
+| (软件)\Python\Python312\Lib\site-packages\zhipuai\core\_http_client.py:495 in        |
+| request                                                                              |
+|                                                                                      |
+|   492             stream: bool = False,                                              |
+|   493             stream_cls: Type[StreamResponse] | None = None,                    |
+|   494     ) -> ResponseT | StreamResponse:                                           |
+| > 495         return self._request(                                                  |
+|   496             cast_type=cast_type,                                               |
+|   497             options=options,                                                   |
+|   498             stream=stream,                                                     |
+|                                                                                      |
+| D:\Software                                                                          |
+| (软件)\Python\Python312\Lib\site-packages\zhipuai\core\_http_client.py:567 in        |
+| _request                                                                             |
+|                                                                                      |
+|   564                                                                                |
+|   565             if retries > 0 and self._should_retry(err.response):               |
+|   566                 err.response.close()                                           |
+| > 567                 return self._retry_request(                                    |
+|   568                     options,                                                   |
+|   569                     cast_type,                                                 |
+|   570                     retries,                                                   |
+|                                                                                      |
+| D:\Software                                                                          |
+| (软件)\Python\Python312\Lib\site-packages\zhipuai\core\_http_client.py:622 in        |
+| _retry_request                                                                       |
+|                                                                                      |
+|   619         # different thread if necessary.                                       |
+|   620         time.sleep(timeout)                                                    |
+|   621                                                                                |
+| > 622         return self._request(                                                  |
+|   623             options=options,                                                   |
+|   624             cast_type=cast_type,                                               |
+|   625             remaining_retries=remaining,                                       |
+|                                                                                      |
+| D:\Software                                                                          |
+| (软件)\Python\Python312\Lib\site-packages\zhipuai\core\_http_client.py:567 in        |
+| _request                                                                             |
+|                                                                                      |
+|   564                                                                                |
+|   565             if retries > 0 and self._should_retry(err.response):               |
+|   566                 err.response.close()                                           |
+| > 567                 return self._retry_request(                                    |
+|   568                     options,                                                   |
+|   569                     cast_type,                                                 |
+|   570                     retries,                                                   |
+|                                                                                      |
+| D:\Software                                                                          |
+| (软件)\Python\Python312\Lib\site-packages\zhipuai\core\_http_client.py:622 in        |
+| _retry_request                                                                       |
+|                                                                                      |
+|   619         # different thread if necessary.                                       |
+|   620         time.sleep(timeout)                                                    |
+|   621                                                                                |
+| > 622         return self._request(                                                  |
+|   623             options=options,                                                   |
+|   624             cast_type=cast_type,                                               |
+|   625             remaining_retries=remaining,                                       |
+|                                                                                      |
+| D:\Software                                                                          |
+| (软件)\Python\Python312\Lib\site-packages\zhipuai\core\_http_client.py:567 in        |
+| _request                                                                             |
+|                                                                                      |
+|   564                                                                                |
+|   565             if retries > 0 and self._should_retry(err.response):               |
+|   566                 err.response.close()                                           |
+| > 567                 return self._retry_request(                                    |
+|   568                     options,                                                   |
+|   569                     cast_type,                                                 |
+|   570                     retries,                                                   |
+|                                                                                      |
+| D:\Software                                                                          |
+| (软件)\Python\Python312\Lib\site-packages\zhipuai\core\_http_client.py:622 in        |
+| _retry_request                                                                       |
+|                                                                                      |
+|   619         # different thread if necessary.                                       |
+|   620         time.sleep(timeout)                                                    |
+|   621                                                                                |
+| > 622         return self._request(                                                  |
+|   623             options=options,                                                   |
+|   624             cast_type=cast_type,                                               |
+|   625             remaining_retries=remaining,                                       |
+|                                                                                      |
+| D:\Software                                                                          |
+| (软件)\Python\Python312\Lib\site-packages\zhipuai\core\_http_client.py:582 in        |
+| _request                                                                             |
+|                                                                                      |
+|   579                 err.response.read()                                            |
+|   580                                                                                |
+|   581             log.debug("Re-raising status error")                               |
+| > 582             raise self._make_status_error(err.response) from None              |
+|   583                                                                                |
+|   584         # return self._parse_response(                                         |
+|   585         #     cast_type=cast_type,                                             |
++--------------------------------------------------------------------------------------+
+APIReachLimitError: Error code: 429, with error text 
+{"error":{"code":"1113","message":"余额不足或无可用资源包,请充值。"}}
++------------------------- Traceback (most recent call last) --------------------------+
+| D:\Software                                                                          |
+| (软件)\Python\Python312\Lib\site-packages\streamlit\runtime\scriptrunner\exec_code.p |
+| y:129 in exec_func_with_error_handling                                               |
+|                                                                                      |
+| D:\Software                                                                          |
+| (软件)\Python\Python312\Lib\site-packages\streamlit\runtime\scriptrunner\script_runn |
+| er.py:689 in code_to_exec                                                            |
+|                                                                                      |
+| D:\demo\expense-rag-qa\src\app.py:380 in <module>                                    |
+|                                                                                      |
+|   377     force_rebuild = st.checkbox("强制重建索引", value=False)                   |
+|   378     if st.button("重建知识库索引", type="primary", use_container_width=True, d |
+|   379         with st.spinner("正在读取制度文档并写入向量库..."):                    |
+| > 380             result = build_index(api_key, force=force_rebuild)                 |
+|   381         if result.get("ok"):                                                   |
+|   382             st.success(result.get("message", "索引已更新"))                    |
+|   383             st.rerun()                                                         |
+|                                                                                      |
+| D:\demo\expense-rag-qa\src\rag_engine.py:120 in build_index                          |
+|                                                                                      |
+|   117     ids = [_chunk_id(m) for m in metadatas]                                    |
+|   118                                                                                |
+|   119     zhipu = _client(api_key)                                                   |
+| > 120     embeddings = embed_texts(zhipu, texts)                                     |
+|   121                                                                                |
+|   122     collection.add(                                                            |
+|   123         ids=ids,                                                               |
+|                                                                                      |
+| D:\demo\expense-rag-qa\src\embedder.py:86 in embed_texts                             |
+|                                                                                      |
+|   83                                                                                 |
+|   84 def embed_texts(client, texts: Sequence[str]) -> List[List[float]]:             |
+|   85     """批量向量化。"""                                                          |
+| > 86     return _get_backend().embed_texts(client, texts)                            |
+|   87                                                                                 |
+|   88                                                                                 |
+|   89 def embed_query(client, text: str) -> List[float]:                              |
+|                                                                                      |
+| D:\demo\expense-rag-qa\src\embedder.py:48 in embed_texts                             |
+|                                                                                      |
+|   45         batch_size = 64                                                         |
+|   46         for i in range(0, len(texts), batch_size):                              |
+|   47             batch = list(texts[i:i + batch_size])                               |
+| > 48             resp = client.embeddings.create(input=batch, model=EMBED_MODEL)     |
+|   49             ordered = sorted(resp.data, key=lambda x: x.index if x.index is not |
+|   50             out.extend([item.embedding for item in ordered])                    |
+|   51         return out                                                              |
+|                                                                                      |
+| D:\Software                                                                          |
+| (软件)\Python\Python312\Lib\site-packages\zhipuai\api_resource\embeddings.py:38 in   |
+| create                                                                               |
+|                                                                                      |
+|   35         _cast_type = EmbeddingsResponded                                        |
+|   36         if disable_strict_validation:                                           |
+|   37             _cast_type = object                                                 |
+| > 38         return self._post(                                                      |
+|   39             "/embeddings",                                                      |
+|   40             body={                                                              |
+|   41                 "input": input,                                                 |
+|                                                                                      |
+| D:\Software                                                                          |
+| (软件)\Python\Python312\Lib\site-packages\zhipuai\core\_http_client.py:809 in post   |
+|                                                                                      |
+|   806             method="post", url=path, json_data=body, files=to_httpx_files(file |
+|   807         )                                                                      |
+|   808                                                                                |
+| > 809         return cast(ResponseT, self.request(cast_type, opts, stream=stream, st |
+|   810                                                                                |
+|   811     def patch(                                                                 |
+|   812             self,                                                              |
+|                                                                                      |
+| D:\Software                                                                          |
+| (软件)\Python\Python312\Lib\site-packages\zhipuai\core\_http_client.py:495 in        |
+| request                                                                              |
+|                                                                                      |
+|   492             stream: bool = False,                                              |
+|   493             stream_cls: Type[StreamResponse] | None = None,                    |
+|   494     ) -> ResponseT | StreamResponse:                                           |
+| > 495         return self._request(                                                  |
+|   496             cast_type=cast_type,                                               |
+|   497             options=options,                                                   |
+|   498             stream=stream,                                                     |
+|                                                                                      |
+| D:\Software                                                                          |
+| (软件)\Python\Python312\Lib\site-packages\zhipuai\core\_http_client.py:567 in        |
+| _request                                                                             |
+|                                                                                      |
+|   564                                                                                |
+|   565             if retries > 0 and self._should_retry(err.response):               |
+|   566                 err.response.close()                                           |
+| > 567                 return self._retry_request(                                    |
+|   568                     options,                                                   |
+|   569                     cast_type,                                                 |
+|   570                     retries,                                                   |
+|                                                                                      |
+| D:\Software                                                                          |
+| (软件)\Python\Python312\Lib\site-packages\zhipuai\core\_http_client.py:622 in        |
+| _retry_request                                                                       |
+|                                                                                      |
+|   619         # different thread if necessary.                                       |
+|   620         time.sleep(timeout)                                                    |
+|   621                                                                                |
+| > 622         return self._request(                                                  |
+|   623             options=options,                                                   |
+|   624             cast_type=cast_type,                                               |
+|   625             remaining_retries=remaining,                                       |
+|                                                                                      |
+| D:\Software                                                                          |
+| (软件)\Python\Python312\Lib\site-packages\zhipuai\core\_http_client.py:567 in        |
+| _request                                                                             |
+|                                                                                      |
+|   564                                                                                |
+|   565             if retries > 0 and self._should_retry(err.response):               |
+|   566                 err.response.close()                                           |
+| > 567                 return self._retry_request(                                    |
+|   568                     options,                                                   |
+|   569                     cast_type,                                                 |
+|   570                     retries,                                                   |
+|                                                                                      |
+| D:\Software                                                                          |
+| (软件)\Python\Python312\Lib\site-packages\zhipuai\core\_http_client.py:622 in        |
+| _retry_request                                                                       |
+|                                                                                      |
+|   619         # different thread if necessary.                                       |
+|   620         time.sleep(timeout)                                                    |
+|   621                                                                                |
+| > 622         return self._request(                                                  |
+|   623             options=options,                                                   |
+|   624             cast_type=cast_type,                                               |
+|   625             remaining_retries=remaining,                                       |
+|                                                                                      |
+| D:\Software                                                                          |
+| (软件)\Python\Python312\Lib\site-packages\zhipuai\core\_http_client.py:567 in        |
+| _request                                                                             |
+|                                                                                      |
+|   564                                                                                |
+|   565             if retries > 0 and self._should_retry(err.response):               |
+|   566                 err.response.close()                                           |
+| > 567                 return self._retry_request(                                    |
+|   568                     options,                                                   |
+|   569                     cast_type,                                                 |
+|   570                     retries,                                                   |
+|                                                                                      |
+| D:\Software                                                                          |
+| (软件)\Python\Python312\Lib\site-packages\zhipuai\core\_http_client.py:622 in        |
+| _retry_request                                                                       |
+|                                                                                      |
+|   619         # different thread if necessary.                                       |
+|   620         time.sleep(timeout)                                                    |
+|   621                                                                                |
+| > 622         return self._request(                                                  |
+|   623             options=options,                                                   |
+|   624             cast_type=cast_type,                                               |
+|   625             remaining_retries=remaining,                                       |
+|                                                                                      |
+| D:\Software                                                                          |
+| (软件)\Python\Python312\Lib\site-packages\zhipuai\core\_http_client.py:582 in        |
+| _request                                                                             |
+|                                                                                      |
+|   579                 err.response.read()                                            |
+|   580                                                                                |
+|   581             log.debug("Re-raising status error")                               |
+| > 582             raise self._make_status_error(err.response) from None              |
+|   583                                                                                |
+|   584         # return self._parse_response(                                         |
+|   585         #     cast_type=cast_type,                                             |
++--------------------------------------------------------------------------------------+
+APIReachLimitError: Error code: 429, with error text 
+{"error":{"code":"1113","message":"余额不足或无可用资源包,请充值。"}}

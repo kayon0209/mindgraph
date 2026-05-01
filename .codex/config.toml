@@ -1,0 +1,6 @@
+[shell_environment_policy]
+inherit = "core"
+
+[shell_environment_policy.set]
+CLAUDE_CODE_AUTO_COMPACT_WINDOW = "200000"
+CLAUDE_CODE_DISABLE_1M_CONTEXT = "1"
