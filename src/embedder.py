@@ -75,11 +75,20 @@ class _LocalBackend:
 
 
 class _OpenAIBackend:
-    """OpenAI embedding 后端（预留）。"""
+    """OpenAI embedding 后端（使用与智谱相同的 OpenAI 兼容 API）。"""
     
     def embed_texts(self, client, texts: Sequence[str]) -> List[List[float]]:
-        # TODO: 实现 OpenAI embedding
-        raise NotImplementedError("OpenAI backend not implemented yet")
+        if not texts:
+            return []
+        from config import EMBED_MODEL
+        out = []
+        batch_size = 64
+        for i in range(0, len(texts), batch_size):
+            batch = list(texts[i:i + batch_size])
+            resp = client.embeddings.create(input=batch, model=EMBED_MODEL)
+            ordered = sorted(resp.data, key=lambda x: x.index if x.index is not None else 0)
+            out.extend([item.embedding for item in ordered])
+        return out
     
     def embed_query(self, client, text: str) -> List[float]:
         return self.embed_texts(client, [text])[0]

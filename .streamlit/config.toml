@@ -1,0 +1,35 @@
+[theme]
+base = "light"
+primaryColor = "#A84528"
+backgroundColor = "#FBF8F2"
+secondaryBackgroundColor = "#F1E9DC"
+textColor = "#28231F"
+linkColor = "#8E3821"
+borderColor = "#D8CCBC"
+showWidgetBorder = true
+baseRadius = "12px"
+buttonRadius = "12px"
+font = "'Noto Sans SC':https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600&display=swap"
+headingFont = "'Noto Serif SC':https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@600;700&display=swap"
+codeFont = "'IBM Plex Mono':https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap"
+baseFontSize = 15
+headingFontSizes = ["36px", "26px", "21px", "17px", "15px", "13px"]
+headingFontWeights = [700, 700, 600, 600, 600, 600]
+greenColor = "#356859"
+greenBackgroundColor = "#DFEEE8"
+orangeColor = "#A84528"
+orangeBackgroundColor = "#F4E1D7"
+blueColor = "#315E74"
+blueBackgroundColor = "#E0EBF0"
+redColor = "#A13D3D"
+redBackgroundColor = "#F3DEDA"
+grayColor = "#736A60"
+dataframeHeaderBackgroundColor = "#EAE0D2"
+chartCategoricalColors = ["#A84528", "#356859", "#315E74", "#C28A3D", "#735B8E", "#8B6A4F"]
+
+[theme.sidebar]
+backgroundColor = "#EFE5D7"
+secondaryBackgroundColor = "#E4D7C5"
+textColor = "#28231F"
+borderColor = "#D4C5B1"
+primaryColor = "#A84528"

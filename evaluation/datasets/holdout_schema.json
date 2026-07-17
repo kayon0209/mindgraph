@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Expense QA holdout case",
+  "type": "object",
+  "required": ["case_id", "question", "category", "split", "expected_behavior", "reference_answer", "required_facts", "forbidden_facts", "gold_document_ids", "gold_chunk_ids", "acceptable_chunk_ids", "should_answer", "should_refuse", "should_abstain", "notes", "dataset_version"],
+  "properties": {
+    "case_id": {"type": "integer", "minimum": 1},
+    "question": {"type": "string", "minLength": 1},
+    "category": {"type": "string", "minLength": 1},
+    "split": {"const": "holdout"},
+    "expected_behavior": {"enum": ["answer", "refuse", "abstain"]},
+    "reference_answer": {"type": "string"},
+    "required_facts": {"type": "array", "items": {"type": "string"}},
+    "forbidden_facts": {"type": "array", "items": {"type": "string"}},
+    "gold_document_ids": {"type": "array", "items": {"type": "string"}},
+    "gold_chunk_ids": {"type": "array", "items": {"type": "string", "pattern": "^.+::[0-9]+$"}},
+    "acceptable_chunk_ids": {"type": "array", "items": {"type": "string", "pattern": "^.+::[0-9]+$"}},
+    "should_answer": {"type": "boolean"},
+    "should_refuse": {"type": "boolean"},
+    "should_abstain": {"type": "boolean"},
+    "notes": {"type": "string"},
+    "dataset_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"}
+  },
+  "additionalProperties": false
+}

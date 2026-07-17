@@ -125,7 +125,7 @@ def authenticate(employee_id: str, password: str) -> Optional[Dict[str, Any]]:
     user = load_users().get(employee_id.strip())
     if not user:
         return None
-    if not verify_password(password, user["password_salt"], user["password_hash"]):
+    if not verify_password(password, user.get("password_salt", ""), user.get("password_hash", "")):
         return None
     return public_user(user)
 
@@ -162,6 +162,12 @@ def get_session_user(token: str) -> Optional[Dict[str, Any]]:
     session = sessions.get(token)
     if not session:
         return None
+    # 检查会话是否过期（默认 1 小时）
+    created_at = session.get("created_at", 0)
+    timeout = int(os.getenv("SESSION_TIMEOUT_SECONDS", "3600"))
+    if int(time.time()) - created_at > timeout:
+        delete_session(token)
+        return None
     return get_user(str(session.get("employee_id", "")))
 
 
@@ -187,6 +193,6 @@ def save_avatar(employee_id: str, filename: str, data: bytes) -> str:
     users = load_users()
     if employee_id in users:
         users[employee_id]["avatar_path"] = str(path)
-        users[employee_id]["nickname"] = users[employee_id]["real_name"]
+        # 保留用户自定义昵称，不覆盖
         save_users(users)
     return str(path)

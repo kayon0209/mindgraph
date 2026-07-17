@@ -10,9 +10,11 @@ ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
 
 ZHIPU_API_KEY: str = (os.getenv("ZHIPU_API_KEY") or "").strip()
+ZHIPU_MODEL: str = (os.getenv("ZHIPU_MODEL") or "glm-4.7").strip()
 AUTH_MODE: str = (os.getenv("AUTH_MODE") or "demo").strip().lower()
+CHAT_PROVIDER: str = (os.getenv("CHAT_PROVIDER") or "zhipu").strip().lower()
 
-if not ZHIPU_API_KEY:
+if CHAT_PROVIDER == "zhipu" and not ZHIPU_API_KEY:
     import warnings
     warnings.warn(
         "未检测到 ZHIPU_API_KEY。请在项目根目录创建 `.env` 文件并设置：\n"
@@ -32,7 +34,7 @@ AVATAR_DIR = ROOT / "data" / "avatars"
 SESSIONS_FILE = ROOT / "data" / "sessions.json"
 
 COLLECTION_NAME = "expense_kb_v2"
-CHAT_MODEL = "glm-4.5-air"
+CHAT_MODEL = ZHIPU_MODEL
 EMBED_MODEL = "embedding-3"
 
 # 检索与生成（与 PRD-v1 对齐：Top-K=3，余弦距离阈值 0.5）

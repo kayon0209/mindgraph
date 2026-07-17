@@ -356,11 +356,12 @@ OUT_OF_SCOPE_KEYWORDS = [
     "请假",
     "考勤",
     "年假",
-    "离职",
     "wifi",
     "食堂",
     "健身房",
     "revenue",
+    "system prompt",
+    "ignore previous",
 ]
 
 def ask(
@@ -385,7 +386,7 @@ def ask(
     if fixed is not None:
         return RAGAnswer(answer=fixed, sources=[])
 
-    sources = retrieve(api_key, question, k=top_k)
+    sources = retrieve(api_key, q, k=top_k)
     if not sources:
         return RAGAnswer(
             answer="知识库中暂无相关内容。请先在侧边栏「文档与索引」中重建 `knowledge/` 下的制度文档索引。",
@@ -406,7 +407,7 @@ def ask(
 
     ctx = build_context(sources)
     try:
-        answer = generate_answer(api_key, question, ctx)
+        answer = generate_answer(api_key, q, ctx)
     except Exception:
         answer = fallback_answer(question, sources)
     return RAGAnswer(answer=answer, sources=sources)

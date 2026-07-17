@@ -1624,7 +1624,7 @@ if current_page == "chat":
             ("✈️ 差旅标准", "出差住宿标准是多少？"),
             ("💜 费用标准", "交通补贴标准是什么？"),
             ("👥 审批流程", "报销审批需要多久？"),
-            ("📌 其他问题", "更多常见问题"),
+            ("📌 其他问题", "公司报销的标准流程是什么？"),
         ]
         for idx, (title, question) in enumerate(common_questions):
             st.button(
