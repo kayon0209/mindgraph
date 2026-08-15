@@ -1,0 +1,9 @@
+{
+  "id": "mindgraph",
+  "name": "MindGraph",
+  "version": "1.0.0",
+  "minAppVersion": "1.4.0",
+  "description": "在 Obsidian 内用本地 MindGraph API 做 Graph RAG 问答，并一键插入答案到笔记",
+  "author": "MindGraph",
+  "isDesktopOnly": true
+}

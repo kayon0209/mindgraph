@@ -1,0 +1,153 @@
+"""基于 Pydantic Settings 的多环境配置管理。
+
+环境变量自动加载 (.env)，按 ENVIRONMENT 选择配置覆盖。
+所有配置项有类型校验和默认值。
+"""
+from __future__ import annotations
+
+import os
+import warnings
+from functools import lru_cache
+from pathlib import Path
+from typing import Literal
+
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+class Settings(BaseSettings):
+    """全局应用配置。"""
+
+    model_config = SettingsConfigDict(
+        env_file=str(PROJECT_ROOT / ".env"),
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+    # ── 运行环境 ──
+    ENVIRONMENT: Literal["development", "staging", "production"] = "development"
+    DEBUG: bool = False
+    LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+    LOG_FORMAT: Literal["json", "console"] = "console"
+
+    # ── 服务 ──
+    API_HOST: str = "0.0.0.0"
+    API_PORT: int = 8000
+    API_BASE_URL: str = "http://localhost:8000/api/v1"
+    STREAMLIT_PORT: int = 8501
+    STREAMLIT_ORIGIN: str = "http://localhost:8501"
+    CORS_ORIGINS: str = ""  # 逗号分隔
+
+    # ── 认证 ──
+    AUTH_MODE: Literal["off", "api_key", "bearer", "demo"] = "demo"
+    API_KEY_HEADER: str = "X-API-Key"
+    SESSION_TIMEOUT_SECONDS: int = 3600
+
+    # ── 安全 ──
+    RATE_LIMIT_ENABLED: bool = False
+    RATE_LIMIT_MAX_REQUESTS: int = 60
+    RATE_LIMIT_WINDOW_SECONDS: int = 60
+    MAX_UPLOAD_BYTES: int = 10 * 1024 * 1024  # 10MB
+    PRIVACY_LOG_QUESTIONS: bool = True
+
+    # ── LLM Provider — 智谱 ──
+    ZHIPU_API_KEY: str = ""
+    ZHIPU_MODEL: str = "glm-4.7"
+    ZHIPU_VERIFIED: bool = False
+
+    # ── LLM Provider — OpenAI Compatible (DeepSeek) ──
+    CHAT_PROVIDER: Literal["zhipu", "deepseek", "anthropic"] = "deepseek"
+    OPENAI_COMPAT_PROVIDER_NAME: str = "deepseek"
+    OPENAI_COMPAT_BASE_URL: str = "https://api.deepseek.com"
+    OPENAI_COMPAT_API_KEY: str = ""
+    OPENAI_COMPAT_MODEL: str = "deepseek-v4-flash"
+    OPENAI_COMPAT_MODELS: str = "deepseek-v4-flash"
+    OPENAI_COMPAT_VERIFIED: bool = False
+    CHAT_TIMEOUT_SECONDS: int = 60
+    CHAT_MAX_RETRIES: int = 1
+
+    # ── LLM Provider — Anthropic ──
+    ANTHROPIC_API_KEY: str = ""
+    ANTHROPIC_MODEL: str = "claude-sonnet-4-20250514"
+
+    # ── Embedding ──
+    BGE_MODEL_NAME: str = "BAAI/bge-small-zh-v1.5"
+    BGE_MODEL_REVISION: str = ""
+    BGE_BATCH_SIZE: int = 32
+    BGE_LOCAL_FILES_ONLY: bool = True
+
+    # ── Retrieval ──
+    RETRIEVAL_CANDIDATE_COUNT: int = 20
+    RETRIEVAL_FINAL_TOP_K: int = 5
+    BM25_K1: float = 1.5
+    BM25_B: float = 0.75
+    RRF_CONSTANT: int = 60
+    RERANKER_ENABLED: bool = False
+    RERANKER_MODEL_NAME: str = "BAAI/bge-reranker-base"
+    RERANKER_LOCAL_FILES_ONLY: bool = True
+    RERANK_TOP_N: int = 10
+
+    # ── 数据库 ──
+    DATABASE_PATH: str = str(PROJECT_ROOT / "data" / "product" / "product.sqlite3")
+    SQLITE_JOURNAL_MODE: str = "WAL"
+    SQLITE_SYNCHRONOUS: str = "NORMAL"
+    SQLITE_CACHE_SIZE: int = -20000  # 20MB
+
+    # ── 缓存 ──
+    CACHE_ENABLED: bool = True
+    ANSWER_CACHE_TTL_SECONDS: int = 3600
+    EMBEDDING_CACHE_SIZE: int = 10000
+
+    # ── 备份 ──
+    BACKUP_ENABLED: bool = True
+    BACKUP_INTERVAL_HOURS: int = 24
+    BACKUP_RETENTION_DAYS: int = 30
+    BACKUP_DIR: str = str(PROJECT_ROOT / "data" / "backups")
+
+    # ── 监控 ──
+    SLOW_REQUEST_THRESHOLD_MS: int = 1000
+    HEALTH_CHECK_INTERVAL_SECONDS: int = 30
+
+    @field_validator("ZHIPU_API_KEY", "OPENAI_COMPAT_API_KEY", "ANTHROPIC_API_KEY", mode="before")
+    @classmethod
+    def strip_api_keys(cls, v: str | None) -> str:
+        return (v or "").strip()
+
+    @field_validator("CORS_ORIGINS", mode="before")
+    @classmethod
+    def normalize_cors(cls, v: str) -> str:
+        if not v:
+            return "http://localhost:8501"
+        return v
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
+
+    @property
+    def is_production(self) -> bool:
+        return self.ENVIRONMENT == "production"
+
+    @property
+    def openapi_enabled(self) -> bool:
+        return not self.is_production
+
+    def validate_required_keys(self) -> list[str]:
+        """检查必要的 API Key 是否配置。"""
+        missing = []
+        if self.CHAT_PROVIDER == "zhipu" and not self.ZHIPU_API_KEY:
+            missing.append("ZHIPU_API_KEY")
+        if self.CHAT_PROVIDER == "deepseek" and not self.OPENAI_COMPAT_API_KEY:
+            missing.append("OPENAI_COMPAT_API_KEY")
+        if self.CHAT_PROVIDER == "anthropic" and not self.ANTHROPIC_API_KEY:
+            missing.append("ANTHROPIC_API_KEY")
+        return missing
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    """获取全局配置单例（缓存，第一次加载后不变）。"""
+    return Settings()

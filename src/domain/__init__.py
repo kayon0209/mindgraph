@@ -1,0 +1,1 @@
+"""Stable product-domain contracts."""

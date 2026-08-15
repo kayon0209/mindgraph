@@ -1,0 +1,129 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+
+from domain.errors import ConflictError, NotFoundError
+from domain.models import DocumentVersionModel
+from infrastructure.database import ProductDatabase, dumps, loads
+from infrastructure.parsers import default_parser_registry
+from application.structured_chunker import StructuredChunker
+
+
+TRANSITIONS = {
+    "draft": {"pending_index", "parse_failed", "deleted"},
+    "pending_index": {"active", "index_failed", "deleted"},
+    "active": {"replaced", "expired", "deleted"},
+    "index_failed": {"pending_index", "deleted"},
+    "parse_failed": {"draft", "deleted"},
+    "expired": set(), "replaced": set(), "deleted": set(),
+}
+
+
+class DocumentLifecycleService:
+    def __init__(self, database: ProductDatabase, storage_root: Path) -> None:
+        self.database, self.storage_root = database, Path(storage_root)
+        self.storage_root.mkdir(parents=True, exist_ok=True)
+        self.chunker = StructuredChunker()
+
+    def import_existing_markdown(self, paths: list[Path]) -> None:
+        for path in paths:
+            logical_id = hashlib.sha256(path.name.encode()).hexdigest()[:16]
+            if self.database.fetch_one("SELECT document_id FROM document_versions WHERE logical_document_id=?", (logical_id,)):
+                continue
+            self.create_version(path.name, path.read_bytes(), logical_id, "v1", "other", "official_policy", status="active")
+
+    def create_version(self, filename: str, data: bytes, logical_document_id: str | None, version: str,
+                       category: str, authority: str, effective_date: str | None = None,
+                       expiration_date: str | None = None, status: str = "draft") -> DocumentVersionModel:
+        logical_id = logical_document_id or str(uuid.uuid4())
+        parser = default_parser_registry.get(filename)
+        checksum = hashlib.sha256(data).hexdigest()
+        document_id = hashlib.sha256(f"{logical_id}:{version}:{checksum}".encode()).hexdigest()[:24]
+        target_dir = self.storage_root / logical_id / version
+        if target_dir.exists(): raise ConflictError("Document version already exists")
+        target_dir.mkdir(parents=True)
+        source = target_dir / ("source." + Path(filename).suffix.lower().lstrip("."))
+        source.write_bytes(data)
+        try:
+            parsed = parser.parse(data, filename); chunks = self.chunker.chunk(parsed)
+            diagnostics = {"parser": parsed.parser_name, "parser_version": parsed.parser_version,
+                "elements": len(parsed.elements), "chunks": len(chunks), "pages": parsed.metadata.get("page_count"),
+                "tables": sum(item.element_type == "table" for item in parsed.elements), "warnings": parsed.warnings,
+                "ocr_required_pages": parsed.ocr_required_pages, "status": "partial" if parsed.warnings else "success"}
+            (target_dir / "parsed.json").write_text(parsed.model_dump_json(indent=2), encoding="utf-8")
+            (target_dir / "chunks.json").write_text(json.dumps([item.model_dump(mode="json") for item in chunks], ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as exc:
+            diagnostics = {"status": "failed", "failure_reason": f"{type(exc).__name__}: {exc}", "warnings": []}
+            status = "parse_failed"
+        now = datetime.now(timezone.utc)
+        record = DocumentVersionModel(document_id=document_id, logical_document_id=logical_id, version=version,
+            title=Path(filename).stem, file_type=Path(filename).suffix.lower().lstrip("."), knowledge_category=category,
+            authority_level=authority, effective_date=effective_date, expiration_date=expiration_date, status=status,
+            checksum=checksum, parsing_diagnostics=diagnostics, created_at=now, updated_at=now)
+        self.database.execute("INSERT INTO document_versions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
+            record.document_id, record.logical_document_id, record.version, record.title, record.file_type,
+            record.knowledge_category, record.authority_level, record.effective_date, record.expiration_date,
+            record.status, record.checksum, record.supersedes_version, str(source), dumps(diagnostics),
+            now.isoformat(), now.isoformat(), None, record.created_by))
+        return record
+
+    def transition(self, document_id: str, target: str) -> DocumentVersionModel:
+        record = self.get(document_id)
+        if target not in TRANSITIONS.get(record.status, set()):
+            raise ConflictError(f"Invalid document transition: {record.status} -> {target}")
+        now = datetime.now(timezone.utc).isoformat()
+        if target == "active":
+            self.database.execute("UPDATE document_versions SET status='replaced',updated_at=? WHERE logical_document_id=? AND status='active' AND document_id<>?", (now, record.logical_document_id, document_id))
+        self.database.execute("UPDATE document_versions SET status=?,updated_at=? WHERE document_id=?", (target, now, document_id))
+        return self.get(document_id)
+
+    def list(self, status: str | None = None, category: str | None = None):
+        clauses, params = [], []
+        if status: clauses.append("status=?"); params.append(status)
+        if category: clauses.append("knowledge_category=?"); params.append(category)
+        sql = "SELECT * FROM document_versions" + (" WHERE " + " AND ".join(clauses) if clauses else "") + " ORDER BY logical_document_id,created_at DESC"
+        return [self._row(row) for row in self.database.fetch_all(sql, tuple(params))]
+
+    def get(self, document_id: str):
+        row = self.database.fetch_one("SELECT * FROM document_versions WHERE document_id=?", (document_id,))
+        if not row: raise NotFoundError("Document version not found")
+        return self._row(row)
+
+    def active_chunks(self, as_of: str | None = None, include_historical: bool = False):
+        statuses = ("active", "replaced", "expired") if include_historical else ("active",)
+        placeholders = ",".join("?" for _ in statuses)
+        rows = self.database.fetch_all(
+            f"SELECT * FROM document_versions WHERE status IN ({placeholders}) AND (? IS NULL OR effective_date IS NULL OR effective_date<=?) AND (? IS NULL OR expiration_date IS NULL OR expiration_date>=?)",
+            (*statuses, as_of, as_of, as_of, as_of),
+        )
+        output = []
+        for row in rows:
+            source = Path(row["source_path"]); chunks_path = source.parent / "chunks.json"
+            try:
+                chunk_data = json.loads(chunks_path.read_text(encoding="utf-8"))
+            except (FileNotFoundError, json.JSONDecodeError) as exc:
+                import logging
+                logging.getLogger("expense_rag.documents").warning(
+                    "chunk_load_failed", extra={"document_id": row["document_id"], "error": str(exc)}
+                )
+                continue
+            for chunk in chunk_data:
+                chunk["document_id"] = row["document_id"]
+                chunk["document_version"] = row["version"]; chunk["logical_document_id"] = row["logical_document_id"]
+                chunk["authority_level"] = row["authority_level"]; chunk["knowledge_category"] = row["knowledge_category"]
+                chunk["document_status"] = row["status"]; chunk["document_title"] = row["title"]
+                chunk["effective_date"] = row["effective_date"]; chunk["expiration_date"] = row["expiration_date"]
+                output.append(chunk)
+        return output
+
+    @staticmethod
+    def _row(row):
+        return DocumentVersionModel(document_id=row["document_id"], logical_document_id=row["logical_document_id"], version=row["version"],
+            title=row["title"], file_type=row["file_type"], knowledge_category=row["knowledge_category"], authority_level=row["authority_level"],
+            effective_date=row["effective_date"], expiration_date=row["expiration_date"], status=row["status"], checksum=row["checksum"],
+            supersedes_version=row["supersedes_version"], parsing_diagnostics=loads(row["parsing_diagnostics_json"], {}),
+            created_at=row["created_at"], updated_at=row["updated_at"], indexed_at=row["indexed_at"], created_by=row["created_by"])

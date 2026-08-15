@@ -1,0 +1,68 @@
+.mg-view {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mg-title {
+  margin: 0 0 4px;
+  font-size: 15px;
+}
+.mg-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.mg-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+}
+.mg-base {
+  flex: 1;
+  min-width: 120px;
+  font-size: 11px;
+}
+.mg-input {
+  width: 100%;
+  resize: vertical;
+  font-size: 13px;
+}
+.mg-btns {
+  display: flex;
+  gap: 6px;
+}
+.mg-primary,
+.mg-secondary {
+  font-size: 12px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.mg-answer {
+  white-space: pre-wrap;
+  font-size: 13px;
+  line-height: 1.5;
+  border-top: 1px solid var(--background-modifier-border);
+  padding-top: 6px;
+  min-height: 40px;
+  max-height: 320px;
+  overflow: auto;
+}
+.mg-refs {
+  font-size: 12px;
+  border-top: 1px solid var(--background-modifier-border);
+  padding-top: 4px;
+}
+.mg-ref-title {
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.mg-ref {
+  opacity: 0.85;
+  padding: 1px 0;
+}
+.mg-graph {
+  color: var(--interactive-accent);
+}

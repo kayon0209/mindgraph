@@ -1,0 +1,137 @@
+[project]
+name = "expense-rag-qa"
+version = "3.1.0"
+description = "企业报销知识问答系统 — 基于 RAG 的自然语言报销规则查询"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Expense RAG Team" }]
+keywords = ["rag", "qa", "expense", "llm", "langchain-alternative"]
+
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.6.0",
+    "python-dotenv>=1.0.0",
+    "numpy>=1.26.0",
+    "faiss-cpu>=1.9.0",
+    "sentence-transformers>=3.3.0",
+    "pypdf>=5.1.0",
+    "python-docx>=1.1.0",
+    "openpyxl>=3.1.0",
+    "httpx>=0.28.0",
+    "streamlit>=1.41.0",
+    "scikit-learn>=1.6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=6.0",
+    "pytest-asyncio>=0.25.0",
+    "httpx>=0.28.0",
+    "ruff>=0.8.0",
+    "mypy>=1.14.0",
+    "bandit>=1.8.0",
+    "pre-commit>=4.0.0",
+]
+ocr = ["paddleocr>=2.9.0", "paddlepaddle>=3.0.0"]
+
+[build-system]
+requires = ["setuptools>=75.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+# ── Ruff: Linter + Formatter ──
+[tool.ruff]
+target-version = "py311"
+line-length = 140
+exclude = [
+    ".git",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "data",
+    "node_modules",
+    "evaluation/results",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "N",   # pep8-naming
+    "B",   # flake8-bugbear
+    "SIM", # flake8-simplify
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+    "RUF", # ruff-specific
+]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+    "B008",  # do not perform function calls in argument defaults
+    "RUF001", # ambiguous unicode character in string
+    "SIM108", # use ternary instead of if-else
+]
+fixable = ["ALL"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+force-sort-within-sections = true
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+# ── Mypy: Type Checking ──
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
+exclude = [
+    "tests/",
+    "data/",
+    "evaluation/results/",
+]
+
+# ── Pytest ──
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+python_files = ["test_*.py"]
+addopts = [
+    "-v",
+    "--strict-markers",
+    "--tb=short",
+    "-W", "default::DeprecationWarning",
+]
+markers = [
+    "unit: Unit tests (fast, no external deps)",
+    "integration: Integration tests (API/DB/external)",
+    "slow: Slow tests (skip with -m 'not slow')",
+]
+
+# ── Coverage ──
+[tool.coverage.run]
+source = ["src"]
+omit = ["*/tests/*", "*/__pycache__/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "pass",
+]
+
+# ── Bandit: Security Linting ──
+[tool.bandit]
+exclude_dirs = ["tests", "data", "evaluation"]
+skips = ["B101", "B311"]  # assert, random (acceptable for internal tool)

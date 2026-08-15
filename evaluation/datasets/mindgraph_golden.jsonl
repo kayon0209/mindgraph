@@ -1,0 +1,50 @@
+{"question": "context-engineer", "gold_vault_paths": ["projects/context-engineer.md"], "category": "self_recall"}
+{"question": "2026-07-16 工作日志", "gold_vault_paths": ["抖音作品/.workbuddy/memory/2026-07-16.md"], "category": "self_recall"}
+{"question": "2026-07-17 工作日志", "gold_vault_paths": ["抖音作品/.workbuddy/memory/2026-07-17.md"], "category": "self_recall"}
+{"question": "项目长期笔记 — AI科普多平台自动发布", "gold_vault_paths": ["抖音作品/.workbuddy/memory/MEMORY.md"], "category": "self_recall"}
+{"question": "📊 内容看板", "gold_vault_paths": ["抖音作品/STATUS.md"], "category": "self_recall"}
+{"question": "Cheat on Content — 工作流", "gold_vault_paths": ["抖音作品/WORKFLOW.md"], "category": "self_recall"}
+{"question": "起号专家 Agent Skills / Account Launch Agent Skills", "gold_vault_paths": ["抖音作品/agent-skills-launch-pack/README.md"], "category": "self_recall"}
+{"question": "Publishing Checklist", "gold_vault_paths": ["抖音作品/agent-skills-launch-pack/docs/PUBLISHING.md"], "category": "self_recall"}
+{"question": "视频号起号专家", "gold_vault_paths": ["抖音作品/agent-skills-launch-pack/skills/channels-account-launch-expert/SKILL.md"], "category": "self_recall"}
+{"question": "视频号起号参考手册", "gold_vault_paths": ["抖音作品/agent-skills-launch-pack/skills/channels-account-launch-expert/references/launch-playbook.md"], "category": "self_recall"}
+{"question": "抖音起号专家", "gold_vault_paths": ["抖音作品/agent-skills-launch-pack/skills/douyin-account-launch-expert/SKILL.md"], "category": "self_recall"}
+{"question": "抖音起号参考手册", "gold_vault_paths": ["抖音作品/agent-skills-launch-pack/skills/douyin-account-launch-expert/references/launch-playbook.md"], "category": "self_recall"}
+{"question": "公众号起号专家", "gold_vault_paths": ["抖音作品/agent-skills-launch-pack/skills/wechat-account-launch-expert/SKILL.md"], "category": "self_recall"}
+{"question": "微信公众号起号操作手册", "gold_vault_paths": ["抖音作品/agent-skills-launch-pack/skills/wechat-account-launch-expert/references/launch-playbook.md"], "category": "self_recall"}
+{"question": "X/Twitter 起号专家", "gold_vault_paths": ["抖音作品/agent-skills-launch-pack/skills/x-twitter-cold-start-expert/SKILL.md"], "category": "self_recall"}
+{"question": "X/Twitter 冷启动框架", "gold_vault_paths": ["抖音作品/agent-skills-launch-pack/skills/x-twitter-cold-start-expert/references/cold-start-framework.md"], "category": "self_recall"}
+{"question": "小红书起号专家", "gold_vault_paths": ["抖音作品/agent-skills-launch-pack/skills/xiaohongshu-account-launch-expert/SKILL.md"], "category": "self_recall"}
+{"question": "小红书起号作战手册", "gold_vault_paths": ["抖音作品/agent-skills-launch-pack/skills/xiaohongshu-account-launch-expert/references/launch-playbook.md"], "category": "self_recall"}
+{"question": "受众画像", "gold_vault_paths": ["抖音作品/audience.md"], "category": "self_recall"}
+{"question": "内容包 — Agent和聊天机器人的区别", "gold_vault_paths": ["抖音作品/automation/outputs/2026-07-16/b4e402cc/INDEX.md"], "category": "self_recall"}
+{"question": "生图 Prompt — Agent和聊天机器人的区别", "gold_vault_paths": ["抖音作品/automation/outputs/2026-07-16/b4e402cc/image_prompts.md"], "category": "self_recall"}
+{"question": "发布文案 — Agent和聊天机器人的区别", "gold_vault_paths": ["抖音作品/automation/outputs/2026-07-16/b4e402cc/publish_copy.md"], "category": "self_recall"}
+{"question": "质检报告 — Agent和聊天机器人的区别", "gold_vault_paths": ["抖音作品/automation/outputs/2026-07-16/b4e402cc/quality_report.md"], "category": "self_recall"}
+{"question": "Agent和聊天机器人的区别", "gold_vault_paths": ["抖音作品/automation/outputs/2026-07-16/b4e402cc/script.md"], "category": "self_recall"}
+{"question": "候选选题卡 — 2026-07-16", "gold_vault_paths": ["抖音作品/automation/outputs/2026-07-16/candidates.md"], "category": "self_recall"}
+{"question": "内容表现复盘报告", "gold_vault_paths": ["抖音作品/automation/outputs/review_report.md"], "category": "self_recall"}
+{"question": "候选选题池", "gold_vault_paths": ["抖音作品/candidates.md"], "category": "self_recall"}
+{"question": "Automation Memory — 每日AI选题自动生成（10:00）", "gold_vault_paths": ["抖音作品/pipeline/.workbuddy/automations/automation-1784203678760/memory.md"], "category": "self_recall"}
+{"question": "执行摘要", "gold_vault_paths": ["抖音作品/pipeline/.workbuddy/automations/automation-1784213316947/memory.md"], "category": "self_recall"}
+{"question": "图片文案 — Agent和聊天机器人的区别", "gold_vault_paths": ["抖音作品/pipeline/content_pipeline/02_brief_ready/2026-07-16_agent/image_copy.md"], "category": "self_recall"}
+{"question": "资料来源 — Agent和聊天机器人的区别", "gold_vault_paths": ["抖音作品/pipeline/content_pipeline/02_brief_ready/2026-07-16_agent/sources.md"], "category": "self_recall"}
+{"question": "发布文案 — AI编程工具到底怎么选", "gold_vault_paths": ["抖音作品/pipeline/content_pipeline/02_brief_ready/2026-07-16_coding_agent/caption.md"], "category": "self_recall"}
+{"question": "图片文案 — AI编程工具到底怎么选", "gold_vault_paths": ["抖音作品/pipeline/content_pipeline/02_brief_ready/2026-07-16_coding_agent/image_copy.md"], "category": "self_recall"}
+{"question": "生图 Prompt — AI编程工具到底怎么选", "gold_vault_paths": ["抖音作品/pipeline/content_pipeline/02_brief_ready/2026-07-16_coding_agent/image_prompt.md"], "category": "self_recall"}
+{"question": "资料来源 — AI编程工具到底怎么选", "gold_vault_paths": ["抖音作品/pipeline/content_pipeline/02_brief_ready/2026-07-16_coding_agent/sources.md"], "category": "self_recall"}
+{"question": "发布文案 — 上下文窗口是什么", "gold_vault_paths": ["抖音作品/pipeline/content_pipeline/02_brief_ready/2026-07-16_context_window/caption.md"], "category": "self_recall"}
+{"question": "图片文案 — 上下文窗口是什么", "gold_vault_paths": ["抖音作品/pipeline/content_pipeline/02_brief_ready/2026-07-16_context_window/image_copy.md"], "category": "self_recall"}
+{"question": "生图 Prompt — 上下文窗口是什么", "gold_vault_paths": ["抖音作品/pipeline/content_pipeline/02_brief_ready/2026-07-16_context_window/image_prompt.md"], "category": "self_recall"}
+{"question": "资料来源 — 上下文窗口是什么", "gold_vault_paths": ["抖音作品/pipeline/content_pipeline/02_brief_ready/2026-07-16_context_window/sources.md"], "category": "self_recall"}
+{"question": "发布文案 — AI为什么会胡说", "gold_vault_paths": ["抖音作品/pipeline/content_pipeline/02_brief_ready/2026-07-16_hallucination/caption.md"], "category": "self_recall"}
+{"question": "图片文案 — AI为什么会胡说", "gold_vault_paths": ["抖音作品/pipeline/content_pipeline/02_brief_ready/2026-07-16_hallucination/image_copy.md"], "category": "self_recall"}
+{"question": "生图 Prompt — AI为什么会胡说", "gold_vault_paths": ["抖音作品/pipeline/content_pipeline/02_brief_ready/2026-07-16_hallucination/image_prompt.md"], "category": "self_recall"}
+{"question": "资料来源 — AI为什么会胡说", "gold_vault_paths": ["抖音作品/pipeline/content_pipeline/02_brief_ready/2026-07-16_hallucination/sources.md"], "category": "self_recall"}
+{"question": "发布文案 — RAG是什么", "gold_vault_paths": ["抖音作品/pipeline/content_pipeline/02_brief_ready/2026-07-16_rag/caption.md"], "category": "self_recall"}
+{"question": "图片文案 — RAG是什么", "gold_vault_paths": ["抖音作品/pipeline/content_pipeline/02_brief_ready/2026-07-16_rag/image_copy.md"], "category": "self_recall"}
+{"question": "生图 Prompt — RAG是什么", "gold_vault_paths": ["抖音作品/pipeline/content_pipeline/02_brief_ready/2026-07-16_rag/image_prompt.md"], "category": "self_recall"}
+{"question": "资料来源 — RAG是什么", "gold_vault_paths": ["抖音作品/pipeline/content_pipeline/02_brief_ready/2026-07-16_rag/sources.md"], "category": "self_recall"}
+{"question": "发布文案 — Token是什么", "gold_vault_paths": ["抖音作品/pipeline/content_pipeline/02_brief_ready/2026-07-16_token/caption.md"], "category": "self_recall"}
+{"question": "图片文案 — Token是什么", "gold_vault_paths": ["抖音作品/pipeline/content_pipeline/02_brief_ready/2026-07-16_token/image_copy.md"], "category": "self_recall"}
+{"question": "生图 Prompt — Token是什么", "gold_vault_paths": ["抖音作品/pipeline/content_pipeline/02_brief_ready/2026-07-16_token/image_prompt.md"], "category": "self_recall"}

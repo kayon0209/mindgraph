@@ -1,118 +1,115 @@
-# 企业报销智能问答系统 · Expense RAG QA
+# MindGraph · Graph RAG 检索增强问答系统
 
-> 基于 RAG 的企业报销政策问答与可复现评测系统：本地 BGE 向量化 + FAISS/BM25 混合检索 + RRF 融合 + 可选重排，生成端兼容 OpenAI 协议。
+> 混合检索（Dense + Sparse + RRF）+ 一跳知识图谱扩展 + 本地优先嵌入的可溯源问答。
+> 由「企业报销制度问答 RAG」重构演进而来，检索 / 评测工程能力被复用为底层 hybrid retriever。
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688.svg)](https://fastapi.tiangolo.com)
-[![Streamlit](https://img.shields.io/badge/Streamlit-1.28+-red.svg)](https://streamlit.io)
+[![FAISS](https://img.shields.io/badge/FAISS-Vector_Index-blue)](https://github.com/facebookresearch/faiss)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
 
-## 目录
+## 为什么是 MindGraph，而不是「又一个 RAG Demo」
 
-- [功能特性](#功能特性)
-- [技术架构](#技术架构)
-- [快速开始](#快速开始)
-- [评测](#评测)
-- [项目结构](#项目结构)
-- [文档](#文档)
-- [License](#license)
+大多数 RAG Demo 卡在两件事上：**检索策略拍脑袋**（默认上重排，却没测过值不值），以及**答案不可溯源**。MindGraph 把检索做成可度量、可消融的工程模块，并让每个答案都带 `[citation]` 溯源；图谱一跳扩展在检索命中后补充证据，而不是凭空生成。
 
-## 功能特性
+## 核心能力
 
-- 💬 **自然语言问答**：员工用日常语言提问，无需记忆关键词或菜单路径
-- 📚 **答案带引用**：每个回答标注来源文档与片段，可溯源、抑制幻觉
-- 🛡️ **安全护栏**：自动拒答薪资 / 考勤 / 个人隐私等非报销类问题，内置 PII 检测与敏感词过滤
-- 📥 **多格式知识库**：Markdown / TXT / PDF / DOCX / XLSX 独立解析器 + 结构化切片
-- 🗂️ **版本化知识库**：文档状态机、Embedding 复用、版本化索引、原子切换与指针回滚（上线零停机）
-- 🔍 **多检索策略**：Dense / Sparse / Hybrid / RRF 四策略可选，可选 Cross-Encoder 重排提升精度
-- 🔌 **多 LLM Provider**：DeepSeek / OpenAI-compatible，Zhipu / Anthropic 可选，运行时可切换并自动降级
-- ⚡ **流式回答**：SSE 实时逐字输出
-- 📊 **可复现评测**：34 题 Gold 数据集（含文档与 Chunk 标签），支持 `recall@k` / `MRR` 与消融实验
+- **混合检索（Hybrid）**：FAISS(Dense / BGE) + BM25(Sparse) + RRF 融合，可选 Cross-Encoder 重排
+- **一跳图谱扩展**：检索命中笔记后沿知识图谱扩展一跳关系，补充证据上下文
+- **可溯源问答**：答案带 `[citation]`，拒绝无据编造
+- **本地优先**：BGE 本地嵌入，数据留在你机器上，无强制云依赖
+- **双前端**：① Obsidian 插件（右侧栏问答 + 插入笔记）；② React + Vite Web Demo
+- **可复现评测**：4 策略消融脚本，结果写入 `evaluation_runs`
 
-## 技术架构
+## 系统架构
+
+![MindGraph 系统架构](./assets/architecture.svg)
 
 ```
-Streamlit UI
-   │  (HTTP + SSE)
+Obsidian Vault
+   │  扫描 + 注入稳定 Frontmatter ID（mindgraph_id）
    ▼
-FastAPI  ──► ChatService ──► RAG Engine
-                               ├─ Retriever : FAISS(Dense) + BM25(Sparse) + RRF 融合
-                               ├─ ReRanker  : Cross-Encoder（可选）
-                               └─ Generator : OpenAI-compatible LLM
-   │
-   ├─ KnowledgeService : 文档解析 / 版本化索引 / 回滚
-   └─ Evaluation       : retrieval_eval / baseline / ablation
+本地 FastAPI 服务 (src/, 端口 8000)
+   ├─ VaultSyncService          扫描 / 剪枝 / 稳定 ID 注入
+   ├─ MindGraphIndexService     FAISS(BGE) + BM25 + RRF 增量索引（CURRENT 原子切换）
+   ├─ MindGraphRetrievalPipeline hybrid + 一跳图谱扩展
+   ├─ GraphStore / RelationStore  notes + note_relations
+   └─ 只读 API /mindgraph/*  +  问答 SSE /mindgraph/chat
+        │
+        ├─ 前端 ①：Obsidian 插件（右侧栏问答 + 插入笔记）
+        └─ 前端 ②：Web Demo（React + Vite，4 页）
 ```
 
 | 组件 | 技术 |
 |------|------|
-| 前端 | Streamlit 1.28+ |
+| 嵌入 | BAAI/bge-small-zh-v1.5（本地缓存，离线推理） |
+| 检索 | FAISS(Dense) + BM25(Sparse) + RRF 融合 + 可选 Cross-Encoder 重排 |
+| 图谱 | SQLite `note_relations`（proposed / confirmed / conflict 检测） |
+| 生成 | OpenAI-compatible（DeepSeek / 智谱 GLM / Anthropic，可降级） |
 | API | FastAPI + SSE |
-| 稠密检索 | FAISS |
-| 稀疏检索 | BM25（自定义分词） |
-| 融合 | RRF（Reciprocal Rank Fusion） |
-| 重排 | Cross-Encoder（可选） |
-| Embedding | `BAAI/bge-small-zh-v1.5`（可配置，支持本地离线） |
-| 生成 | DeepSeek / OpenAI-compatible；Zhipu / Anthropic 可选 |
-| 存储 | SQLite（WAL）+ 向量索引文件 |
+| 存储 | SQLite(WAL) + 版本化向量索引 |
+| 前端 | Obsidian 插件 + React(Vite) Web Demo |
+
+## 评测（真实、可复现）
+
+在 **34 题报销制度问答集**上做 4 策略消融，核心结论：
+
+| 检索策略 | R@5 | 相对延迟 | 备注 |
+|----------|-----|----------|------|
+| Sparse (BM25) | 基线 | 1× | — |
+| Dense (FAISS/BGE) | 接近基线 | ~数× | 语义补全 |
+| **Hybrid (RRF 融合)** | **0.587（最高）** | ~13ms | **默认策略** |
+| Hybrid + Rerank | 反降 | **~99×** | 延迟代价远大于收益 → 设为按需 |
+
+> 据此定义产品默认路由：**混合检索默认开启，重排按需启用**——用 ~13ms 拿到最高召回，避免 99× 延迟换来的召回回退。
+> 完整数据与延迟成本分析见 [`docs/MindGraph-cost-efficiency.md`](docs/MindGraph-cost-efficiency.md)。
+
+```bash
+python scripts/run_ablation.py        # 写真实 4 策略消融到 evaluation_runs
+```
+
+> 小样本 Golden Set 来自开发过程，用于工程可复现验证，不代表生产效果。
 
 ## 快速开始
 
+### 1. 后端（FastAPI）
+
 ```bash
-# 1. 克隆并进入项目
-git clone https://github.com/kayon0209/expense-rag-qa.git
 cd expense-rag-qa
-
-# 2. 创建虚拟环境并安装依赖
-python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
+python -m venv .venv && source .venv/Scripts/activate        # Windows
 pip install -r requirements.txt
-
-# 3. 配置（复制模板后填入 API Key；.env 含密钥，已被 .gitignore 忽略）
-cp .env.example .env
-
-# 4. 构建检索索引（首次需本地 BGE 模型；BGE_LOCAL_FILES_ONLY=true 时请确保模型已就位）
-python -m evaluation.retrieval_eval build-index --version local-v1
-
-# 5. 启动服务（两个终端）
-uvicorn api.main:app --app-dir src --host 127.0.0.1 --port 8000   # 终端一
-streamlit run streamlit_app.py --server.port 8501                # 终端二
+cp .env.example .env            # 已含 HF 镜像与 BGE 本地化配置
+# 首次构建索引（需先缓存 BGE，见 data/bge-small-zh-v1.5）
+python scripts/sync_vault.py --vault "D:\ObsidianVault"
+uvicorn api.main:app --app-dir src --host 127.0.0.1 --port 8000
 ```
 
-访问 http://localhost:8501 ；API 文档见 http://localhost:8000/docs 。
+API 文档：http://localhost:8000/docs
 
-## 评测
+### 2. Web Demo（React + Vite）
 
 ```bash
-python -m evaluation.baseline --validate-only                            # 仅校验数据集与 Gold 标签
-python -m evaluation.retrieval_eval compare --repetitions 3 --warmups 1  # 四策略对照
-python -m unittest discover -s tests -v                                  # 单元测试
+cd expense-rag-frontend        # 独立前端目录（与后端仓库同级工作区）
+npm install && npm run dev      # http://127.0.0.1:5173
 ```
 
-> 34 题小样本来自开发过程，用于工程可复现验证，**不代表生产效果**。生产上线前需在目标语料上重跑评测并固化 BGE 模型。
+### 3. Obsidian 插件
 
-## 项目结构
+见 [obsidian-plugin/README.md](obsidian-plugin/README.md)：将 `obsidian-plugin/` 作为文件夹复制到
+Obsidian 的 `.obsidian/plugins/`，在社区插件设置中启用 **MindGraph**。
 
-```
-expense-rag-qa/
-├── knowledge/          # 初始知识库文档
-├── src/                # 源代码（api / application / retrieval / infrastructure）
-├── evaluation/         # 评测系统（retrieval_eval / baseline / ablation）
-├── tests/              # 单元测试
-├── docs/
-│   └── PRD-v2.md       # 产品需求文档（重构后 v3.1）
-├── assets/             # 截图资源
-└── .env.example        # 配置模板（无密钥）
-```
+## 演进说明
 
-## 界面预览
+本项目由「企业报销制度问答 RAG（Expense RAG QA）」重构演进而来。原报销 RAG 的检索 / 评测工程能力被复用为 MindGraph 的底层 hybrid retriever。历史 PRD 见 [docs/PRD-v2.md](docs/PRD-v2.md)（报销 RAG v3.1，仅作背景参考）。
 
-![界面预览](./assets/ui-main.png)
+> **关于本地 Demo 数据**：开发期使用了一份真实 Obsidian Vault 做端到端验证（笔记索引、关系抽取、图谱可视化均跑通），但该 Vault 属个人数据，**不随仓库分发**——clone 后需自备 Vault 才能复现图谱与插件链路。
 
 ## 文档
 
-- [产品需求文档 PRD v2（重构后）](./docs/PRD-v2.md)
+- [MindGraph 架构与落地计划](docs/MindGraph-ARCH.md)（当前权威）
+- [报销 RAG PRD v2（历史背景）](docs/PRD-v2.md)
+- [检索成本效率分析](docs/MindGraph-cost-efficiency.md)
 
 ## License
 
-[MIT](./LICENSE) —— 详见 [LICENSE](./LICENSE) 文件。
+[MIT](LICENSE) —— 详见 [LICENSE](LICENSE) 文件。
