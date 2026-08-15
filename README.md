@@ -8,6 +8,8 @@
 [![FAISS](https://img.shields.io/badge/FAISS-Vector_Index-blue)](https://github.com/facebookresearch/faiss)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
 
+![MindGraph Hero Banner](assets/hero-banner.jpg)
+
 ## 为什么是 MindGraph，而不是「又一个 RAG Demo」
 
 大多数 RAG Demo 卡在两件事上：**检索策略拍脑袋**（默认上重排，却没测过值不值），以及**答案不可溯源**。MindGraph 把检索做成可度量、可消融的工程模块，并让每个答案都带 `[citation]` 溯源；图谱一跳扩展在检索命中后补充证据，而不是凭空生成。
