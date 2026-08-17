@@ -175,8 +175,10 @@ class KnowledgeAndClientTests(unittest.TestCase):
 
     def test_streamlit_api_client_backend_unavailable(self):
         client = ProductAPIClient("http://test")
-        with patch("httpx.request", side_effect=httpx.ConnectError("offline")):
-            with self.assertRaisesRegex(APIClientError, "Backend unavailable"):
+        session = Mock()
+        session.request.side_effect = httpx.ConnectError("offline")
+        with patch.object(client, "_session", return_value=session), patch("time.sleep"):
+            with self.assertRaisesRegex(APIClientError, "后端服务不可用"):
                 client.health()
 
     def test_api_client_request_timeout_can_be_overridden(self):
@@ -185,11 +187,13 @@ class KnowledgeAndClientTests(unittest.TestCase):
         response.raise_for_status.return_value = None
         response.headers = {"content-type": "application/json"}
         response.json.return_value = {"run_id": "run1"}
-        with patch("httpx.request", return_value=response) as request:
+        session = Mock()
+        session.request.return_value = response
+        with patch.object(client, "_session", return_value=session):
             client.create_evaluation({"retrieval_strategies": ["hybrid"]})
-            self.assertEqual(request.call_args.kwargs["timeout"], 300.0)
+            self.assertEqual(session.request.call_args.kwargs["timeout"], 300.0)
             client.health()
-            self.assertEqual(request.call_args.kwargs["timeout"], 30.0)
+            self.assertEqual(session.request.call_args.kwargs["timeout"], 30.0)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,70 @@
+# 生产环境 Docker Compose 覆盖配置
+# 使用方式: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+services:
+  api:
+    build:
+      args:
+        - ENVIRONMENT=production
+        - PIP_NO_CACHE_DIR=1
+    environment:
+      - ENVIRONMENT=production
+      - LOG_LEVEL=WARNING
+      - LOG_FORMAT=json
+      - DEBUG=false
+      - AUTH_MODE=api_key
+      - RATE_LIMIT_ENABLED=true
+      - RATE_LIMIT_MAX_REQUESTS=30
+      - PRIVACY_LOG_QUESTIONS=false
+      - BGE_LOCAL_FILES_ONLY=true
+      - RERANKER_ENABLED=false
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 4G
+        reservations:
+          cpus: "1"
+          memory: 2G
+    restart: always
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health', timeout=5)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  web:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 128M
+    restart: always
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  # 可选：nginx 反向代理
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api
+      - web
+    restart: always
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"

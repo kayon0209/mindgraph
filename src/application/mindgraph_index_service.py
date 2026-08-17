@@ -52,12 +52,14 @@ class MindGraphIndexService:
     # ------------------------------------------------------------------ #
     def pending_notes(self) -> list[dict[str, Any]]:
         return self.db.fetch_all(
-            "SELECT * FROM notes WHERE index_status IN ('pending','failed')"
+            "SELECT * FROM notes "
+            "WHERE index_status IN ('pending','failed') AND ai_access_level <> 'excluded'"
         )
 
     def has_pending(self) -> bool:
         row = self.db.fetch_one(
-            "SELECT 1 FROM notes WHERE index_status IN ('pending','failed') LIMIT 1"
+            "SELECT 1 FROM notes "
+            "WHERE index_status IN ('pending','failed') AND ai_access_level <> 'excluded' LIMIT 1"
         )
         return row is not None
 
@@ -66,6 +68,7 @@ class MindGraphIndexService:
     # ------------------------------------------------------------------ #
     def _load_note_chunks(self, note: dict[str, Any]) -> list[Chunk]:
         path = self.vault_root / note["vault_path"]
+        category = Path(note["vault_path"]).parent.name or "根目录"
         try:
             raw = path.read_text(encoding="utf-8")
         except OSError:
@@ -91,6 +94,15 @@ class MindGraphIndexService:
                         "section_path": section_path,
                         "chunk_index": idx,
                         "ai_access_level": note.get("ai_access_level", "local_only"),
+                        "owner": note.get("owner"),
+                        "document_version": note.get("document_version"),
+                        "effective_from": note.get("effective_from"),
+                        "effective_to": note.get("effective_to"),
+                        "policy_status": note.get("policy_status", "unspecified"),
+                        "effective_date": note.get("effective_from"),
+                        "expiration_date": note.get("effective_to"),
+                        "document_status": note.get("policy_status", "unspecified"),
+                        "knowledge_category": category,
                         "origin": "mindgraph",
                     },
                 ))
@@ -98,7 +110,7 @@ class MindGraphIndexService:
         return chunks
 
     def _all_chunks(self) -> list[Chunk]:
-        notes = self.db.fetch_all("SELECT * FROM notes")
+        notes = self.db.fetch_all("SELECT * FROM notes WHERE ai_access_level <> 'excluded'")
         chunks: list[Chunk] = []
         for note in notes:
             chunks.extend(self._load_note_chunks(note))

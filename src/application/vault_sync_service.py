@@ -23,6 +23,7 @@ from infrastructure.markdown_frontmatter import inject_mindgraph_id, parse_front
 
 SUPPORTED_SUFFIXES = {".md", ".markdown"}
 ACCESS_LEVELS = {"excluded", "local_only", "redacted_cloud", "cloud_allowed"}
+POLICY_STATUSES = {"draft", "active", "expired", "superseded", "archived"}
 
 # 同步时默认跳过的目录：虚拟环境 / 依赖 / 缓存 / VCS / 编辑器配置 / 回收站。
 # 避免 Playwright、node_modules 等依赖文档被当成知识塞进索引。
@@ -54,6 +55,15 @@ class VaultScanResult(NamedTuple):
     pruned: int
 
 
+class PolicyMetadata(NamedTuple):
+    owner: str | None
+    document_version: str | None
+    effective_from: str | None
+    effective_to: str | None
+    policy_status: str
+    issues: list[str]
+
+
 def _utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -77,6 +87,43 @@ def _extract_title(fm: dict, body: str, path: Path) -> str:
         if m:
             return m.group(1).strip()
     return path.stem
+
+
+def _metadata_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    text = str(value).strip()
+    return text or None
+
+
+def _policy_metadata(fm: dict[str, Any]) -> PolicyMetadata:
+    owner = _metadata_text(fm.get("owner"))
+    version = _metadata_text(fm.get("version"))
+    effective_from = _metadata_text(fm.get("effective_from"))
+    effective_to = _metadata_text(fm.get("effective_to"))
+    raw_status = (_metadata_text(fm.get("status")) or "").lower()
+    issues: list[str] = []
+
+    if not owner:
+        issues.append("missing_owner")
+    if not version:
+        issues.append("missing_version")
+    if not effective_from:
+        issues.append("missing_effective_from")
+    if not raw_status:
+        issues.append("missing_policy_status")
+        status = "unspecified"
+    elif raw_status not in POLICY_STATUSES:
+        issues.append("invalid_policy_status")
+        status = "unspecified"
+    else:
+        status = raw_status
+    if effective_from and effective_to and effective_to < effective_from:
+        issues.append("invalid_effective_range")
+
+    return PolicyMetadata(owner, version, effective_from, effective_to, status, issues)
 
 
 class VaultSyncService:
@@ -161,32 +208,52 @@ class VaultSyncService:
         access = str(fm.get("ai_access_level", "local_only")).lower()
         if access not in ACCESS_LEVELS:
             access = "local_only"
-        self._upsert_note(mid, rel, title, content_hash, fm, access, now)
+        policy = _policy_metadata(fm)
+        self._upsert_note(mid, rel, title, content_hash, fm, access, policy, now)
         return ScannedNote(mid, rel, title, content_hash, access, fm, id_injected, duplicate_resolved)
 
     _UPSERT = """
         INSERT INTO notes
             (note_id, vault_path, title, content_hash, frontmatter_json, ai_access_level,
-             chunk_count, index_status, index_version, created_at, updated_at, last_indexed_at)
-        VALUES (?, ?, ?, ?, ?, ?, 0, 'pending', NULL, ?, ?, NULL)
+             chunk_count, index_status, index_version, owner, document_version,
+             effective_from, effective_to, policy_status, metadata_issues_json,
+             created_at, updated_at, last_indexed_at)
+        VALUES (?, ?, ?, ?, ?, ?, 0, 'pending', NULL, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
         ON CONFLICT(note_id) DO UPDATE SET
             vault_path=excluded.vault_path,
             title=excluded.title,
             content_hash=excluded.content_hash,
             frontmatter_json=excluded.frontmatter_json,
             ai_access_level=excluded.ai_access_level,
+            owner=excluded.owner,
+            document_version=excluded.document_version,
+            effective_from=excluded.effective_from,
+            effective_to=excluded.effective_to,
+            policy_status=excluded.policy_status,
+            metadata_issues_json=excluded.metadata_issues_json,
             updated_at=excluded.updated_at,
-            index_status=CASE WHEN excluded.content_hash <> notes.content_hash THEN 'pending' ELSE notes.index_status END
+            index_status=CASE
+                WHEN excluded.content_hash <> notes.content_hash
+                  OR excluded.owner IS NOT notes.owner
+                  OR excluded.document_version IS NOT notes.document_version
+                  OR excluded.effective_from IS NOT notes.effective_from
+                  OR excluded.effective_to IS NOT notes.effective_to
+                  OR excluded.policy_status IS NOT notes.policy_status
+                THEN 'pending'
+                ELSE notes.index_status
+            END
     """
 
     def _upsert_note(
         self, note_id: str, vault_path: str, title: str,
-        content_hash: str, fm: dict, access: str, now: str,
+        content_hash: str, fm: dict, access: str, policy: PolicyMetadata, now: str,
     ) -> None:
         self.db.execute(
             self._UPSERT,
             (note_id, vault_path, title, content_hash, json.dumps(fm, ensure_ascii=False, default=_json_default),
-             access, now, now),
+             access, policy.owner, policy.document_version, policy.effective_from,
+             policy.effective_to, policy.policy_status, json.dumps(policy.issues, ensure_ascii=False),
+             now, now),
         )
 
     def _prune_missing(self, current_paths: set[str]) -> int:

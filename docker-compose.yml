@@ -1,0 +1,47 @@
+# MindGraph AI — 本地优先部署（后端服务）
+#
+# Web 客户端与 API 同仓、同版本部署；Obsidian 插件仍在桌面端手动加载。
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    env_file:
+      - .env
+    environment:
+      BGE_LOCAL_FILES_ONLY: "false"
+      RERANKER_ENABLED: "false"
+      CORS_ORIGINS: "http://127.0.0.1:5173,http://localhost:5173,app://obsidian.md"
+    ports:
+      - "8000:8000"
+    volumes:
+      # 真实元数据库（notes / note_relations / evaluation_runs）
+      - product-data:/app/data/product
+      # MindGraph 版本化向量索引（CURRENT 指针 + chunks/faiss/manifest）
+      - mindgraph-indexes:/app/data/mindgraph_indexes
+      # BGE 本地模型（离线推理；首次可经镜像自动拉取）
+      - model-cache:/root/.cache/huggingface
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health', timeout=5)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "3000:80"
+    restart: unless-stopped
+
+volumes:
+  product-data:
+  mindgraph-indexes:
+  model-cache:

@@ -17,7 +17,7 @@ from domain.errors import (
     RateLimitError,
 )
 
-logger = logging.getLogger("expense_rag.api.errors")
+logger = logging.getLogger("mindgraph.api.errors")
 
 # 生产环境隐藏的错误详情
 _PROD_HIDDEN_DETAIL = "An internal error occurred. Please contact support."
@@ -161,7 +161,7 @@ async def value_error_handler(request: Request, exc: ValueError) -> JSONResponse
         "value_error",
         extra={
             "request_id": getattr(request.state, "request_id", None),
-            "message": str(exc),
+            "error_message": str(exc),
         },
     )
     return _build_error_response(request, 422, "validation_error", str(exc))

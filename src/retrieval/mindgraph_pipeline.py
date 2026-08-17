@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import date
 from typing import Any
 
 from .pipeline import RetrievalPipeline
@@ -69,6 +70,7 @@ class MindGraphRetrievalPipeline:
         titles = self.graph_store.note_titles(set(rel_by_target) | hit_notes)
         existing_ids = {c.chunk.chunk_id for c in trace.final_selected_chunks}
         added = 0
+        added_targets: set[str] = set()
         for target_id, rel in rel_by_target.items():
             if target_id in hit_notes:
                 continue  # 已是命中笔记，跳过
@@ -76,6 +78,8 @@ class MindGraphRetrievalPipeline:
                 if chunk.metadata.get("mindgraph_id") != target_id:
                     continue
                 if chunk.chunk_id in existing_ids:
+                    continue
+                if not self._visible_for_trace(chunk, trace):
                     continue
                 enriched_meta = dict(chunk.metadata)
                 enriched_meta.update({
@@ -96,6 +100,7 @@ class MindGraphRetrievalPipeline:
                 )
                 trace.final_selected_chunks.append(candidate)
                 existing_ids.add(chunk.chunk_id)
+                added_targets.add(target_id)
                 added += 1
                 if added >= self.max_graph_chunks:
                     break
@@ -105,7 +110,7 @@ class MindGraphRetrievalPipeline:
         # 构建 graph_links（供前端关系可视化与引用溯源）
         graph_links = []
         for target_id, rel in rel_by_target.items():
-            if target_id in hit_notes:
+            if target_id in hit_notes or target_id not in added_targets:
                 continue
             graph_links.append({
                 "source_note_id": rel.get("source_note_id"),
@@ -125,3 +130,22 @@ class MindGraphRetrievalPipeline:
             "final": len(trace.final_selected_chunks),
             "graph_expanded": added,
         }
+
+    @staticmethod
+    def _visible_for_trace(chunk, trace: RetrievalTrace) -> bool:
+        filters = trace.applied_filters
+        metadata = chunk.metadata
+        status = metadata.get("document_status") or metadata.get("policy_status")
+        if not filters.get("include_historical", False) and status and status != "active":
+            return False
+        categories = filters.get("knowledge_categories") or []
+        if categories and metadata.get("knowledge_category") not in categories:
+            return False
+        target_date = date.fromisoformat(filters["query_date"]) if filters.get("query_date") else date.today()
+        effective = metadata.get("effective_date") or metadata.get("effective_from")
+        expiration = metadata.get("expiration_date") or metadata.get("effective_to")
+        if effective and date.fromisoformat(effective) > target_date:
+            return False
+        if expiration and date.fromisoformat(expiration) < target_date and not filters.get("include_historical", False):
+            return False
+        return True

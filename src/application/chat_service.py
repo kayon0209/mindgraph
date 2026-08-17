@@ -19,7 +19,7 @@ from infrastructure.database import ProductDatabase, dumps
 OUT_OF_SCOPE = ("工资", "薪资", "年终奖", "股票", "请假", "年假", "辞职", "离职", "wifi", "食堂", "系统提示词", "ignore previous", "system prompt")
 REFUSAL = "抱歉，我只能回答公司报销相关问题。"
 INSUFFICIENT = "未在制度文件中找到足够依据。建议联系 HR/财务确认。"
-logger = logging.getLogger("expense_rag.chat")
+logger = logging.getLogger("mindgraph.chat")
 
 DEFAULT_SYSTEM_PROMPT = "你是企业报销政策助手。只能依据给定制度证据回答；不得编造。先给结论，再给简要依据，并使用 [citation-N] 标注引用。"
 
@@ -87,6 +87,8 @@ class ChatService:
                 section_path=candidate.chunk.section_path, excerpt=candidate.chunk.text[:500],
                 final_rank=candidate.final_rank or 0, retrieval_score=score,
                 reranker_score=candidate.reranker_score, document_version=metadata.get("document_version"),
+                owner=metadata.get("owner"), effective_from=metadata.get("effective_from"),
+                effective_to=metadata.get("effective_to"), policy_status=metadata.get("policy_status"),
                 authority_level=metadata.get("authority_level"), knowledge_category=metadata.get("knowledge_category"),
                 authority_adjustment=candidate.authority_adjustment,
             ))

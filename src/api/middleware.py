@@ -11,7 +11,7 @@ from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
 
-logger = logging.getLogger("expense_rag.api.middleware")
+logger = logging.getLogger("mindgraph.api.middleware")
 
 
 # ── 安全 Headers 中间件 ──

@@ -8,9 +8,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger("expense_rag.database")
+logger = logging.getLogger("mindgraph.database")
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 class ProductDatabase:
@@ -164,6 +164,12 @@ class ProductDatabase:
                     chunk_count INTEGER NOT NULL DEFAULT 0,
                     index_status TEXT NOT NULL DEFAULT 'pending',
                     index_version TEXT,
+                    owner TEXT,
+                    document_version TEXT,
+                    effective_from TEXT,
+                    effective_to TEXT,
+                    policy_status TEXT NOT NULL DEFAULT 'unspecified',
+                    metadata_issues_json TEXT NOT NULL DEFAULT '[]',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     last_indexed_at TEXT
@@ -196,6 +202,14 @@ class ProductDatabase:
             })
             self._ensure_columns(connection, "evaluation_runs", {
                 "index_version": "TEXT", "prompt_version": "TEXT", "provider": "TEXT",
+            })
+            self._ensure_columns(connection, "notes", {
+                "owner": "TEXT",
+                "document_version": "TEXT",
+                "effective_from": "TEXT",
+                "effective_to": "TEXT",
+                "policy_status": "TEXT NOT NULL DEFAULT 'unspecified'",
+                "metadata_issues_json": "TEXT NOT NULL DEFAULT '[]'",
             })
             row = connection.execute("SELECT version FROM schema_meta LIMIT 1").fetchone()
             if row is None:

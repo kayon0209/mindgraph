@@ -29,8 +29,15 @@ class ProviderTests(unittest.TestCase):
     def test_openai_stream_and_malformed_response(self):
         provider = OpenAICompatibleProvider("deepseek", "https://example.test", "key", "model")
         response = Mock(status_code=200); response.iter_lines.return_value = ['data: {"choices":[{"delta":{"content":"a"}}]}', 'data: {"usage":{"total_tokens":2}}', "data: [DONE]"]
-        with patch.object(provider, "_post", return_value=FakeStreamContext(response)): items = list(provider.stream([{"role": "user", "content": "x"}]))
+        client = Mock()
+        with patch.object(
+            provider,
+            "_post",
+            return_value=(client, FakeStreamContext(response)),
+        ):
+            items = list(provider.stream([{"role": "user", "content": "x"}]))
         self.assertEqual(items[0]["delta"], "a"); self.assertEqual(items[1]["usage"]["total_tokens"], 2)
+        client.close.assert_called_once_with()
         bad = Mock(status_code=200); bad.json.return_value = {}
         with patch("httpx.post", return_value=bad):
             with self.assertRaisesRegex(NormalizedProviderError, "Malformed"): provider.complete([])

@@ -1,12 +1,12 @@
 [project]
-name = "expense-rag-qa"
+name = "mindgraph"
 version = "3.1.0"
-description = "企业报销知识问答系统 — 基于 RAG 的自然语言报销规则查询"
+description = "本地优先的企业制度与决策依据知识服务"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-authors = [{ name = "Expense RAG Team" }]
-keywords = ["rag", "qa", "expense", "llm", "langchain-alternative"]
+authors = [{ name = "MindGraph Team" }]
+keywords = ["rag", "graphrag", "enterprise-search", "knowledge-governance", "llm"]
 
 dependencies = [
     "fastapi>=0.115.0",
@@ -98,23 +98,6 @@ exclude = [
     "tests/",
     "data/",
     "evaluation/results/",
-]
-
-# ── Pytest ──
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["src"]
-python_files = ["test_*.py"]
-addopts = [
-    "-v",
-    "--strict-markers",
-    "--tb=short",
-    "-W", "default::DeprecationWarning",
-]
-markers = [
-    "unit: Unit tests (fast, no external deps)",
-    "integration: Integration tests (API/DB/external)",
-    "slow: Slow tests (skip with -m 'not slow')",
 ]
 
 # ── Coverage ──

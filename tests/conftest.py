@@ -15,7 +15,7 @@ def clean_env():
     """每个测试运行前清理环境变量影响。"""
     old_environ = dict(os.environ)
     # 确保测试时不会读取真实 .env
-    os.environ["ENVIRONMENT"] = "test"
+    os.environ["ENVIRONMENT"] = "development"
     os.environ["AUTH_MODE"] = "off"
     os.environ["CHAT_PROVIDER"] = "deepseek"
     os.environ["OPENAI_COMPAT_API_KEY"] = "test-key"

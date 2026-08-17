@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from api.dependencies import get_container
 from api.schemas.chat import AnswerResult, ChatRequest
 
-logger = logging.getLogger("expense_rag.api.chat")
+logger = logging.getLogger("mindgraph.api.chat")
 _executor = ThreadPoolExecutor(max_workers=4)
 
 

@@ -1,7 +1,7 @@
-"""离线全链路验证（真实 Vault 副本 + Fake 嵌入/Fake LLM）。
+"""离线全链路验证（Markdown Vault 副本 + Fake 嵌入/Fake LLM）。
 
-目的：在不依赖 HuggingFace 网络与真实 Zhipu 的前提下，用你机器上真实的
-Obsidian Vault（D:\\ObsidianVault 的副本）驱动 M1-D1~D4 的真实生产类：
+目的：在不依赖 HuggingFace 网络与真实 LLM 的前提下，默认用仓库内可公开的
+``demo-vault`` 驱动 M1-D1~D4 的真实生产类：
   D2 VaultSyncService.scan_vault   -> 注入 mindgraph_id + 写 notes 表
   D3 MindGraphIndexService.build   -> 增量索引（Fake 嵌入，其余逻辑全真）
   D4 MindGraphRetrievalPipeline     -> hybrid + 一跳图谱扩展（图谱开关消融）
@@ -11,6 +11,8 @@ Obsidian Vault（D:\\ObsidianVault 的副本）驱动 M1-D1~D4 的真实生产�
 """
 from __future__ import annotations
 
+import argparse
+import atexit
 import hashlib
 import json
 import os
@@ -22,6 +24,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_VAULT = ROOT / "demo-vault"
 sys.path.insert(0, str(ROOT / "src"))
 
 import numpy as np  # noqa: E402
@@ -83,19 +86,33 @@ class FakeProviderRegistry:
         return self._p
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="离线验证 MindGraph 同步、索引、关系扩展与问答链路")
+    parser.add_argument("--vault", type=Path, default=DEFAULT_VAULT, help="Markdown Vault 路径")
+    parser.add_argument("--keep-workdir", action="store_true", help="保留临时工作区用于排查")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    source = args.vault.resolve()
+    if not source.is_dir():
+        print(f"[FAIL] Vault 不存在或不是目录：{source}")
+        return 2
+
     t0 = time.perf_counter()
     work = Path(tempfile.mkdtemp(prefix="mg_realvault_"))
+    if not args.keep_workdir:
+        atexit.register(shutil.rmtree, work, ignore_errors=True)
     vault_copy = work / "vault"
     db_path = work / "demo.sqlite3"
     index_root = work / "indexes"
     print(f"[setup] 临时工作区: {work}")
 
-    # 复制真实 Vault（排除虚拟环境/缓存，绝不碰原库）
-    SRC = Path(r"D:\ObsidianVault")
+    # 复制 Vault（排除虚拟环境/缓存，绝不碰原库）
     IGNORE = {".venv", "node_modules", "__pycache__", ".git", ".obsidian", ".trash"}
-    print(f"[setup] 复制真实 Vault {SRC} -> {vault_copy}（忽略 {sorted(IGNORE)}）")
-    shutil.copytree(SRC, vault_copy, ignore=shutil.ignore_patterns(*IGNORE), dirs_exist_ok=True)
+    print(f"[setup] 复制 Vault {source} -> {vault_copy}（忽略 {sorted(IGNORE)}）")
+    shutil.copytree(source, vault_copy, ignore=shutil.ignore_patterns(*IGNORE), dirs_exist_ok=True)
 
     # 导入生产类
     from infrastructure.database import ProductDatabase  # noqa: E402
@@ -133,7 +150,7 @@ def main() -> int:
 
     chat = ChatService(
         db, pipeline_factory, FakeProviderRegistry(), privacy_log_questions=False,
-        system_prompt="你是个人知识助手 MindGraph。只能依据给定证据回答；不得编造。先给结论，再给简要依据，并使用 [citation-N] 标注引用来源。",
+        system_prompt="你是企业制度与决策依据助手 MindGraph。只能依据给定证据回答；不得编造。先给结论，再给简要依据，并使用 [citation-N] 标注引用来源。",
     )
 
     notes = db.fetch_all("SELECT note_id, title FROM notes")
@@ -201,6 +218,7 @@ def main() -> int:
     print("\n================ 结果 ================")
     print(f"探针笔记 A: 《{by_title[chosen_a]}》  (note_id={chosen_a[:12]}…)")
     print(f"关联笔记 B: 《{by_title[chosen_b]}》  (note_id={chosen_b[:12]}…)")
+    print(f"\n[图谱 开启] 回答: {on_res.answer}")
     print(f"\n[图谱 开启] 引用 {len(on_names)} 篇: {on_names}")
     print(f"[图谱 开启] graph_links: {on_links}")
     print(f"[图谱 关闭] 引用 {len(off_names)} 篇: {off_names}")
@@ -220,15 +238,17 @@ def main() -> int:
         print("[ASSERT FAIL] 消融：关闭图谱仍含 B"); ok = False
 
     if ok:
-        print(f"\n✅ 全链路通过（{time.perf_counter()-t0:.1f}s）：真实 Vault {len(scan.scanned)} 篇笔记 -> "
+        print(f"\n[PASS] 全链路通过（{time.perf_counter()-t0:.1f}s）：Vault {len(scan.scanned)} 篇笔记 -> "
               f"扫描注入ID -> 增量索引 {manifest['chunk_count']} chunks -> "
               f"图谱开启拉回关联笔记 B，关闭则回归纯 hybrid。")
     else:
-        print("\n❌ 断言未通过")
+        print("\n[FAIL] 断言未通过")
 
-    # 清理临时工作区
-    shutil.rmtree(work, ignore_errors=True)
-    print(f"[cleanup] 已删除临时工作区 {work}")
+    if args.keep_workdir:
+        print(f"[cleanup] 已按参数保留临时工作区 {work}")
+    else:
+        shutil.rmtree(work, ignore_errors=True)
+        print(f"[cleanup] 已删除临时工作区 {work}")
     return 0 if ok else 1
 
 

@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 from api.dependencies import get_container
 
-logger = logging.getLogger("expense_rag.api.mindgraph_readonly")
+logger = logging.getLogger("mindgraph.api.readonly")
 router = APIRouter(prefix="/mindgraph", tags=["mindgraph-readonly"])
 
 
@@ -41,6 +41,43 @@ def _excerpt_from_fm(frontmatter_json: str | None) -> str:
     return (fm.get("summary") or fm.get("description") or fm.get("excerpt") or "").strip()
 
 
+def _governance_from_row(row: dict) -> dict:
+    try:
+        issues = json.loads(row.get("metadata_issues_json") or "[]")
+    except (TypeError, json.JSONDecodeError):
+        issues = ["invalid_metadata_issues"]
+    if not isinstance(issues, list):
+        issues = ["invalid_metadata_issues"]
+    derived_issues = []
+    if not row.get("owner"):
+        derived_issues.append("missing_owner")
+    if not row.get("document_version"):
+        derived_issues.append("missing_version")
+    if not row.get("effective_from"):
+        derived_issues.append("missing_effective_from")
+    if not row.get("policy_status") or row.get("policy_status") == "unspecified":
+        derived_issues.append("missing_policy_status")
+    for issue in derived_issues:
+        if issue not in issues:
+            issues.append(issue)
+    complete = bool(
+        row.get("owner")
+        and row.get("document_version")
+        and row.get("effective_from")
+        and row.get("policy_status") != "unspecified"
+        and not issues
+    )
+    return {
+        "owner": row.get("owner"),
+        "version": row.get("document_version"),
+        "effective_from": row.get("effective_from"),
+        "effective_to": row.get("effective_to"),
+        "policy_status": row.get("policy_status") or "unspecified",
+        "metadata_complete": complete,
+        "issues": issues,
+    }
+
+
 def _note_item(row: dict) -> dict:
     return {
         "id": row["note_id"],
@@ -52,6 +89,7 @@ def _note_item(row: dict) -> dict:
         "chunk_count": row["chunk_count"],
         "updated": (row["updated_at"] or "")[:10],
         "excerpt": _excerpt_from_fm(row.get("frontmatter_json")),
+        "governance": _governance_from_row(row),
     }
 
 
@@ -60,6 +98,8 @@ def list_notes(
     limit: int = Query(200, ge=1, le=1000),
     offset: int = Query(0, ge=0),
     status: str | None = None,
+    policy_status: str | None = None,
+    governance: Literal["complete", "incomplete"] | None = None,
     q: str | None = None,
 ):
     """知识库笔记列表（分页 / 按 index_status 过滤 / 关键词搜索）。"""
@@ -68,13 +108,26 @@ def list_notes(
     if status:
         where.append("index_status = ?")
         params.append(status)
+    if policy_status:
+        where.append("policy_status = ?")
+        params.append(policy_status)
+    governance_complete_sql = (
+        "COALESCE(TRIM(owner), '') <> '' AND COALESCE(TRIM(document_version), '') <> '' "
+        "AND COALESCE(TRIM(effective_from), '') <> '' AND policy_status <> 'unspecified' "
+        "AND metadata_issues_json = '[]'"
+    )
+    if governance == "complete":
+        where.append(f"({governance_complete_sql})")
+    elif governance == "incomplete":
+        where.append(f"NOT ({governance_complete_sql})")
     if q:
         where.append("(title LIKE ? OR vault_path LIKE ?)")
         params += [f"%{q}%", f"%{q}%"]
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
     rows = db.fetch_all(
         f"""SELECT note_id, vault_path, title, ai_access_level, chunk_count,
-                   index_status, updated_at, frontmatter_json
+                   index_status, updated_at, frontmatter_json, owner, document_version,
+                   effective_from, effective_to, policy_status, metadata_issues_json
             FROM notes {where_sql}
             ORDER BY updated_at DESC LIMIT ? OFFSET ?""",
         (*params, limit, offset),
@@ -90,7 +143,9 @@ def get_note(note_id: str):
     db = get_container().database
     row = db.fetch_one(
         """SELECT note_id, vault_path, title, ai_access_level, chunk_count,
-                  index_status, updated_at, frontmatter_json, created_at
+                  index_status, updated_at, frontmatter_json, created_at, owner,
+                  document_version, effective_from, effective_to, policy_status,
+                  metadata_issues_json
            FROM notes WHERE note_id = ?""",
         (note_id,),
     )
@@ -116,6 +171,7 @@ def get_note(note_id: str):
         "updated": (row["updated_at"] or "")[:10],
         "created": (row["created_at"] or "")[:10],
         "excerpt": _excerpt_from_fm(row["frontmatter_json"]),
+        "governance": _governance_from_row(row),
         "outgoing_relations": [
             {
                 "target_id": o["target_note_id"],

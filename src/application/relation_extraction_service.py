@@ -27,7 +27,7 @@ import numpy as np
 
 from retrieval.embeddings import BGEEmbeddingProvider
 
-logger = logging.getLogger("expense_rag.relation_extraction")
+logger = logging.getLogger("mindgraph.relation_extraction")
 
 MODEL_VERSION = "auto-v1"
 PROMPT_VERSION = "auto-v1"

@@ -1,117 +1,176 @@
-# MindGraph · Graph RAG 检索增强问答系统
+# MindGraph · 企业制度与决策依据知识服务
 
-> 混合检索（Dense + Sparse + RRF）+ 一跳知识图谱扩展 + 本地优先嵌入的可溯源问答。
-> 由「企业报销制度问答 RAG」重构演进而来，检索 / 评测工程能力被复用为底层 hybrid retriever。
+> 本地优先的 Hybrid RAG：Dense + Sparse + RRF、一跳受控关系扩展、SSE 流式回答与 citation 溯源。
 
-[![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://python.org)
+[![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688.svg)](https://fastapi.tiangolo.com)
 [![FAISS](https://img.shields.io/badge/FAISS-Vector_Index-blue)](https://github.com/facebookresearch/faiss)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
 
 ![MindGraph Hero Banner](assets/hero-banner.jpg)
 
-## 为什么是 MindGraph，而不是「又一个 RAG Demo」
+MindGraph 面向制度密集、版本频繁、错误代价高的企业知识场景。首个垂直方向是报销、财务与制度合规问答：回答不仅要“像是正确”，还必须能够回到原文证据，并逐步支持版本、生效期、例外和冲突治理。
 
-大多数 RAG Demo 卡在两件事上：**检索策略拍脑袋**（默认上重排，却没测过值不值），以及**答案不可溯源**。MindGraph 把检索做成可度量、可消融的工程模块，并让每个答案都带 `[citation]` 溯源；图谱一跳扩展在检索命中后补充证据，而不是凭空生成。
+本项目由 Expense RAG QA 演进而来。历史报销领域代码与评测经验被保留，但当前产品入口和新增能力统一使用 MindGraph 命名。
 
-## 核心能力
+## 当前能力
 
-- **混合检索（Hybrid）**：FAISS(Dense / BGE) + BM25(Sparse) + RRF 融合，可选 Cross-Encoder 重排
-- **一跳图谱扩展**：检索命中笔记后沿知识图谱扩展一跳关系，补充证据上下文
-- **可溯源问答**：答案带 `[citation]`，拒绝无据编造
-- **本地优先**：BGE 本地嵌入，数据留在你机器上，无强制云依赖
-- **双前端**：① Obsidian 插件（右侧栏问答 + 插入笔记）；② React + Vite Web Demo
-- **可复现评测**：4 策略消融脚本，结果写入 `evaluation_runs`
+- **混合检索**：FAISS/BGE Dense + BM25 Sparse + RRF 融合
+- **按需重排**：Cross-Encoder 不默认开启，避免不必要的延迟成本
+- **受控关系扩展**：只有人工确认的 confirmed 关系进入一跳补充检索
+- **可溯源回答**：SSE 流式生成，回答携带 citation 与检索 trace
+- **本地优先**：SQLite(WAL) + 版本化 FAISS 索引 + 本地 BGE
+- **人工审核闭环**：候选关系 proposed → confirmed/rejected
+- **可复现检索评测**：BM25 / Hybrid / Hybrid + Graph 消融脚本
+- **同仓 Web 工作台**：可信问答、制度台账、评测对比和关系审核
 
-## 系统架构
+当前关系候选默认主要来自笔记级语义相似度。因此准确描述是“带人工确认关系扩展的 Hybrid RAG”，不是已经完成实体消歧、多跳推理和社区摘要的完整知识图谱系统。
 
-![MindGraph 系统架构](./assets/architecture.svg)
+## 架构
 
-```
-Obsidian Vault
-   │  扫描 + 注入稳定 Frontmatter ID（mindgraph_id）
-   ▼
-本地 FastAPI 服务 (src/, 端口 8000)
-   ├─ VaultSyncService          扫描 / 剪枝 / 稳定 ID 注入
-   ├─ MindGraphIndexService     FAISS(BGE) + BM25 + RRF 增量索引（CURRENT 原子切换）
-   ├─ MindGraphRetrievalPipeline hybrid + 一跳图谱扩展
-   ├─ GraphStore / RelationStore  notes + note_relations
-   └─ 只读 API /mindgraph/*  +  问答 SSE /mindgraph/chat
-        │
-        ├─ 前端 ①：Obsidian 插件（右侧栏问答 + 插入笔记）
-        └─ 前端 ②：Web Demo（React + Vite，4 页）
-```
-
-| 组件 | 技术 |
-|------|------|
-| 嵌入 | BAAI/bge-small-zh-v1.5（本地缓存，离线推理） |
-| 检索 | FAISS(Dense) + BM25(Sparse) + RRF 融合 + 可选 Cross-Encoder 重排 |
-| 图谱 | SQLite `note_relations`（proposed / confirmed / conflict 检测） |
-| 生成 | OpenAI-compatible（DeepSeek / 智谱 GLM / Anthropic，可降级） |
-| API | FastAPI + SSE |
-| 存储 | SQLite(WAL) + 版本化向量索引 |
-| 前端 | Obsidian 插件 + React(Vite) Web Demo |
-
-## 评测（真实、可复现）
-
-在 **34 题报销制度问答集**上做 4 策略消融，核心结论：
-
-| 检索策略 | R@5 | 相对延迟 | 备注 |
-|----------|-----|----------|------|
-| Sparse (BM25) | 基线 | 1× | — |
-| Dense (FAISS/BGE) | 接近基线 | ~数× | 语义补全 |
-| **Hybrid (RRF 融合)** | **0.587（最高）** | ~13ms | **默认策略** |
-| Hybrid + Rerank | 反降 | **~99×** | 延迟代价远大于收益 → 设为按需 |
-
-> 据此定义产品默认路由：**混合检索默认开启，重排按需启用**——用 ~13ms 拿到最高召回，避免 99× 延迟换来的召回回退。
-> 完整数据与延迟成本分析见 [`docs/MindGraph-cost-efficiency.md`](docs/MindGraph-cost-efficiency.md)。
-
-```bash
-python scripts/run_ablation.py        # 写真实 4 策略消融到 evaluation_runs
+```text
+Markdown / Obsidian Vault
+    │ 扫描、稳定 ID、内容哈希
+    ▼
+FastAPI（src/api）
+    ├─ application       应用服务与用例编排
+    ├─ domain            领域模型与错误
+    ├─ infrastructure    SQLite、Provider、解析器与配置
+    └─ retrieval         Dense + Sparse + RRF + 受控关系扩展
+          │
+          ├─ SQLite(WAL)：notes / note_relations / evaluation_runs
+          └─ 版本化索引：FAISS / chunks / manifest / CURRENT
 ```
 
-> 小样本 Golden Set 来自开发过程，用于工程可复现验证，不代表生产效果。
+当前生产 API 入口为 `src/api/main.py`。`src/retrieval/` 是 MindGraph 活跃核心，不是历史遗留目录。
 
 ## 快速开始
 
-### 1. 后端（FastAPI）
+### 1. 创建环境
 
-```bash
-cd expense-rag-qa
-python -m venv .venv && source .venv/Scripts/activate        # Windows
+PowerShell：
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-cp .env.example .env            # 已含 HF 镜像与 BGE 本地化配置
-# 首次构建索引（需先缓存 BGE，见 data/bge-small-zh-v1.5）
-python scripts/sync_vault.py --vault "D:\ObsidianVault"
-uvicorn api.main:app --app-dir src --host 127.0.0.1 --port 8000
+Copy-Item .env.example .env
 ```
 
-API 文档：http://localhost:8000/docs
-
-### 2. Web Demo（React + Vite）
+Bash：
 
 ```bash
-cd expense-rag-frontend        # 独立前端目录（与后端仓库同级工作区）
-npm install && npm run dev      # http://127.0.0.1:5173
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
 ```
 
-### 3. Obsidian 插件
+### 2. 先跑公开离线演示（无需密钥、无需私人 Vault）
 
-见 [obsidian-plugin/README.md](obsidian-plugin/README.md)：将 `obsidian-plugin/` 作为文件夹复制到
-Obsidian 的 `.obsidian/plugins/`，在社区插件设置中启用 **MindGraph**。
+```powershell
+python scripts/validate_mindgraph_offline.py
+```
 
-## 演进说明
+该命令用 `demo-vault/` 的合成企业制度，在临时目录中完成 Vault 同步、索引构建、Hybrid 检索、confirmed 关系一跳扩展及开关消融，运行结束自动清理。
 
-本项目由「企业报销制度问答 RAG（Expense RAG QA）」重构演进而来。原报销 RAG 的检索 / 评测工程能力被复用为 MindGraph 的底层 hybrid retriever。历史 PRD 见 [docs/PRD-v2.md](docs/PRD-v2.md)（报销 RAG v3.1，仅作背景参考）。
+如需生成供只读 API/数据检查使用的独立演示数据库：
 
-> **关于本地 Demo 数据**：开发期使用了一份真实 Obsidian Vault 做端到端验证（笔记索引、关系抽取、图谱可视化均跑通），但该 Vault 属个人数据，**不随仓库分发**——clone 后需自备 Vault 才能复现图谱与插件链路。
+```powershell
+python scripts/sync_offline_demo.py
+```
+
+默认输出为 `data/demo/product.sqlite3`，不会覆盖产品数据库。
+
+### 3. 同步自己的 Markdown/Vault 并建立真实索引
+
+建议为企业制度登记以下 Frontmatter；缺失字段不会阻断同步，但会在 Web 台账中标记为“待治理”：
+
+```yaml
+---
+owner: 财务运营部
+version: "2.0"
+status: active
+effective_from: 2026-07-01
+effective_to: 2027-06-30  # 长期有效可省略
+---
+```
+
+`status` 当前接受 `draft`、`active`、`expired`、`superseded`、`archived`。同步服务会把这些字段规范化写入治理列，元数据变更会把文档重新标记为待索引；旧数据库在启动初始化时原位升级，不重建 `notes` 表。
+
+```powershell
+python scripts/sync_vault.py --vault "D:\path\to\vault"
+```
+
+### 4. 启动 API
+
+```powershell
+python -m uvicorn api.main:app --app-dir src --host 127.0.0.1 --port 8000
+```
+
+- API 文档：<http://127.0.0.1:8000/api/docs>
+- 健康检查：<http://127.0.0.1:8000/api/v1/health>
+
+### 5. 启动 React Web
+
+```powershell
+cd web
+corepack enable
+corepack prepare pnpm@11.19.0 --activate
+pnpm install
+pnpm dev
+```
+
+打开 <http://127.0.0.1:5173>。开发服务器会把 `/api` 代理到本机 `8000` 端口。
+
+也可以从仓库根目录构建完整容器：
+
+```powershell
+docker compose up --build
+```
+
+Web：<http://127.0.0.1:3000>；API：<http://127.0.0.1:8000>。
+
+### 6. Obsidian 插件
+
+仓库内客户端见 [obsidian-plugin/README.md](obsidian-plugin/README.md)。插件消费 `/api/v1/mindgraph/chat/stream`，支持流式问答和插入当前笔记。
+
+## 当前开箱边界
+
+仓库已附带公开 `demo-vault/`，无需模型密钥即可验证同步、索引、Hybrid 检索和一跳关系扩展。离线演示使用确定性的 Fake Embedding/Fake LLM，只证明工程链路，不代表真实模型质量。
+
+React Web 已并入 `web/`，并由同一 CI 和 Docker Compose 构建。真实回答仍需配置模型 Provider，真实语义索引需准备本地 BGE 模型或允许首次下载；离线脚本中的 Fake 模型不会被 Web 冒充为生产能力。
+
+制度台账会展示 owner、version、生效区间、制度状态和治理缺口；这些字段也会进入检索 chunk 与 citation。基础 Hybrid 检索和 confirmed 关系扩展共用状态、生效期与分类过滤，避免历史制度通过图扩展重新进入当前答案。
+
+## 评测
+
+```powershell
+python scripts/run_ablation.py
+```
+
+默认使用 `evaluation/datasets/mindgraph_golden.jsonl`：12 条人工编写、与运行关系库独立的企业制度样本，覆盖版本替代、审批阈值、例外、跨制度组合、无答案和歧义场景。当前规模只够做确定性回归，不能作为生产效果或多跳 GraphRAG 增益证明。
 
 ## 文档
 
-- [MindGraph 架构与落地计划](docs/MindGraph-ARCH.md)（当前权威）
-- [报销 RAG PRD v2（历史背景）](docs/PRD-v2.md)
+- [产品边界与升级路线](docs/PRODUCT_STRATEGY.md)
+- [当前架构与落地说明](docs/MindGraph-ARCH.md)
 - [检索成本效率分析](docs/MindGraph-cost-efficiency.md)
+- [历史报销 RAG PRD](docs/PRD-v2.md)
+
+## 开发验证
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest
+.\.venv\Scripts\ruff.exe check src scripts tests --select F821,F822,F823,E902
+cd web
+pnpm typecheck
+pnpm test
+pnpm build
+```
+
+当前测试覆盖率门槛按已测基线暂设为 55%，用于保证 CI 不虚假标绿或永久红灯；全量 Ruff/格式遗留与覆盖率提升属于 Phase 1 的显式偿债项，目标是将活跃核心覆盖率提升到至少 60%。
 
 ## License
 
-[MIT](LICENSE) —— 详见 [LICENSE](LICENSE) 文件。
+[MIT](LICENSE)

@@ -107,7 +107,7 @@ class DocumentLifecycleService:
                 chunk_data = json.loads(chunks_path.read_text(encoding="utf-8"))
             except (FileNotFoundError, json.JSONDecodeError) as exc:
                 import logging
-                logging.getLogger("expense_rag.documents").warning(
+                logging.getLogger("mindgraph.documents").warning(
                     "chunk_load_failed", extra={"document_id": row["document_id"], "error": str(exc)}
                 )
                 continue

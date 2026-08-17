@@ -24,7 +24,7 @@ from infrastructure.database import ProductDatabase
 from infrastructure.retrieval_factory import INDEX_ROOT, create_retrieval_pipeline, create_mindgraph_retrieval_pipeline
 from infrastructure.settings import get_settings
 
-logger = logging.getLogger("expense_rag.dependencies")
+logger = logging.getLogger("mindgraph.dependencies")
 _settings = get_settings()
 
 

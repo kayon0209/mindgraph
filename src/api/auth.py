@@ -15,7 +15,7 @@ from fastapi import Depends, Header, HTTPException, Request
 
 from domain.errors import AuthenticationError, AuthorizationError
 
-logger = logging.getLogger("expense_rag.api.auth")
+logger = logging.getLogger("mindgraph.api.auth")
 
 # 环境变量
 AUTH_MODE: str = os.getenv("AUTH_MODE", "demo").lower()

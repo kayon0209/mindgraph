@@ -1,5 +1,5 @@
 """
-Typed HTTP client for the expense-rag-qa REST API.
+Typed HTTP client for the MindGraph REST API.
 
 Improvements over the original:
 - Shared httpx.AsyncClient with connection pooling (reuse TLS sessions)

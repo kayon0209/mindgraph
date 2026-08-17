@@ -37,6 +37,10 @@ class Citation(BaseModel):
     retrieval_score: float | None = None
     reranker_score: float | None = None
     document_version: str | None = None
+    owner: str | None = None
+    effective_from: str | None = None
+    effective_to: str | None = None
+    policy_status: str | None = None
     authority_level: str | None = None
     knowledge_category: str | None = None
     authority_adjustment: float = 0.0

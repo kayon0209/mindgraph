@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 # 必须在导入 app 前设置环境变量
 import os
 
-os.environ["ENVIRONMENT"] = "test"
+os.environ["ENVIRONMENT"] = "development"
 os.environ["AUTH_MODE"] = "off"
 os.environ["CHAT_PROVIDER"] = "deepseek"
 os.environ["OPENAI_COMPAT_API_KEY"] = "test-key"
@@ -38,7 +38,14 @@ class TestHealthEndpoints:
         response = client.get("/")
         assert response.status_code == 200
         data = response.json()
-        assert data["service"] == "Expense RAG QA"
+        assert data["service"] == "MindGraph"
+
+    def test_openapi_exposes_mindgraph_product_contract(self, client):
+        response = client.get("/api/openapi.json")
+        assert response.status_code == 200
+        info = response.json()["info"]
+        assert info["title"] == "MindGraph API"
+        assert "企业制度与决策依据" in info["description"]
 
     def test_request_id_header(self, client):
         response = client.get("/api/v1/health")
