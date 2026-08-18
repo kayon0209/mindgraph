@@ -21,7 +21,7 @@ MindGraph 面向制度密集、版本频繁、错误代价高的企业知识场�
 - **可溯源回答**：SSE 流式生成，回答携带 citation 与检索 trace
 - **本地优先**：SQLite(WAL) + 版本化 FAISS 索引 + 本地 BGE
 - **人工审核闭环**：候选关系 proposed → confirmed/rejected
-- **可复现检索评测**：BM25 / Hybrid / Hybrid + Graph 消融脚本
+- **可复现质量评测**：检索消融 + 确定性答案级可信评分，结果进入同一评测账本
 - **同仓 Web 工作台**：可信问答、制度台账、评测对比和关系审核
 
 当前关系候选默认主要来自笔记级语义相似度。因此准确描述是“带人工确认关系扩展的 Hybrid RAG”，不是已经完成实体消歧、多跳推理和社区摘要的完整知识图谱系统。
@@ -146,10 +146,21 @@ React Web 已并入 `web/`，并由同一 CI 和 Docker Compose 构建。真实�
 ## 评测
 
 ```powershell
+# 检索层：BM25 / Hybrid / Hybrid + Graph
 python scripts/run_ablation.py
+
+# 回答层：直接运行 12 条 Golden case，保存预测并写入 evaluation_runs
+.\.venv\Scripts\python.exe scripts\run_answer_evaluation.py --live --strategy hybrid
+
+# 对已有预测文件复评分，不写 evaluation_runs
+.\.venv\Scripts\python.exe scripts\run_answer_evaluation.py `
+  --predictions evaluation\results\answer_predictions_YYYYMMDDTHHMMSSZ.jsonl `
+  --dry-run
 ```
 
-默认使用 `evaluation/datasets/mindgraph_golden.jsonl`：12 条人工编写、与运行关系库独立的企业制度样本，覆盖版本替代、审批阈值、例外、跨制度组合、无答案和歧义场景。当前规模只够做确定性回归，不能作为生产效果或多跳 GraphRAG 增益证明。
+默认使用 `evaluation/datasets/mindgraph_golden.jsonl`：12 条人工编写、与运行关系库独立的企业制度样本，覆盖版本替代、审批阈值、例外、跨制度组合、无答案和歧义场景。答案评测会量化 citation F1、拒答正确性、版本有效性、必需事实覆盖与禁用事实规避；版本比较样本只允许 Golden 明确标注的历史来源。`--live --dry-run` 只禁止写入 `evaluation_runs`，问答服务仍会按现有隐私配置记录 `query_logs`。
+
+这些指标是可重复的字符串和元数据回归，不等同于语义正确性或人工判断。当前 12 条规模只够做确定性回归，不能作为生产效果或多跳 GraphRAG 增益证明。
 
 ## 文档
 

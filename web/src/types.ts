@@ -31,6 +31,7 @@ export type Citation = {
   effective_to?: string | null;
   policy_status?: string | null;
   authority_level?: string | null;
+  vault_path?: string | null;
 };
 
 export type GraphLink = {

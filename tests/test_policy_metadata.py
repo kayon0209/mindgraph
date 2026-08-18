@@ -266,6 +266,7 @@ def test_citation_carries_policy_lifecycle_metadata() -> None:
         section_path="报销时限",
         metadata={
             "title": "费用制度",
+            "vault_path": "policies/expense-v3.md",
             "owner": "财务部",
             "document_version": "3.0",
             "effective_from": "2026-08-01",
@@ -282,6 +283,7 @@ def test_citation_carries_policy_lifecycle_metadata() -> None:
 
     citation = ChatService._citations(trace)[0]
 
+    assert citation.model_dump()["vault_path"] == "policies/expense-v3.md"
     assert citation.model_dump()["owner"] == "财务部"
     assert citation.model_dump()["effective_from"] == "2026-08-01"
     assert citation.model_dump()["effective_to"] is None

@@ -19,6 +19,10 @@ def test_enterprise_golden_is_public_independent_and_resolvable() -> None:
     assert {case["expected_behavior"] for case in cases} >= {"answer", "abstain"}
     assert {case["category"] for case in cases} >= {"version", "cross_policy", "no_answer"}
     assert all(case["label_source"] == "human-authored-from-demo-vault" for case in cases)
+    assert all(case["evaluation_date"] == "2026-08-18" for case in cases)
+    assert all(set(case["historical_vault_paths"]) <= set(case["gold_vault_paths"]) for case in cases)
+    historical_cases = {case["case_id"] for case in cases if case["historical_vault_paths"]}
+    assert historical_cases == {"MG-ENT-002", "MG-ENT-010"}
 
     serialized = DATASET.read_text(encoding="utf-8")
     assert "D:/" not in serialized

@@ -4,7 +4,7 @@ import { RefreshCw, Scale, TimerReset } from "lucide-react";
 import { BarComparison } from "../components/BarComparison";
 import { EmptyState, ErrorState, LoadingState, MetricCard, PageHeader, StatusPill } from "../components/Primitives";
 import { api } from "../lib/api";
-import { latestRunPerStrategy, metricValue } from "../lib/metrics";
+import { latestRunsForMetric, latestRunWithMetric, metricValue } from "../lib/metrics";
 import type { EvaluationResponse } from "../types";
 
 function percent(value: number | null): string {
@@ -32,13 +32,14 @@ export function EvaluationPage() {
     void load();
   }, []);
 
-  const comparisonRuns = useMemo(() => latestRunPerStrategy(data?.runs ?? []), [data]);
+  const comparisonRuns = useMemo(() => latestRunsForMetric(data?.runs ?? [], "recall_at_5"), [data]);
   const bestRecall = comparisonRuns.reduce<number | null>((best, run) => {
     const value = metricValue(run, "recall_at_5");
     if (value === null) return best;
     return best === null ? value : Math.max(best, value);
   }, null);
   const latest = data?.runs[0] ?? null;
+  const latestAnswerRun = latestRunWithMetric(data?.runs ?? [], "citation_correctness");
 
   return (
     <div className="page evaluation-page">
@@ -60,6 +61,9 @@ export function EvaluationPage() {
         <>
           <div className="metrics-grid reveal reveal-2">
             <MetricCard label="当前最佳 Recall@5" note="最近各策略运行" value={percent(bestRecall)} />
+            <MetricCard label="引用正确性" note="最新答案级评测" value={percent(latestAnswerRun ? metricValue(latestAnswerRun, "citation_correctness") : null)} />
+            <MetricCard label="拒答正确性" note="最新答案级评测" value={percent(latestAnswerRun ? metricValue(latestAnswerRun, "refusal_correctness") : null)} />
+            <MetricCard label="版本有效性" note="状态与生效期一致" value={percent(latestAnswerRun ? metricValue(latestAnswerRun, "version_validity") : null)} />
             <MetricCard label="评测运行" note="最多展示最近 20 条" value={data.runs.length} />
             <MetricCard label="已索引制度" note="真实 CURRENT manifest" value={data.library_stats.indexed_notes} />
             <MetricCard label="待审核关系" note="不会自动进入检索" value={data.library_stats.relations_proposed} />
@@ -100,6 +104,9 @@ export function EvaluationPage() {
                       <th>数据集</th>
                       <th>Recall@5</th>
                       <th>MRR</th>
+                      <th>引用正确性</th>
+                      <th>拒答正确性</th>
+                      <th>版本有效性</th>
                       <th>平均延迟</th>
                       <th>状态</th>
                       <th>完成时间</th>
@@ -112,6 +119,9 @@ export function EvaluationPage() {
                         <td>{run.dataset}</td>
                         <td>{percent(metricValue(run, "recall_at_5"))}</td>
                         <td>{percent(metricValue(run, "mrr"))}</td>
+                        <td>{percent(metricValue(run, "citation_correctness"))}</td>
+                        <td>{percent(metricValue(run, "refusal_correctness"))}</td>
+                        <td>{percent(metricValue(run, "version_validity"))}</td>
                         <td>{typeof run.metrics.mean_retrieval_latency_ms === "number" ? `${run.metrics.mean_retrieval_latency_ms.toFixed(0)} ms` : "—"}</td>
                         <td><StatusPill value={run.status} /></td>
                         <td>{run.finished_at ? new Date(run.finished_at).toLocaleString("zh-CN") : "—"}</td>

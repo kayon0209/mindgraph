@@ -90,7 +90,7 @@ class ChatService:
                 owner=metadata.get("owner"), effective_from=metadata.get("effective_from"),
                 effective_to=metadata.get("effective_to"), policy_status=metadata.get("policy_status"),
                 authority_level=metadata.get("authority_level"), knowledge_category=metadata.get("knowledge_category"),
-                authority_adjustment=candidate.authority_adjustment,
+                authority_adjustment=candidate.authority_adjustment, vault_path=metadata.get("vault_path"),
             ))
         return citations
 

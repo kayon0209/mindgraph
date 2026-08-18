@@ -44,6 +44,7 @@ class Citation(BaseModel):
     authority_level: str | None = None
     knowledge_category: str | None = None
     authority_adjustment: float = 0.0
+    vault_path: str | None = None
 
 
 class RetrievalTraceModel(BaseModel):

@@ -22,6 +22,14 @@ export function latestRunPerStrategy(runs: EvaluationRun[]): EvaluationRun[] {
   });
 }
 
+export function latestRunWithMetric(runs: EvaluationRun[], key: string): EvaluationRun | null {
+  return runs.find((run) => run.status === "completed" && metricValue(run, key) !== null) ?? null;
+}
+
+export function latestRunsForMetric(runs: EvaluationRun[], key: string): EvaluationRun[] {
+  return latestRunPerStrategy(runs.filter((run) => metricValue(run, key) !== null));
+}
+
 const POLICY_STATUS_LABELS: Record<string, { label: string; tone: "positive" | "negative" | "neutral" }> = {
   active: { label: "在行", tone: "positive" },
   draft: { label: "草案", tone: "neutral" },

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { EvaluationRun } from "../types";
 import * as metricHelpers from "./metrics";
 
-const { latestRunPerStrategy, metricValue } = metricHelpers;
+const { latestRunPerStrategy, latestRunsForMetric, latestRunWithMetric, metricValue } = metricHelpers;
 
 type GovernanceInput = {
   owner: string | null;
@@ -38,6 +38,33 @@ describe("evaluation metric helpers", () => {
     expect(metricValue(run("hybrid", 1.2), "recall_at_5")).toBe(1);
     expect(metricValue(run("hybrid", -0.2), "recall_at_5")).toBe(0);
     expect(metricValue(run("hybrid", 0.8), "missing")).toBeNull();
+  });
+
+  it("finds the latest completed ledger entry that contains an answer metric", () => {
+    const retrieval = run("hybrid", 0.9);
+    const failedAnswerRun: EvaluationRun = {
+      ...run("answer-eval", 0),
+      status: "failed",
+      metrics: { citation_correctness: 0.2 },
+    };
+    const answerRun: EvaluationRun = {
+      ...run("answer-eval", 0),
+      metrics: { citation_correctness: 0.8 },
+    };
+
+    expect(latestRunWithMetric([retrieval, failedAnswerRun, answerRun], "citation_correctness"))?.toBe(answerRun);
+    expect(latestRunWithMetric([retrieval], "citation_correctness")).toBeNull();
+  });
+
+  it("does not let a newer run without recall hide an older retrieval run", () => {
+    const answerOnly: EvaluationRun = {
+      ...run("hybrid", 0),
+      run_id: "hybrid-answer-only",
+      metrics: { citation_correctness: 0.8 },
+    };
+    const retrieval = run("hybrid", 0.9);
+
+    expect(latestRunsForMetric([answerOnly, retrieval], "recall_at_5")).toEqual([retrieval]);
   });
 });
 
