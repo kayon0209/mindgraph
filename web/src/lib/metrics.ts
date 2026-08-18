@@ -7,10 +7,15 @@ export const METRIC_DEFINITIONS = [
   { key: "chunk_hit_rate", label: "分块命中率" },
 ] as const;
 
-export function metricValue(run: EvaluationRun, key: string): number | null {
+export function numericMetricValue(run: EvaluationRun, key: string): number | null {
   const raw = run.metrics[key];
   if (typeof raw !== "number" || !Number.isFinite(raw)) return null;
-  return Math.max(0, Math.min(1, raw));
+  return raw;
+}
+
+export function metricValue(run: EvaluationRun, key: string): number | null {
+  const raw = numericMetricValue(run, key);
+  return raw === null ? null : Math.max(0, Math.min(1, raw));
 }
 
 export function latestRunPerStrategy(runs: EvaluationRun[]): EvaluationRun[] {
@@ -23,11 +28,28 @@ export function latestRunPerStrategy(runs: EvaluationRun[]): EvaluationRun[] {
 }
 
 export function latestRunWithMetric(runs: EvaluationRun[], key: string): EvaluationRun | null {
-  return runs.find((run) => run.status === "completed" && metricValue(run, key) !== null) ?? null;
+  return runs.find((run) => run.status === "completed" && numericMetricValue(run, key) !== null) ?? null;
 }
 
 export function latestRunsForMetric(runs: EvaluationRun[], key: string): EvaluationRun[] {
   return latestRunPerStrategy(runs.filter((run) => metricValue(run, key) !== null));
+}
+
+export function evaluationEfficiencyView(run: EvaluationRun | null) {
+  if (!run) {
+    return { p95Latency: "—", meanTokens: "—", meanCost: "—", costCoverage: "—" };
+  }
+  const latency = numericMetricValue(run, "p95_total_latency_ms");
+  const tokens = numericMetricValue(run, "mean_total_tokens");
+  const cost = numericMetricValue(run, "mean_estimated_cost");
+  const coverage = metricValue(run, "cost_coverage");
+  const currency = typeof run.metrics.cost_currency === "string" ? run.metrics.cost_currency : null;
+  return {
+    p95Latency: latency === null ? "—" : `${latency.toFixed(0)} ms`,
+    meanTokens: tokens === null ? "—" : tokens.toFixed(0),
+    meanCost: cost === null || !currency ? "—" : `${currency} ${cost.toFixed(4)}`,
+    costCoverage: coverage === null ? "—" : `${(coverage * 100).toFixed(1)}%`,
+  };
 }
 
 const POLICY_STATUS_LABELS: Record<string, { label: string; tone: "positive" | "negative" | "neutral" }> = {

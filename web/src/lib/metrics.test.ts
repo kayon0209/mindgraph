@@ -3,7 +3,14 @@ import { describe, expect, it } from "vitest";
 import type { EvaluationRun } from "../types";
 import * as metricHelpers from "./metrics";
 
-const { latestRunPerStrategy, latestRunsForMetric, latestRunWithMetric, metricValue } = metricHelpers;
+const {
+  evaluationEfficiencyView,
+  latestRunPerStrategy,
+  latestRunsForMetric,
+  latestRunWithMetric,
+  metricValue,
+  numericMetricValue,
+} = metricHelpers;
 
 type GovernanceInput = {
   owner: string | null;
@@ -65,6 +72,33 @@ describe("evaluation metric helpers", () => {
     const retrieval = run("hybrid", 0.9);
 
     expect(latestRunsForMetric([answerOnly, retrieval], "recall_at_5")).toEqual([retrieval]);
+  });
+
+  it("keeps operational metrics unbounded and formats cost with coverage", () => {
+    const efficiencyRun: EvaluationRun = {
+      ...run("answer_eval_hybrid", 0),
+      metrics: {
+        p95_total_latency_ms: 1250.4,
+        mean_total_tokens: 321.2,
+        mean_estimated_cost: 0.012345,
+        cost_coverage: 0.5,
+        cost_currency: "USD",
+      },
+    };
+
+    expect(numericMetricValue(efficiencyRun, "p95_total_latency_ms")).toBe(1250.4);
+    expect(evaluationEfficiencyView(efficiencyRun)).toEqual({
+      p95Latency: "1250 ms",
+      meanTokens: "321",
+      meanCost: "USD 0.0123",
+      costCoverage: "50.0%",
+    });
+    expect(evaluationEfficiencyView(null)).toEqual({
+      p95Latency: "—",
+      meanTokens: "—",
+      meanCost: "—",
+      costCoverage: "—",
+    });
   });
 });
 

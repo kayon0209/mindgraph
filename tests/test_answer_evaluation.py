@@ -219,3 +219,85 @@ def test_prediction_evaluation_requires_exactly_one_result_per_golden_case() -> 
                 {"case_id": "a", "result_state": "insufficient_evidence", "answer": "", "citations": []},
             ],
         )
+
+
+def test_prediction_evaluation_aggregates_latency_tokens_and_cost_with_coverage() -> None:
+    """Catches missing provider usage being silently averaged as zero."""
+    cases = [
+        {
+            "case_id": case_id,
+            "expected_behavior": "abstain",
+            "gold_vault_paths": [],
+            "historical_vault_paths": [],
+        }
+        for case_id in ("a", "b")
+    ]
+    predictions = [
+        {
+            "case_id": "a",
+            "result_state": "insufficient_evidence",
+            "answer": "",
+            "citations": [],
+            "timing": {"total_ms": 100.0},
+            "usage": {"total_tokens": 80, "estimated_cost": 0.01, "currency": "USD"},
+        },
+        {
+            "case_id": "b",
+            "result_state": "insufficient_evidence",
+            "answer": "",
+            "citations": [],
+            "timing": {"total_ms": 300.0},
+            "usage": {"total_tokens": None, "estimated_cost": None, "currency": None},
+        },
+    ]
+
+    summary = evaluate_answer_predictions(cases, predictions)
+
+    assert summary["metrics"] == {
+        "citation_correctness": None,
+        "refusal_correctness": 1.0,
+        "version_validity": None,
+        "required_fact_coverage": None,
+        "forbidden_fact_avoidance": None,
+        "mean_total_latency_ms": 200.0,
+        "p95_total_latency_ms": 300.0,
+        "latency_coverage": 1.0,
+        "mean_total_tokens": 80.0,
+        "token_usage_coverage": 0.5,
+        "mean_estimated_cost": 0.01,
+        "cost_coverage": 0.5,
+        "cost_currency": "USD",
+    }
+
+
+def test_prediction_evaluation_rejects_unpriced_or_mixed_currency_costs() -> None:
+    """Catches incomparable monetary values being merged into one average."""
+    case = {
+        "case_id": "a",
+        "expected_behavior": "abstain",
+        "gold_vault_paths": [],
+        "historical_vault_paths": [],
+    }
+    base = {
+        "case_id": "a",
+        "result_state": "insufficient_evidence",
+        "answer": "",
+        "citations": [],
+        "timing": {"total_ms": 1.0},
+    }
+
+    with pytest.raises(ValueError, match="estimated_cost requires currency"):
+        evaluate_answer_predictions(
+            [case],
+            [{**base, "usage": {"estimated_cost": 0.01, "currency": None}}],
+        )
+
+    second_case = {**case, "case_id": "b"}
+    with pytest.raises(ValueError, match="mixed cost currencies"):
+        evaluate_answer_predictions(
+            [case, second_case],
+            [
+                {**base, "usage": {"estimated_cost": 0.01, "currency": "USD"}},
+                {**base, "case_id": "b", "usage": {"estimated_cost": 0.02, "currency": "CNY"}},
+            ],
+        )

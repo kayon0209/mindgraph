@@ -4,7 +4,7 @@ import { RefreshCw, Scale, TimerReset } from "lucide-react";
 import { BarComparison } from "../components/BarComparison";
 import { EmptyState, ErrorState, LoadingState, MetricCard, PageHeader, StatusPill } from "../components/Primitives";
 import { api } from "../lib/api";
-import { latestRunsForMetric, latestRunWithMetric, metricValue } from "../lib/metrics";
+import { evaluationEfficiencyView, latestRunsForMetric, latestRunWithMetric, metricValue, numericMetricValue } from "../lib/metrics";
 import type { EvaluationResponse } from "../types";
 
 function percent(value: number | null): string {
@@ -40,6 +40,8 @@ export function EvaluationPage() {
   }, null);
   const latest = data?.runs[0] ?? null;
   const latestAnswerRun = latestRunWithMetric(data?.runs ?? [], "citation_correctness");
+  const latestEfficiencyRun = latestRunWithMetric(data?.runs ?? [], "p95_total_latency_ms");
+  const efficiency = evaluationEfficiencyView(latestEfficiencyRun);
 
   return (
     <div className="page evaluation-page">
@@ -64,6 +66,9 @@ export function EvaluationPage() {
             <MetricCard label="引用正确性" note="最新答案级评测" value={percent(latestAnswerRun ? metricValue(latestAnswerRun, "citation_correctness") : null)} />
             <MetricCard label="拒答正确性" note="最新答案级评测" value={percent(latestAnswerRun ? metricValue(latestAnswerRun, "refusal_correctness") : null)} />
             <MetricCard label="版本有效性" note="状态与生效期一致" value={percent(latestAnswerRun ? metricValue(latestAnswerRun, "version_validity") : null)} />
+            <MetricCard label="P95 总延迟" note="最新答案级评测" value={efficiency.p95Latency} />
+            <MetricCard label="平均 Token" note="仅统计 Provider 已上报样本" value={efficiency.meanTokens} />
+            <MetricCard label="平均估算成本" note={`成本覆盖率 ${efficiency.costCoverage}`} value={efficiency.meanCost} />
             <MetricCard label="评测运行" note="最多展示最近 20 条" value={data.runs.length} />
             <MetricCard label="已索引制度" note="真实 CURRENT manifest" value={data.library_stats.indexed_notes} />
             <MetricCard label="待审核关系" note="不会自动进入检索" value={data.library_stats.relations_proposed} />
@@ -107,7 +112,8 @@ export function EvaluationPage() {
                       <th>引用正确性</th>
                       <th>拒答正确性</th>
                       <th>版本有效性</th>
-                      <th>平均延迟</th>
+                      <th>P95 / 检索平均延迟</th>
+                      <th>平均成本</th>
                       <th>状态</th>
                       <th>完成时间</th>
                     </tr>
@@ -122,7 +128,12 @@ export function EvaluationPage() {
                         <td>{percent(metricValue(run, "citation_correctness"))}</td>
                         <td>{percent(metricValue(run, "refusal_correctness"))}</td>
                         <td>{percent(metricValue(run, "version_validity"))}</td>
-                        <td>{typeof run.metrics.mean_retrieval_latency_ms === "number" ? `${run.metrics.mean_retrieval_latency_ms.toFixed(0)} ms` : "—"}</td>
+                        <td>{numericMetricValue(run, "p95_total_latency_ms") !== null
+                          ? `${numericMetricValue(run, "p95_total_latency_ms")!.toFixed(0)} ms`
+                          : typeof run.metrics.mean_retrieval_latency_ms === "number"
+                            ? `${run.metrics.mean_retrieval_latency_ms.toFixed(0)} ms`
+                            : "—"}</td>
+                        <td>{evaluationEfficiencyView(run).meanCost}</td>
                         <td><StatusPill value={run.status} /></td>
                         <td>{run.finished_at ? new Date(run.finished_at).toLocaleString("zh-CN") : "—"}</td>
                       </tr>
@@ -135,7 +146,7 @@ export function EvaluationPage() {
 
           <div className="evaluation-notes reveal reveal-4">
             <div><Scale size={18} /><p><strong>不能自证</strong><span>Golden 标签不得从 confirmed 关系或运行排序反向生成。</span></p></div>
-            <div><TimerReset size={18} /><p><strong>成本同屏</strong><span>后续将 token、P95 延迟与质量指标放在同一版本账本。</span></p></div>
+            <div><TimerReset size={18} /><p><strong>成本同屏</strong><span>Token、P95 延迟与估算成本仅按真实上报样本聚合，并同步展示覆盖率。</span></p></div>
           </div>
         </>
       ) : null}

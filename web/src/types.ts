@@ -117,7 +117,7 @@ export type NoteDetail = NoteItem & {
   }>;
 };
 
-export type EvaluationMetricMap = Record<string, number | null | undefined>;
+export type EvaluationMetricMap = Record<string, number | string | null | undefined>;
 
 export type EvaluationRun = {
   run_id: string;

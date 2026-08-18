@@ -158,7 +158,7 @@ python scripts/run_ablation.py
   --dry-run
 ```
 
-默认使用 `evaluation/datasets/mindgraph_golden.jsonl`：12 条人工编写、与运行关系库独立的企业制度样本，覆盖版本替代、审批阈值、例外、跨制度组合、无答案和歧义场景。答案评测会量化 citation F1、拒答正确性、版本有效性、必需事实覆盖与禁用事实规避；版本比较样本只允许 Golden 明确标注的历史来源。`--live --dry-run` 只禁止写入 `evaluation_runs`，问答服务仍会按现有隐私配置记录 `query_logs`。
+默认使用 `evaluation/datasets/mindgraph_golden.jsonl`：12 条人工编写、与运行关系库独立的企业制度样本，覆盖版本替代、审批阈值、例外、跨制度组合、无答案和歧义场景。答案评测会量化 citation F1、拒答正确性、版本有效性、必需事实覆盖与禁用事实规避，并在同一账本聚合 P95 总延迟、平均 Token、平均估算成本及各项数据覆盖率；成本缺少币种或混用币种时评测会失败。版本比较样本只允许 Golden 明确标注的历史来源。`--live --dry-run` 只禁止写入 `evaluation_runs`，问答服务仍会按现有隐私配置记录 `query_logs`。
 
 这些指标是可重复的字符串和元数据回归，不等同于语义正确性或人工判断。当前 12 条规模只够做确定性回归，不能作为生产效果或多跳 GraphRAG 增益证明。
 

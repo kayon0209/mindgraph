@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+import math
 from statistics import fmean
 from typing import Any
 
@@ -126,7 +127,57 @@ def evaluate_answer_predictions(cases: list[dict[str, Any]], predictions: list[d
         raise ValueError(f"unknown prediction case_id: {', '.join(unknown)}")
 
     results = [evaluate_answer_case(case, predictions_by_id[case["case_id"]]) for case in cases]
-    return summarize_answer_evaluations(results)
+    summary = summarize_answer_evaluations(results)
+    summary["metrics"].update(_operational_metrics(predictions))
+    return summary
+
+
+def _optional_nonnegative_number(container: dict[str, Any], key: str, label: str) -> float | None:
+    value = container.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+        raise ValueError(f"{label} must be a finite non-negative number")
+    return float(value)
+
+
+def _operational_metrics(predictions: list[dict[str, Any]]) -> dict[str, Any]:
+    latencies: list[float] = []
+    total_tokens: list[float] = []
+    costs: list[float] = []
+    currencies: set[str] = set()
+    for prediction in predictions:
+        timing = prediction.get("timing") or {}
+        usage = prediction.get("usage") or {}
+        latency = _optional_nonnegative_number(timing, "total_ms", "timing.total_ms")
+        tokens = _optional_nonnegative_number(usage, "total_tokens", "usage.total_tokens")
+        cost = _optional_nonnegative_number(usage, "estimated_cost", "usage.estimated_cost")
+        if latency is not None:
+            latencies.append(latency)
+        if tokens is not None:
+            total_tokens.append(tokens)
+        if cost is not None:
+            currency = str(usage.get("currency") or "").strip().upper()
+            if not currency:
+                raise ValueError("estimated_cost requires currency")
+            costs.append(cost)
+            currencies.add(currency)
+    if len(currencies) > 1:
+        raise ValueError(f"mixed cost currencies: {', '.join(sorted(currencies))}")
+
+    sample_size = len(predictions)
+    sorted_latencies = sorted(latencies)
+    p95_index = max(0, math.ceil(0.95 * len(sorted_latencies)) - 1)
+    return {
+        "mean_total_latency_ms": fmean(latencies) if latencies else None,
+        "p95_total_latency_ms": sorted_latencies[p95_index] if sorted_latencies else None,
+        "latency_coverage": len(latencies) / sample_size if sample_size else 0.0,
+        "mean_total_tokens": fmean(total_tokens) if total_tokens else None,
+        "token_usage_coverage": len(total_tokens) / sample_size if sample_size else 0.0,
+        "mean_estimated_cost": fmean(costs) if costs else None,
+        "cost_coverage": len(costs) / sample_size if sample_size else 0.0,
+        "cost_currency": next(iter(currencies), None),
+    }
 
 
 def summarize_answer_evaluations(results: list[dict[str, Any]]) -> dict[str, Any]:
