@@ -17,6 +17,12 @@ build/
 venv/
 env/
 
+# Node
+node_modules/
+.pnpm-store/
+web/dist/
+*.tsbuildinfo
+
 # IDE
 .vscode/
 .idea/
@@ -39,11 +45,6 @@ htmlcov/
 coverage.xml
 test-results.xml
 .pytest_cache/
-
-# Docker
-Dockerfile.*
-docker-compose*.yml
-.dockerignore
 
 # OS
 .DS_Store

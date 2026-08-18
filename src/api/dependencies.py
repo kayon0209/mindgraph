@@ -24,7 +24,7 @@ from infrastructure.database import ProductDatabase
 from infrastructure.retrieval_factory import INDEX_ROOT, create_retrieval_pipeline, create_mindgraph_retrieval_pipeline
 from infrastructure.settings import get_settings
 
-logger = logging.getLogger("expense_rag.dependencies")
+logger = logging.getLogger("mindgraph.dependencies")
 _settings = get_settings()
 
 
@@ -85,6 +85,15 @@ class ServiceContainer:
                 "你是个人知识助手 MindGraph。只能依据给定证据回答；不得编造。"
                 "先给结论，再给简要依据，并使用 [citation-N] 标注引用来源。"
             ),
+        )
+        # 本地目录 / Markdown 目录增量同步连接器（Phase 5-2）
+        from application.directory_connector_service import DirectoryConnectorService
+        from application.mindgraph_index_service import MindGraphIndexService
+        self.mindgraph_index_service = MindGraphIndexService(
+            self.database, self.root / "knowledge", self.mindgraph_index_root
+        )
+        self.directory_connector = DirectoryConnectorService(
+            self.database, self.root / "knowledge", self.mindgraph_index_service
         )
 
     def mindgraph_pipeline(self, top_k: int, graph_enabled: bool = True):

@@ -1,117 +1,216 @@
-# MindGraph · Graph RAG 检索增强问答系统
+<div align="center">
 
-> 混合检索（Dense + Sparse + RRF）+ 一跳知识图谱扩展 + 本地优先嵌入的可溯源问答。
-> 由「企业报销制度问答 RAG」重构演进而来，检索 / 评测工程能力被复用为底层 hybrid retriever。
+# MindGraph
 
-[![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://python.org)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688.svg)](https://fastapi.tiangolo.com)
-[![FAISS](https://img.shields.io/badge/FAISS-Vector_Index-blue)](https://github.com/facebookresearch/faiss)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
+### Local-first evidence intelligence for Markdown and AI agents
 
-![MindGraph Hero Banner](assets/hero-banner.jpg)
+**Find the right source. Respect versions and permissions. Stop when evidence conflicts. Answer with citations.**
 
-## 为什么是 MindGraph，而不是「又一个 RAG Demo」
+<p>
+  <a href="./README.md">English</a> · <a href="./README.zh-CN.md">简体中文</a>
+</p>
 
-大多数 RAG Demo 卡在两件事上：**检索策略拍脑袋**（默认上重排，却没测过值不值），以及**答案不可溯源**。MindGraph 把检索做成可度量、可消融的工程模块，并让每个答案都带 `[citation]` 溯源；图谱一跳扩展在检索命中后补充证据，而不是凭空生成。
+<p>
+  <a href="https://github.com/kayon0209/mindgraph/actions/workflows/ci-cd.yml"><img src="https://img.shields.io/github/actions/workflow/status/kayon0209/mindgraph/ci-cd.yml?branch=main&style=flat-square&label=CI" alt="CI"></a>
+  <a href="https://github.com/kayon0209/mindgraph/stargazers"><img src="https://img.shields.io/github/stars/kayon0209/mindgraph?style=flat-square&logo=github" alt="GitHub stars"></a>
+  <img src="https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.11+">
+  <img src="https://img.shields.io/badge/MCP-ready-7C3AED?style=flat-square" alt="MCP ready">
+  <img src="https://img.shields.io/badge/local--first-yes-0F766E?style=flat-square" alt="Local first">
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-22C55E?style=flat-square" alt="MIT License"></a>
+</p>
 
-## 核心能力
+<p>
+  <a href="#quickstart">Quickstart</a> ·
+  <a href="#why-mindgraph">Why MindGraph</a> ·
+  <a href="#mcp-for-ai-agents">MCP</a> ·
+  <a href="#how-it-works">Architecture</a> ·
+  <a href="#evaluation-and-boundaries">Evaluation</a> ·
+  <a href="./docs/PRODUCT_STRATEGY.md">Roadmap</a>
+</p>
 
-- **混合检索（Hybrid）**：FAISS(Dense / BGE) + BM25(Sparse) + RRF 融合，可选 Cross-Encoder 重排
-- **一跳图谱扩展**：检索命中笔记后沿知识图谱扩展一跳关系，补充证据上下文
-- **可溯源问答**：答案带 `[citation]`，拒绝无据编造
-- **本地优先**：BGE 本地嵌入，数据留在你机器上，无强制云依赖
-- **双前端**：① Obsidian 插件（右侧栏问答 + 插入笔记）；② React + Vite Web Demo
-- **可复现评测**：4 策略消融脚本，结果写入 `evaluation_runs`
+<img src="assets/hero-banner.jpg" alt="MindGraph" width="100%">
 
-## 系统架构
+</div>
 
-![MindGraph 系统架构](./assets/architecture.svg)
+MindGraph turns a Markdown or Obsidian vault into a local evidence layer for people and AI agents. It combines hybrid retrieval with version, lifecycle, access-control, conflict and citation checks—so an answer is generated only when the evidence is fit to support it.
 
-```
-Obsidian Vault
-   │  扫描 + 注入稳定 Frontmatter ID（mindgraph_id）
-   ▼
-本地 FastAPI 服务 (src/, 端口 8000)
-   ├─ VaultSyncService          扫描 / 剪枝 / 稳定 ID 注入
-   ├─ MindGraphIndexService     FAISS(BGE) + BM25 + RRF 增量索引（CURRENT 原子切换）
-   ├─ MindGraphRetrievalPipeline hybrid + 一跳图谱扩展
-   ├─ GraphStore / RelationStore  notes + note_relations
-   └─ 只读 API /mindgraph/*  +  问答 SSE /mindgraph/chat
-        │
-        ├─ 前端 ①：Obsidian 插件（右侧栏问答 + 插入笔记）
-        └─ 前端 ②：Web Demo（React + Vite，4 页）
-```
+The first vertical is policy-heavy knowledge such as expense, finance and compliance. The same evidence pipeline can support any Markdown knowledge base where freshness, permissions and traceability matter.
 
-| 组件 | 技术 |
-|------|------|
-| 嵌入 | BAAI/bge-small-zh-v1.5（本地缓存，离线推理） |
-| 检索 | FAISS(Dense) + BM25(Sparse) + RRF 融合 + 可选 Cross-Encoder 重排 |
-| 图谱 | SQLite `note_relations`（proposed / confirmed / conflict 检测） |
-| 生成 | OpenAI-compatible（DeepSeek / 智谱 GLM / Anthropic，可降级） |
-| API | FastAPI + SSE |
-| 存储 | SQLite(WAL) + 版本化向量索引 |
-| 前端 | Obsidian 插件 + React(Vite) Web Demo |
+## The failure MindGraph is built for
 
-## 评测（真实、可复现）
+**Question:** Which expense deadline applies on 2026-08-18: 30 days or 60 days?
 
-在 **34 题报销制度问答集**上做 4 策略消融，核心结论：
+| Generic RAG | MindGraph |
+|---|---|
+| May retrieve the semantically similar but archived 60-day policy | Filters evidence by status and effective date |
+| May silently mix two active versions | Returns `conflicting_evidence` before calling the LLM |
+| Produces a fluent answer with unclear provenance | Returns the source, version, date and retrieval trace |
 
-| 检索策略 | R@5 | 相对延迟 | 备注 |
-|----------|-----|----------|------|
-| Sparse (BM25) | 基线 | 1× | — |
-| Dense (FAISS/BGE) | 接近基线 | ~数× | 语义补全 |
-| **Hybrid (RRF 融合)** | **0.587（最高）** | ~13ms | **默认策略** |
-| Hybrid + Rerank | 反降 | **~99×** | 延迟代价远大于收益 → 设为按需 |
+> **MindGraph's product principle: govern the evidence before generating the answer.**
 
-> 据此定义产品默认路由：**混合检索默认开启，重排按需启用**——用 ~13ms 拿到最高召回，避免 99× 延迟换来的召回回退。
-> 完整数据与延迟成本分析见 [`docs/MindGraph-cost-efficiency.md`](docs/MindGraph-cost-efficiency.md)。
+## Why MindGraph
+
+<table>
+<tr>
+<td width="25%" align="center"><b>Local-first</b><br><sub>SQLite and local indexes<br>Keep knowledge under your control</sub></td>
+<td width="25%" align="center"><b>Evidence-first</b><br><sub>Citations and retrieval traces<br>Return to the original source</sub></td>
+<td width="25%" align="center"><b>Version-aware</b><br><sub>Lifecycle and effective dates<br>Stop on conflicting evidence</sub></td>
+<td width="25%" align="center"><b>Agent-ready</b><br><sub>REST, SSE and MCP<br>Use from agent workflows</sub></td>
+</tr>
+</table>
+
+- **Hybrid retrieval:** BGE / FAISS dense search + BM25 sparse search + RRF fusion
+- **Adaptive routing:** selects an appropriate retrieval strategy from query intent
+- **Controlled graph expansion:** only human-confirmed relations can add evidence
+- **Grounded answers:** streaming responses with citations and retrieval traces
+- **Policy lifecycle:** stable `policy_key`, version, status and effective-date filtering
+- **Conflict-before-generation:** conflicting active versions stop the LLM call
+- **Governed access:** API key / OIDC, workspace / department ACLs and audit logs
+- **Evaluation ledger:** retrieval, answer trust, latency and cost in one history
+- **Web and Obsidian clients:** ask, inspect evidence, review relations and compare runs
+
+## Quickstart
+
+### Option A: verify the pipeline without keys
+
+The public `demo-vault/` contains synthetic policies, workflows and cases. This command verifies sync, indexing, hybrid retrieval, confirmed-relation expansion and ablation in a temporary directory.
 
 ```bash
-python scripts/run_ablation.py        # 写真实 4 策略消融到 evaluation_runs
-```
+git clone https://github.com/kayon0209/mindgraph.git
+cd mindgraph
 
-> 小样本 Golden Set 来自开发过程，用于工程可复现验证，不代表生产效果。
-
-## 快速开始
-
-### 1. 后端（FastAPI）
-
-```bash
-cd expense-rag-qa
-python -m venv .venv && source .venv/Scripts/activate        # Windows
+python -m venv .venv
+source .venv/bin/activate              # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env            # 已含 HF 镜像与 BGE 本地化配置
-# 首次构建索引（需先缓存 BGE，见 data/bge-small-zh-v1.5）
-python scripts/sync_vault.py --vault "D:\ObsidianVault"
-uvicorn api.main:app --app-dir src --host 127.0.0.1 --port 8000
+python scripts/validate_mindgraph_offline.py
 ```
 
-API 文档：http://localhost:8000/docs
+The offline check uses deterministic fake embeddings and a fake LLM. It proves that the engineering path is reproducible; it does not claim real-model quality.
 
-### 2. Web Demo（React + Vite）
+### Option B: start the Web workspace
 
 ```bash
-cd expense-rag-frontend        # 独立前端目录（与后端仓库同级工作区）
-npm install && npm run dev      # http://127.0.0.1:5173
+cp .env.example .env                   # Windows: Copy-Item .env.example .env
+# Configure a model provider in .env when you want real answers.
+docker compose up --build
 ```
 
-### 3. Obsidian 插件
+| Service | URL |
+|---|---|
+| Web workspace | <http://127.0.0.1:3000> |
+| API | <http://127.0.0.1:8000> |
+| OpenAPI docs | <http://127.0.0.1:8000/api/docs> |
 
-见 [obsidian-plugin/README.md](obsidian-plugin/README.md)：将 `obsidian-plugin/` 作为文件夹复制到
-Obsidian 的 `.obsidian/plugins/`，在社区插件设置中启用 **MindGraph**。
+## How it works
 
-## 演进说明
+```mermaid
+flowchart LR
+    A[Markdown / Obsidian] --> B[Parse, clean and govern]
+    B --> C[(SQLite WAL)]
+    B --> D[Versioned FAISS index]
+    Q[Person / AI agent] --> R[Adaptive retrieval router]
+    C --> R
+    D --> R
+    R --> F[Dense + Sparse + RRF]
+    F --> G{Evidence conflict?}
+    G -- Yes --> H[Stop and surface versions]
+    G -- No --> I[Confirmed relation expansion]
+    I --> J[LLM generation]
+    J --> K[Answer + Citation + Trace]
+```
 
-本项目由「企业报销制度问答 RAG（Expense RAG QA）」重构演进而来。原报销 RAG 的检索 / 评测工程能力被复用为 MindGraph 的底层 hybrid retriever。历史 PRD 见 [docs/PRD-v2.md](docs/PRD-v2.md)（报销 RAG v3.1，仅作背景参考）。
+Status, effective-date, category and permission filters are shared by base retrieval and relation expansion. This prevents an archived document from re-entering a current answer through a graph edge.
 
-> **关于本地 Demo 数据**：开发期使用了一份真实 Obsidian Vault 做端到端验证（笔记索引、关系抽取、图谱可视化均跑通），但该 Vault 属个人数据，**不随仓库分发**——clone 后需自备 Vault 才能复现图谱与插件链路。
+<div align="center">
+  <img src="assets/architecture.svg" alt="MindGraph architecture" width="92%">
+</div>
 
-## 文档
+## MCP for AI agents
 
-- [MindGraph 架构与落地计划](docs/MindGraph-ARCH.md)（当前权威）
-- [报销 RAG PRD v2（历史背景）](docs/PRD-v2.md)
-- [检索成本效率分析](docs/MindGraph-cost-efficiency.md)
+MindGraph exposes a read-only MCP server with five tools:
 
-## License
+| Tool | Purpose |
+|---|---|
+| `mindgraph_list_notes` | List notes visible to the current principal |
+| `mindgraph_get_note` | Read one visible note and its governance metadata |
+| `mindgraph_search` | Search knowledge and return evidence |
+| `mindgraph_list_relations` | List confirmed relations whose endpoints are both visible |
+| `mindgraph_evaluation_overview` | Inspect evaluation-run summaries |
 
-[MIT](LICENSE) —— 详见 [LICENSE](LICENSE) 文件。
+Start the stdio server:
+
+```bash
+PYTHONPATH=src MCP_PRINCIPAL=local-user python -m mcp_server
+```
+
+Claude Desktop–style configuration:
+
+```json
+{
+  "mcpServers": {
+    "mindgraph": {
+      "command": "python",
+      "args": ["-m", "mcp_server"],
+      "env": {
+        "PYTHONPATH": "/absolute/path/to/mindgraph/src",
+        "MCP_PRINCIPAL": "local-user"
+      }
+    }
+  }
+}
+```
+
+MCP is intentionally read-only today. Reviewed relation proposals, evidence feedback and evaluation-case write-back are on the roadmap.
+
+## Evaluation and boundaries
+
+```bash
+python scripts/run_ablation.py
+python scripts/run_routing_evaluation.py
+python scripts/run_answer_evaluation.py --live --strategy hybrid
+```
+
+The current frozen set contains 12 hand-written policy cases covering replacement, thresholds, exceptions, cross-policy questions, no-answer cases and ambiguity. It scores citation F1, refusal correctness, version validity, required facts, forbidden facts, latency, tokens and estimated cost.
+
+### What MindGraph is today
+
+- A local-first Hybrid RAG system with controlled, human-confirmed relation expansion
+- Version-aware, citation-first and MCP-ready
+- Reproducible with a public synthetic vault and deterministic offline checks
+
+### What it is not yet
+
+- A complete entity-disambiguation and multi-hop knowledge-graph engine
+- Proven for production by a large benchmark—the current 12 cases are regression tests
+- A hosted enterprise SaaS
+
+## Project status
+
+| Now | Next | Later |
+|---|---|---|
+| Hybrid retrieval and adaptive routing | Structure-aware chunk inspection | Typed policy edges |
+| Version-conflict interception | 100+ layered evaluation cases | Entity-event dual graph |
+| ACL, OIDC and audit | Evidence feedback and writable MCP proposals | Community discovery |
+| Web, Obsidian and read-only MCP | Stronger Ruff, mypy and coverage gates | Multi-hop reasoning |
+
+See [`docs/PRODUCT_STRATEGY.md`](docs/PRODUCT_STRATEGY.md) for the product boundary and roadmap.
+
+## Documentation
+
+- [Product strategy and roadmap](docs/PRODUCT_STRATEGY.md)
+- [Architecture](docs/MindGraph-ARCH.md)
+- [Deployment](docs/DEPLOYMENT.md)
+- [Retrieval cost and efficiency](docs/MindGraph-cost-efficiency.md)
+- [Obsidian plugin](obsidian-plugin/README.md)
+
+## Contributing
+
+Issues, reproducible evaluation cases, documentation improvements and small focused pull requests are welcome. Especially useful contributions include real-but-shareable policy cases, MCP client examples, Obsidian workflows and retrieval or access-control boundary tests.
+
+<div align="center">
+
+If evidence-first local knowledge systems are useful to you, consider giving MindGraph a star.
+
+[Report an issue](https://github.com/kayon0209/mindgraph/issues) · [Read the roadmap](docs/PRODUCT_STRATEGY.md) · [MIT License](LICENSE)
+
+</div>

@@ -1,0 +1,67 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Python
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+*.egg-info
+.eggs
+dist
+build
+.venv
+venv
+env
+.pnpm-store
+**/.pnpm-store
+node_modules
+**/node_modules
+web/dist
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Environment
+.env
+.env.local
+.env.production
+
+# Data (mounted as volumes)
+data/
+*.sqlite3
+*.db
+
+# Test & Coverage
+.coverage
+htmlcov
+*.cover
+.pytest_cache
+coverage.xml
+test-results.xml
+evaluation/results
+
+# Local caches and logs
+.ruff_cache
+logs
+*.log
+
+# Docker
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Docs (not needed in image)
+*.md
+!README.md
+docs/

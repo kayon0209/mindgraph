@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 def utc_now() -> datetime:
@@ -20,6 +20,7 @@ class UsageSource(str, Enum):
 class ResultState(str, Enum):
     answered = "answered"
     insufficient_evidence = "insufficient_evidence"
+    conflicting_evidence = "conflicting_evidence"
     out_of_scope = "out_of_scope"
     model_unavailable = "model_unavailable"
     retrieval_unavailable = "retrieval_unavailable"
@@ -37,9 +38,15 @@ class Citation(BaseModel):
     retrieval_score: float | None = None
     reranker_score: float | None = None
     document_version: str | None = None
+    owner: str | None = None
+    effective_from: str | None = None
+    effective_to: str | None = None
+    policy_status: str | None = None
     authority_level: str | None = None
     knowledge_category: str | None = None
     authority_adjustment: float = 0.0
+    vault_path: str | None = None
+    policy_key: str | None = None
 
 
 class RetrievalTraceModel(BaseModel):
@@ -59,6 +66,10 @@ class RetrievalTraceModel(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     graph_enabled: bool = False
     graph_links: list[dict[str, Any]] = Field(default_factory=list)
+    policy_conflicts: list[dict[str, Any]] = Field(default_factory=list)
+    route_decision: dict[str, Any] = Field(default_factory=dict)
+    query_variants: list[str] = Field(default_factory=list)
+    original_query: str | None = None
 
 
 class UsageMetrics(BaseModel):
@@ -104,7 +115,7 @@ class AnswerResult(BaseModel):
 
 class ChatRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
-    retrieval_strategy: Literal["dense", "bm25", "hybrid", "hybrid_rerank"] = "hybrid"
+    retrieval_strategy: Literal["auto", "dense", "bm25", "hybrid", "hybrid_rerank"] = "auto"
     chat_model: str | None = None
     chat_provider: str | None = None
     final_top_k: int = Field(default=5, ge=1, le=10)
@@ -114,6 +125,17 @@ class ChatRequest(BaseModel):
     knowledge_categories: list[str] = Field(default_factory=list, max_length=10)
     include_historical: bool = False
     graph_enabled: bool = True
+
+    @field_validator("query_date")
+    @classmethod
+    def validate_query_date(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            date.fromisoformat(value)
+        except ValueError as exc:
+            raise ValueError("query_date must be a valid ISO date (YYYY-MM-DD)") from exc
+        return value
 
     @model_validator(mode="after")
     def strip_question(self):
@@ -288,3 +310,7 @@ class DocumentVersionModel(BaseModel):
     updated_at: datetime = Field(default_factory=utc_now)
     indexed_at: datetime | None = None
     created_by: str | None = None
+    workspace: str | None = None
+    department: str | None = None
+    acl_json: str = "{}"
+    acl_public: bool = False

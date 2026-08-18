@@ -115,7 +115,7 @@ def configure_logging(
         logging.getLogger(lib).setLevel(logging.WARNING)
 
     # 应用内部日志级别
-    for module in ("expense_rag", "src"):
+    for module in ("mindgraph", "expense_rag", "src"):
         logging.getLogger(module).setLevel(log_level)
 
     # 存储慢请求阈值
@@ -129,4 +129,4 @@ def configure_logging(
 
 def get_logger(name: str) -> logging.Logger:
     """获取带上下文的 logger。"""
-    return logging.getLogger(f"expense_rag.{name}")
+    return logging.getLogger(f"mindgraph.{name}")

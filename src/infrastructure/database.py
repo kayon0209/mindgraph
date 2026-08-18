@@ -8,9 +8,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger("expense_rag.database")
+logger = logging.getLogger("mindgraph.database")
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 7
 
 
 class ProductDatabase:
@@ -128,6 +128,19 @@ class ProductDatabase:
                     audit_id TEXT PRIMARY KEY, action TEXT NOT NULL, from_version TEXT, to_version TEXT,
                     operator TEXT, reason TEXT, created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS access_audit (
+                    audit_id TEXT PRIMARY KEY,
+                    request_id TEXT,
+                    actor TEXT,
+                    action TEXT NOT NULL,
+                    resource TEXT NOT NULL,
+                    decision TEXT NOT NULL,
+                    reason TEXT,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_access_audit_action ON access_audit(action);
+                CREATE INDEX IF NOT EXISTS idx_access_audit_resource ON access_audit(resource);
                 CREATE TABLE IF NOT EXISTS embedding_cache (
                     model_name TEXT NOT NULL, model_revision TEXT, chunk_checksum TEXT NOT NULL,
                     dimension INTEGER NOT NULL, embedding_json TEXT NOT NULL, created_at TEXT NOT NULL,
@@ -164,6 +177,17 @@ class ProductDatabase:
                     chunk_count INTEGER NOT NULL DEFAULT 0,
                     index_status TEXT NOT NULL DEFAULT 'pending',
                     index_version TEXT,
+                    workspace TEXT,
+                    department TEXT,
+                    acl_json TEXT NOT NULL DEFAULT '{}',
+                    acl_public INTEGER NOT NULL DEFAULT 0,
+                    policy_key TEXT,
+                    owner TEXT,
+                    document_version TEXT,
+                    effective_from TEXT,
+                    effective_to TEXT,
+                    policy_status TEXT NOT NULL DEFAULT 'unspecified',
+                    metadata_issues_json TEXT NOT NULL DEFAULT '[]',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     last_indexed_at TEXT
@@ -188,6 +212,24 @@ class ProductDatabase:
                 CREATE INDEX IF NOT EXISTS idx_notes_status ON notes(index_status);
                 CREATE INDEX IF NOT EXISTS idx_note_relations_source ON note_relations(source_note_id);
                 CREATE INDEX IF NOT EXISTS idx_note_relations_status ON note_relations(status);
+                CREATE TABLE IF NOT EXISTS connector_syncs (
+                    connector_id TEXT PRIMARY KEY,
+                    connector_type TEXT NOT NULL,
+                    source_path TEXT NOT NULL,
+                    workspace TEXT,
+                    department TEXT,
+                    status TEXT NOT NULL,
+                    file_count INTEGER NOT NULL DEFAULT 0,
+                    added INTEGER NOT NULL DEFAULT 0,
+                    updated INTEGER NOT NULL DEFAULT 0,
+                    pruned INTEGER NOT NULL DEFAULT 0,
+                    error TEXT,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    started_at TEXT NOT NULL,
+                    finished_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_connector_syncs_source ON connector_syncs(source_path);
+                CREATE INDEX IF NOT EXISTS idx_connector_syncs_status ON connector_syncs(status);
             """)
             self._ensure_columns(connection, "query_logs", {
                 "index_version": "TEXT", "prompt_version": "TEXT",
@@ -197,6 +239,38 @@ class ProductDatabase:
             self._ensure_columns(connection, "evaluation_runs", {
                 "index_version": "TEXT", "prompt_version": "TEXT", "provider": "TEXT",
             })
+            self._ensure_columns(connection, "document_versions", {
+                "workspace": "TEXT",
+                "department": "TEXT",
+                "acl_json": "TEXT NOT NULL DEFAULT '{}'",
+                "acl_public": "INTEGER NOT NULL DEFAULT 0",
+            })
+            self._ensure_columns(connection, "notes", {
+                "workspace": "TEXT",
+                "department": "TEXT",
+                "acl_json": "TEXT NOT NULL DEFAULT '{}'",
+                "acl_public": "INTEGER NOT NULL DEFAULT 0",
+                "policy_key": "TEXT",
+                "owner": "TEXT",
+                "document_version": "TEXT",
+                "effective_from": "TEXT",
+                "effective_to": "TEXT",
+                "policy_status": "TEXT NOT NULL DEFAULT 'unspecified'",
+                "metadata_issues_json": "TEXT NOT NULL DEFAULT '[]'",
+            })
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_notes_policy_lifecycle "
+                "ON notes(policy_key, policy_status, effective_from, effective_to)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_notes_workspace ON notes(workspace)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_notes_department ON notes(department)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_notes_acl_public ON notes(acl_public)"
+            )
             row = connection.execute("SELECT version FROM schema_meta LIMIT 1").fetchone()
             if row is None:
                 connection.execute("INSERT INTO schema_meta(version) VALUES (?)", (SCHEMA_VERSION,))

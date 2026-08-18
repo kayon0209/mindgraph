@@ -34,7 +34,7 @@ from api.middleware import (
     SecurityHeadersMiddleware,
     TimingMiddleware,
 )
-from api.routes import chat, evaluation, feedback, governance, health, knowledge, mindgraph_chat, mindgraph_readonly
+from api.routes import chat, connectors, evaluation, feedback, governance, health, knowledge, mcp, mindgraph_chat, mindgraph_readonly
 from domain.errors import (
     AuthenticationError,
     AuthorizationError,
@@ -52,7 +52,7 @@ configure_logging(
     log_format="json" if _settings.is_production else "console",
 )
 
-logger = logging.getLogger("expense_rag.api")
+logger = logging.getLogger("mindgraph.api")
 
 # ── 应用生命周期 ──
 
@@ -76,8 +76,8 @@ async def lifespan(app: FastAPI):
 # ── FastAPI 应用 ──
 
 app = FastAPI(
-    title="Expense RAG QA API",
-    description="企业报销知识问答系统 — 基于 RAG 的自然语言报销规则查询 API",
+    title="MindGraph API",
+    description="企业制度与决策依据知识服务 — 基于可溯源 Hybrid RAG 与受控关系扩展",
     version="3.1.0",
     lifespan=lifespan,
     docs_url="/api/docs" if _settings.openapi_enabled else None,
@@ -127,7 +127,7 @@ app.add_exception_handler(Exception, unhandled_error_handler)
 # ── 路由注册 ──
 
 API_PREFIX = "/api/v1"
-for route in (health.router, chat.router, knowledge.router, evaluation.router, feedback.router, governance.router, mindgraph_chat.router, mindgraph_readonly.router):
+for route in (health.router, chat.router, connectors.router, knowledge.router, evaluation.router, feedback.router, governance.router, mindgraph_chat.router, mindgraph_readonly.router, mcp.router):
     app.include_router(route, prefix=API_PREFIX)
 
 
@@ -136,7 +136,7 @@ for route in (health.router, chat.router, knowledge.router, evaluation.router, f
 @app.get("/", include_in_schema=False)
 async def root():
     return {
-        "service": "Expense RAG QA",
+        "service": "MindGraph",
         "version": "3.1.0",
         "docs": "/api/docs",
         "health": f"{API_PREFIX}/health",

@@ -2,6 +2,10 @@
 
 `expense_qa_v1.jsonl` 是从原 34 题迁移出的首个版本化数据集。它规模较小且源自既有项目，只能用于开发和回归，不能作为生产效果证明。
 
+`mindgraph_golden.jsonl` V2 是基于仓库内公开 `demo-vault/` 人工冻结的企业制度回归集。标签不读取运行数据库、系统回答、候选关系或检索排序，当前包含版本、替代、阈值、例外、跨制度、案例推理、无答案和歧义类型。`run_ablation.py` 只把 `expected_behavior=answer` 的样本用于检索指标；abstain 样本保留给后续回答与拒答评测。
+
+旧版 `mindgraph_golden.jsonl` 从私人 Vault 和 confirmed 关系自动派生，既包含本机路径，也会造成“用系统输出证明系统”的数据泄漏；V2 已完全替换该做法，脚本禁止从运行数据库覆盖独立 Golden Set。
+
 ## 数据划分
 
 - `development`：允许用于错误分析和 Milestone 2 参数选择。

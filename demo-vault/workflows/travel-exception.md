@@ -1,0 +1,14 @@
+---
+policy_key: travel.exception
+owner: 行政与财务联合小组
+version: "1.0"
+status: active
+effective_from: 2026-07-01
+tags: [流程, 差旅, 例外]
+---
+
+# 差旅例外审批
+
+超出[国内差旅标准](../policies/travel-domestic-v3.md)时，申请人必须在预订前说明城市、日期、超标金额与不可替代原因，并附至少两个可比选项。
+
+紧急客户事件无法事前审批的，应在行程结束后 3 个工作日内补充直属主管和成本中心负责人批准。价格上涨本身不构成自动豁免。

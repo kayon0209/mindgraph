@@ -11,8 +11,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 from api.dependencies import get_container
 from api.schemas.chat import AnswerResult, ChatRequest
+from api.auth import resolve_access_scope
 
-logger = logging.getLogger("expense_rag.api.chat")
+logger = logging.getLogger("mindgraph.api.chat")
 _executor = ThreadPoolExecutor(max_workers=4)
 
 
@@ -20,16 +21,19 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 
 @router.post("", response_model=AnswerResult)
-def chat(payload: ChatRequest):
-    return get_container().chat.answer(payload)
+def chat(payload: ChatRequest, request: Request):
+    scope = resolve_access_scope(request)
+    return get_container().chat.answer(payload, access_scope=scope)
 
 
 @router.post("/stream")
 async def chat_stream(payload: ChatRequest, request: Request):
+    scope = resolve_access_scope(request)
+
     async def generate():
         try:
             loop = asyncio.get_running_loop()
-            for item in await loop.run_in_executor(_executor, lambda: list(get_container().chat.stream(payload))):
+            for item in await loop.run_in_executor(_executor, lambda: list(get_container().chat.stream(payload, access_scope=scope))):
                 if await request.is_disconnected():
                     break
                 yield f"event: {item['event']}\ndata: {json.dumps(item, ensure_ascii=False, default=str)}\n\n"

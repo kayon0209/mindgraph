@@ -15,7 +15,7 @@ from retrieval.indexing import build_versioned_index, load_corpus
 
 
 SAFE_NAME = re.compile(r"[^\w\-.\u4e00-\u9fff]+")
-logger = logging.getLogger("expense_rag.knowledge")
+logger = logging.getLogger("mindgraph.knowledge")
 
 
 class KnowledgeService:

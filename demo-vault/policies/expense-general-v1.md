@@ -1,0 +1,15 @@
+---
+policy_key: expense.general
+owner: 财务运营部
+version: "1.0"
+status: archived
+effective_from: 2025-01-01
+effective_to: 2026-06-30
+tags: [报销, 历史版本]
+---
+
+# 费用报销管理办法 V1（已废止）
+
+本版本要求员工在费用发生后 60 个自然日内提交报销，单笔超过 10000 元需成本中心负责人审批。
+
+该规则已被[费用报销管理办法 V2](expense-general-v2.md)替代。系统在回答当前政策时不得引用本文件作为最终规则，但可用于解释制度变更。

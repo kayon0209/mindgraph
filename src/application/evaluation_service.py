@@ -14,7 +14,7 @@ from evaluation.retrieval_eval import evaluate, save_results
 from infrastructure.database import ProductDatabase, dumps, loads
 from config import ROOT
 
-logger = logging.getLogger("expense_rag.evaluation")
+logger = logging.getLogger("mindgraph.evaluation")
 
 
 class EvaluationService:

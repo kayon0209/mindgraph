@@ -25,9 +25,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
 BACKUP_DIR = Path(os.getenv("BACKUP_DIR", str(DATA_DIR / "backups")))
 RETENTION_DAYS = int(os.getenv("BACKUP_RETENTION_DAYS", "30"))
+BACKUP_PATTERNS = ("mindgraph-backup-*.tar.gz", "expense-rag-backup-*.tar.gz")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-logger = logging.getLogger("backup")
+logger = logging.getLogger("mindgraph.backup")
 
 
 def ensure_backup_dir() -> None:
@@ -50,7 +51,13 @@ def get_knowledge_dir() -> Path:
 def get_backup_filename() -> str:
     """生成备份文件名。"""
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    return f"expense-rag-backup-{ts}.tar.gz"
+    return f"mindgraph-backup-{ts}.tar.gz"
+
+
+def _backup_files() -> list[Path]:
+    """返回新旧命名的备份；旧文件在迁移期继续可见和可恢复。"""
+    files = {path for pattern in BACKUP_PATTERNS for path in BACKUP_DIR.glob(pattern)}
+    return sorted(files, reverse=True)
 
 
 def backup() -> Path:
@@ -203,7 +210,7 @@ def list_backups() -> list[dict]:
     """列出所有备份文件。"""
     ensure_backup_dir()
     backups = []
-    for f in sorted(BACKUP_DIR.glob("expense-rag-backup-*.tar.gz"), reverse=True):
+    for f in _backup_files():
         stat = f.stat()
         backups.append({
             "filename": f.name,
@@ -225,7 +232,7 @@ def cleanup_old_backups(keep: int = RETENTION_DAYS) -> int:
     ensure_backup_dir()
     cutoff = datetime.now().timestamp() - keep * 86400
     deleted = 0
-    for f in BACKUP_DIR.glob("expense-rag-backup-*.tar.gz"):
+    for f in _backup_files():
         if f.stat().st_mtime < cutoff:
             f.unlink()
             deleted += 1
@@ -234,7 +241,7 @@ def cleanup_old_backups(keep: int = RETENTION_DAYS) -> int:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Expense RAG QA 数据备份与恢复")
+    parser = argparse.ArgumentParser(description="MindGraph 数据备份与恢复")
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("backup", help="执行完整备份")

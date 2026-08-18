@@ -15,7 +15,8 @@ from fastapi import Depends, Header, HTTPException, Request
 
 from domain.errors import AuthenticationError, AuthorizationError
 
-logger = logging.getLogger("expense_rag.api.auth")
+
+logger = logging.getLogger("mindgraph.api.auth")
 
 # 环境变量
 AUTH_MODE: str = os.getenv("AUTH_MODE", "demo").lower()
@@ -86,18 +87,21 @@ def validate_api_key(api_key: str) -> dict | None:
 # ── 鉴权依赖 ──
 
 
+def _extract_api_key(request: Request, x_api_key: str | None = None) -> str | None:
+    api_key = x_api_key
+    if not api_key:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            api_key = auth_header[7:]
+    return api_key
+
+
 async def get_api_key(request: Request, x_api_key: str | None = Header(None, alias="X-API-Key")) -> dict:
     """从请求头提取 API Key 并验证。"""
     if AUTH_MODE == "off":
         return {"name": "anonymous", "roles": ["read", "write"]}
 
-    api_key = x_api_key
-    if not api_key:
-        # 也尝试从 Authorization Bearer 中提取
-        auth_header = request.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer "):
-            api_key = auth_header[7:]
-
+    api_key = _extract_api_key(request, x_api_key)
     if not api_key:
         raise AuthenticationError("API Key required. Provide it via X-API-Key header or Authorization: Bearer <key>.")
 
@@ -107,6 +111,67 @@ async def get_api_key(request: Request, x_api_key: str | None = Header(None, ali
         raise AuthenticationError("Invalid API Key.")
 
     return key_info
+
+
+def get_optional_principal(request: Request) -> dict:
+    """解析当前请求的主体信息；无凭据时返回匿名主体。
+
+    优先级：OIDC Bearer Token → API Key → 匿名。
+    """
+    if AUTH_MODE == "off":
+        return {
+            "name": "anonymous",
+            "roles": ["read", "write"],
+            "authenticated": False,
+            "auth_mode": AUTH_MODE,
+            "allow": [],
+            "deny": [],
+        }
+
+    # 1) OIDC Bearer Token（若启用）
+    try:
+        from api.oidc import principal_from_bearer
+
+        authorization = request.headers.get("Authorization")
+        oidc_principal = principal_from_bearer(authorization)
+        if oidc_principal:
+            return oidc_principal
+    except Exception:
+        logger.debug("oidc_principal_resolution_skipped")
+
+    # 2) API Key
+    api_key = _extract_api_key(request)
+    if not api_key:
+        return {"name": "anonymous", "roles": [], "authenticated": False, "auth_mode": AUTH_MODE, "allow": [], "deny": []}
+    key_info = validate_api_key(api_key)
+    if not key_info:
+        return {"name": "anonymous", "roles": [], "authenticated": False, "auth_mode": AUTH_MODE, "allow": [], "deny": []}
+    return {
+        **key_info,
+        "authenticated": True,
+        "auth_mode": AUTH_MODE,
+        "allow": key_info.get("allow", []),
+        "deny": key_info.get("deny", []),
+    }
+
+
+def resolve_access_scope(request: Request) -> dict | None:
+    """解析当前请求主体对应的 ACL access_scope；未认证主体返回 None（不过滤）。
+
+    即使 AUTH_MODE='off'，只要请求携带了主体信息（如测试注入），仍按主体裁剪，
+    保证 ACL 回归测试可在 off 模式下验证过滤逻辑。
+    """
+    from application.access_control import build_access_scope
+
+    principal = get_optional_principal(request)
+    if not principal or not principal.get("authenticated"):
+        return None
+    return build_access_scope(principal)
+
+
+def current_actor(request: Request) -> str:
+    principal = get_optional_principal(request)
+    return principal.get("name") or principal.get("username") or "anonymous"
 
 
 def require_role(role: str) -> Callable:

@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from application.access_control import note_acl_matches
 from domain.errors import ConflictError, NotFoundError
 from domain.models import DocumentVersionModel
 from infrastructure.database import ProductDatabase, dumps, loads
@@ -38,7 +39,9 @@ class DocumentLifecycleService:
 
     def create_version(self, filename: str, data: bytes, logical_document_id: str | None, version: str,
                        category: str, authority: str, effective_date: str | None = None,
-                       expiration_date: str | None = None, status: str = "draft") -> DocumentVersionModel:
+                       expiration_date: str | None = None, status: str = "draft",
+                       workspace: str | None = None, department: str | None = None,
+                       acl_json: str = "{}", acl_public: bool = False) -> DocumentVersionModel:
         logical_id = logical_document_id or str(uuid.uuid4())
         parser = default_parser_registry.get(filename)
         checksum = hashlib.sha256(data).hexdigest()
@@ -63,12 +66,23 @@ class DocumentLifecycleService:
         record = DocumentVersionModel(document_id=document_id, logical_document_id=logical_id, version=version,
             title=Path(filename).stem, file_type=Path(filename).suffix.lower().lstrip("."), knowledge_category=category,
             authority_level=authority, effective_date=effective_date, expiration_date=expiration_date, status=status,
-            checksum=checksum, parsing_diagnostics=diagnostics, created_at=now, updated_at=now)
-        self.database.execute("INSERT INTO document_versions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
-            record.document_id, record.logical_document_id, record.version, record.title, record.file_type,
-            record.knowledge_category, record.authority_level, record.effective_date, record.expiration_date,
-            record.status, record.checksum, record.supersedes_version, str(source), dumps(diagnostics),
-            now.isoformat(), now.isoformat(), None, record.created_by))
+            checksum=checksum, parsing_diagnostics=diagnostics, created_at=now, updated_at=now,
+            workspace=workspace, department=department, acl_json=acl_json, acl_public=acl_public)
+        self.database.execute(
+            "INSERT INTO document_versions ("
+            "document_id, logical_document_id, version, title, file_type, knowledge_category, "
+            "authority_level, effective_date, expiration_date, status, checksum, supersedes_version, "
+            "source_path, parsing_diagnostics_json, created_at, updated_at, indexed_at, created_by, "
+            "workspace, department, acl_json, acl_public"
+            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                record.document_id, record.logical_document_id, record.version, record.title, record.file_type,
+                record.knowledge_category, record.authority_level, record.effective_date, record.expiration_date,
+                record.status, record.checksum, record.supersedes_version, str(source), dumps(diagnostics),
+                now.isoformat(), now.isoformat(), None, record.created_by, record.workspace, record.department,
+                record.acl_json, 1 if record.acl_public else 0,
+            ),
+        )
         return record
 
     def transition(self, document_id: str, target: str) -> DocumentVersionModel:
@@ -81,12 +95,15 @@ class DocumentLifecycleService:
         self.database.execute("UPDATE document_versions SET status=?,updated_at=? WHERE document_id=?", (target, now, document_id))
         return self.get(document_id)
 
-    def list(self, status: str | None = None, category: str | None = None):
+    def list(self, status: str | None = None, category: str | None = None, access_scope: dict | None = None):
         clauses, params = [], []
         if status: clauses.append("status=?"); params.append(status)
         if category: clauses.append("knowledge_category=?"); params.append(category)
         sql = "SELECT * FROM document_versions" + (" WHERE " + " AND ".join(clauses) if clauses else "") + " ORDER BY logical_document_id,created_at DESC"
-        return [self._row(row) for row in self.database.fetch_all(sql, tuple(params))]
+        rows = [self._row(row) for row in self.database.fetch_all(sql, tuple(params))]
+        if access_scope:
+            rows = [row for row in rows if note_acl_matches(row.model_dump(mode="python"), access_scope)]
+        return rows
 
     def get(self, document_id: str):
         row = self.database.fetch_one("SELECT * FROM document_versions WHERE document_id=?", (document_id,))
@@ -107,7 +124,7 @@ class DocumentLifecycleService:
                 chunk_data = json.loads(chunks_path.read_text(encoding="utf-8"))
             except (FileNotFoundError, json.JSONDecodeError) as exc:
                 import logging
-                logging.getLogger("expense_rag.documents").warning(
+                logging.getLogger("mindgraph.documents").warning(
                     "chunk_load_failed", extra={"document_id": row["document_id"], "error": str(exc)}
                 )
                 continue
@@ -126,4 +143,6 @@ class DocumentLifecycleService:
             title=row["title"], file_type=row["file_type"], knowledge_category=row["knowledge_category"], authority_level=row["authority_level"],
             effective_date=row["effective_date"], expiration_date=row["expiration_date"], status=row["status"], checksum=row["checksum"],
             supersedes_version=row["supersedes_version"], parsing_diagnostics=loads(row["parsing_diagnostics_json"], {}),
-            created_at=row["created_at"], updated_at=row["updated_at"], indexed_at=row["indexed_at"], created_by=row["created_by"])
+            created_at=row["created_at"], updated_at=row["updated_at"], indexed_at=row["indexed_at"], created_by=row["created_by"],
+            workspace=row.get("workspace"), department=row.get("department"),
+            acl_json=row.get("acl_json") or "{}", acl_public=bool(row.get("acl_public")))

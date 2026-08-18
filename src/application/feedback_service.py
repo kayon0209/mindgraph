@@ -10,7 +10,7 @@ from domain.errors import ConflictError, NotFoundError
 from domain.models import BadCase, BadCaseUpdate, FeedbackCreate, FeedbackRecord
 from infrastructure.database import ProductDatabase, dumps, loads
 
-logger = logging.getLogger("expense_rag.feedback")
+logger = logging.getLogger("mindgraph.feedback")
 
 
 class FeedbackService:

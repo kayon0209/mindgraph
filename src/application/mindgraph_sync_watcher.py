@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import Any
 
 from .mindgraph_index_service import MindGraphIndexService
 from .vault_sync_service import VaultSyncService

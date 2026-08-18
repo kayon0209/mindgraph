@@ -23,7 +23,7 @@ import faiss
 import numpy as np
 
 from document_loader import _chunk_text, _split_by_markdown_headers
-from infrastructure.database import ProductDatabase, dumps
+from infrastructure.database import ProductDatabase, dumps, loads
 from infrastructure.markdown_frontmatter import parse_frontmatter
 from retrieval.embeddings import BGEEmbeddingProvider
 from retrieval.types import Chunk
@@ -31,6 +31,13 @@ from retrieval.types import Chunk
 
 def _utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _safe_loads(value: str | None, default: Any) -> Any:
+    try:
+        return loads(value, default)
+    except Exception:
+        return default
 
 
 class MindGraphIndexService:
@@ -52,12 +59,14 @@ class MindGraphIndexService:
     # ------------------------------------------------------------------ #
     def pending_notes(self) -> list[dict[str, Any]]:
         return self.db.fetch_all(
-            "SELECT * FROM notes WHERE index_status IN ('pending','failed')"
+            "SELECT * FROM notes "
+            "WHERE index_status IN ('pending','failed') AND ai_access_level <> 'excluded'"
         )
 
     def has_pending(self) -> bool:
         row = self.db.fetch_one(
-            "SELECT 1 FROM notes WHERE index_status IN ('pending','failed') LIMIT 1"
+            "SELECT 1 FROM notes "
+            "WHERE index_status IN ('pending','failed') AND ai_access_level <> 'excluded' LIMIT 1"
         )
         return row is not None
 
@@ -66,6 +75,7 @@ class MindGraphIndexService:
     # ------------------------------------------------------------------ #
     def _load_note_chunks(self, note: dict[str, Any]) -> list[Chunk]:
         path = self.vault_root / note["vault_path"]
+        category = Path(note["vault_path"]).parent.name or "根目录"
         try:
             raw = path.read_text(encoding="utf-8")
         except OSError:
@@ -91,6 +101,20 @@ class MindGraphIndexService:
                         "section_path": section_path,
                         "chunk_index": idx,
                         "ai_access_level": note.get("ai_access_level", "local_only"),
+                        "workspace": note.get("workspace"),
+                        "department": note.get("department"),
+                        "acl_json": note.get("acl_json") or "{}",
+                        "acl_public": bool(note.get("acl_public")),
+                        "owner": note.get("owner"),
+                        "policy_key": note.get("policy_key"),
+                        "document_version": note.get("document_version"),
+                        "effective_from": note.get("effective_from"),
+                        "effective_to": note.get("effective_to"),
+                        "policy_status": note.get("policy_status", "unspecified"),
+                        "effective_date": note.get("effective_from"),
+                        "expiration_date": note.get("effective_to"),
+                        "document_status": note.get("policy_status", "unspecified"),
+                        "knowledge_category": category,
                         "origin": "mindgraph",
                     },
                 ))
@@ -98,7 +122,7 @@ class MindGraphIndexService:
         return chunks
 
     def _all_chunks(self) -> list[Chunk]:
-        notes = self.db.fetch_all("SELECT * FROM notes")
+        notes = self.db.fetch_all("SELECT * FROM notes WHERE ai_access_level <> 'excluded'")
         chunks: list[Chunk] = []
         for note in notes:
             chunks.extend(self._load_note_chunks(note))
@@ -140,7 +164,6 @@ class MindGraphIndexService:
             return {"status": "noop", "reason": "no pending notes"}
         pending_ids = [n["note_id"] for n in pending]
 
-        # 1. 标记 processing（状态机可见）
         self.db.execute_many(
             "UPDATE notes SET index_status='processing' WHERE note_id=?",
             [(i,) for i in pending_ids],
@@ -157,7 +180,6 @@ class MindGraphIndexService:
             if not chunks:
                 raise ValueError("No active chunks to index")
 
-            # 2. 向量：命中缓存复用，未命中收集批量 embed（保持 chunk 顺序）
             vectors: list[list[float] | None] = [None] * len(chunks)
             to_embed: list[tuple[int, str]] = []
             for i, chunk in enumerate(chunks):
@@ -209,10 +231,8 @@ class MindGraphIndexService:
                 json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
             )
 
-            # 3. 原子切换（先写临时指针再 replace，避免半写）
             self._activate(version)
 
-            # 4. 所有参与构建的笔记置 ready（含上次 failed 自愈）
             now = _utc_iso()
             self.db.execute_many(
                 "UPDATE notes SET index_status='ready', index_version=?, last_indexed_at=? WHERE note_id=?",
@@ -236,7 +256,6 @@ class MindGraphIndexService:
                 "INSERT OR REPLACE INTO index_builds VALUES (?,?,?,?,?,?,?)",
                 (version, "failed", dumps(failure), previous, _utc_iso(), None, failure["failure_reason"]),
             )
-            # 回滚：pending 笔记保持 pending，等待下次重试；不破坏当前可用索引
             self.db.execute_many(
                 "UPDATE notes SET index_status='pending' WHERE note_id=?",
                 [(i,) for i in pending_ids],

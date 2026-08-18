@@ -14,26 +14,41 @@ from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 from concurrent.futures import ThreadPoolExecutor
 
+from api.auth import get_optional_principal
 from api.dependencies import get_container
 from api.schemas.chat import AnswerResult, ChatRequest
+from api.auth import resolve_access_scope, current_actor
+from application.access_control import record_access_audit
 
-logger = logging.getLogger("expense_rag.api.mindgraph_chat")
+logger = logging.getLogger("mindgraph.api.chat")
 _executor = ThreadPoolExecutor(max_workers=4)
 
 router = APIRouter(prefix="/mindgraph/chat", tags=["mindgraph-chat"])
 
 
 @router.post("", response_model=AnswerResult)
-def mindgraph_chat(payload: ChatRequest):
-    return get_container().mindgraph_chat.answer(payload)
+def mindgraph_chat(request: Request, payload: ChatRequest):
+    scope = resolve_access_scope(request)
+    actor = current_actor(request)
+    record_access_audit(
+        get_container().database,
+        actor=actor,
+        action="chat",
+        resource="mindgraph/chat",
+        decision="allow",
+        metadata={"scope_user": (scope or {}).get("user"), "question": payload.question[:80]},
+    )
+    return get_container().mindgraph_chat.answer(payload, access_scope=scope)
 
 
 @router.post("/stream")
 async def mindgraph_chat_stream(payload: ChatRequest, request: Request):
+    scope = resolve_access_scope(request)
+
     async def generate():
         try:
             loop = asyncio.get_running_loop()
-            for item in await loop.run_in_executor(_executor, lambda: list(get_container().mindgraph_chat.stream(payload))):
+            for item in await loop.run_in_executor(_executor, lambda: list(get_container().mindgraph_chat.stream(payload, access_scope=scope))):
                 if await request.is_disconnected():
                     break
                 yield f"event: {item['event']}\ndata: {json.dumps(item, ensure_ascii=False, default=str)}\n\n"
