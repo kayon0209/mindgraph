@@ -1,91 +1,190 @@
-# MindGraph · 企业制度与决策依据知识服务
+<div align="center">
 
-> 本地优先的 Hybrid RAG：Dense + Sparse + RRF、一跳受控关系扩展、SSE 流式回答与 citation 溯源。
+# MindGraph
 
-[![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://python.org)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688.svg)](https://fastapi.tiangolo.com)
-[![FAISS](https://img.shields.io/badge/FAISS-Vector_Index-blue)](https://github.com/facebookresearch/faiss)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
+### Local-first Evidence Intelligence for Markdown & AI Agents
 
-![MindGraph Hero Banner](assets/hero-banner.jpg)
+**把 Markdown / Obsidian Vault 变成可追溯、懂版本、遇到冲突会拒答的可信知识服务。**
 
-MindGraph 面向制度密集、版本频繁、错误代价高的企业知识场景。首个垂直方向是报销、财务与制度合规问答：回答不仅要“像是正确”，还必须能够回到原文证据，并逐步支持版本、生效期、例外和冲突治理。
+<p>
+  <a href="https://github.com/kayon0209/mindgraph/actions/workflows/ci-cd.yml"><img src="https://img.shields.io/github/actions/workflow/status/kayon0209/mindgraph/ci-cd.yml?branch=main&style=flat-square&label=CI" alt="CI"></a>
+  <a href="https://github.com/kayon0209/mindgraph/stargazers"><img src="https://img.shields.io/github/stars/kayon0209/mindgraph?style=flat-square&logo=github" alt="GitHub Stars"></a>
+  <img src="https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.11+">
+  <img src="https://img.shields.io/badge/FastAPI-0.115-009688?style=flat-square&logo=fastapi&logoColor=white" alt="FastAPI">
+  <img src="https://img.shields.io/badge/MCP-ready-7C3AED?style=flat-square" alt="MCP Ready">
+  <img src="https://img.shields.io/badge/local--first-✓-0F766E?style=flat-square" alt="Local First">
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-22C55E?style=flat-square" alt="MIT License"></a>
+</p>
 
-本项目由历史报销领域 RAG 项目演进而来。历史代码与评测经验保留在 `archive/legacy-rag/`，当前产品入口和新增能力统一使用 MindGraph 命名。
+<p>
+  <a href="#-60-秒体验">60 秒体验</a> ·
+  <a href="#-为什么是-mindgraph">为什么是 MindGraph</a> ·
+  <a href="#-mcp--ai-agent">MCP</a> ·
+  <a href="#️-系统架构">架构</a> ·
+  <a href="#-评测与可信边界">评测</a> ·
+  <a href="./docs/PRODUCT_STRATEGY.md">路线图</a>
+</p>
 
-## 当前能力
+<img src="assets/hero-banner.jpg" alt="MindGraph — local-first evidence intelligence" width="100%">
 
-- **混合检索**：FAISS/BGE Dense + BM25 Sparse + RRF 融合
-- **按需重排**：Cross-Encoder 不默认开启，避免不必要的延迟成本
-- **受控关系扩展**：只有人工确认的 confirmed 关系进入一跳补充检索
-- **可溯源回答**：SSE 流式生成，回答携带 citation 与检索 trace
-- **本地优先**：SQLite(WAL) + 版本化 FAISS 索引 + 本地 BGE
-- **人工审核闭环**：候选关系 proposed → confirmed/rejected
-- **制度版本防冲突**：同一 `policy_key` 在查询日期命中多个有效版本时，停止模型生成并列出待人工裁决版本
-- **可复现质量评测**：检索消融 + 确定性答案级可信评分，结果进入同一评测账本
-- **同仓 Web 工作台**：可信问答、制度台账、评测对比和关系审核
+</div>
 
-当前关系候选默认主要来自笔记级语义相似度。因此准确描述是“带人工确认关系扩展的 Hybrid RAG”，不是已经完成实体消歧、多跳推理和社区摘要的完整知识图谱系统。
+> **MindGraph 不是“接上文档就回答”的又一个聊天壳。**  
+> 它把混合检索、受控关系扩展、制度版本、生效日期、权限与 citation 放进同一条证据链；当证据互相冲突时，系统会在调用 LLM **之前**停止生成，并把问题交还给人。
 
-## 架构
+当前首个垂直场景是报销、财务与企业制度合规；底层能力同样适用于任何需要**版本治理、证据溯源和本地部署**的 Markdown 知识库。
 
-```text
-Markdown / Obsidian Vault
-    │ 扫描、稳定 ID、内容哈希
-    ▼
-FastAPI（src/api）
-    ├─ application       应用服务与用例编排
-    ├─ domain            领域模型与错误
-    ├─ infrastructure    SQLite、Provider、解析器与配置
-    └─ retrieval         Dense + Sparse + RRF + 受控关系扩展
-          │
-          ├─ SQLite(WAL)：notes / note_relations / evaluation_runs
-          └─ 版本化索引：FAISS / chunks / manifest / CURRENT
-```
+---
 
-当前生产 API 入口为 `src/api/main.py`。`src/retrieval/` 是 MindGraph 活跃核心，不是历史遗留目录。
+## ✨ 一眼看懂
 
-## 快速开始
+<table>
+<tr>
+<td width="25%" align="center"><b>🏠 Local-first</b><br><sub>SQLite + 本地索引<br>知识不必先上传 SaaS</sub></td>
+<td width="25%" align="center"><b>🔎 Evidence-first</b><br><sub>回答携带 citation<br>可回到原始证据</sub></td>
+<td width="25%" align="center"><b>🗓️ Version-aware</b><br><sub>理解生效期与历史版本<br>冲突时拒绝编答案</sub></td>
+<td width="25%" align="center"><b>🔌 Agent-ready</b><br><sub>REST + SSE + MCP<br>接入 AI Agent 工作流</sub></td>
+</tr>
+</table>
 
-### 1. 创建环境
+### 当前能力
 
-PowerShell：
+- **Hybrid Retrieval**：BGE / FAISS Dense + BM25 Sparse + RRF 融合
+- **Adaptive Routing**：按查询意图选择 vector、sparse、hybrid、graph 或 rerank
+- **Controlled Graph Expansion**：只有人工确认的关系才能进入一跳补充检索
+- **Grounded Answering**：SSE 流式回答、citation、检索 trace 与证据轨道
+- **Policy Lifecycle**：`policy_key`、版本、生效区间、状态和历史查询
+- **Conflict-before-Generation**：多个有效版本冲突时不调用 LLM
+- **Governed Access**：API Key / OIDC、workspace / department ACL 与访问审计
+- **MCP Server**：让 Claude Desktop、Claude Code 等客户端读取 MindGraph
+- **Evaluation Ledger**：检索消融、答案可信评分、延迟与成本进入统一账本
+- **Web Workspace**：问答、制度台账、关系审核和评测对比
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-Copy-Item .env.example .env
-```
+---
 
-Bash：
+## 🎯 为什么是 MindGraph？
+
+普通 RAG 往往只回答“哪段文字最像问题”，但在高风险知识场景里，真正困难的是：
+
+| 问题 | 常规 RAG | MindGraph |
+|---|---|---|
+| 新旧制度同时存在 | 可能混着回答 | 按查询日期过滤版本 |
+| 两个版本都显示有效 | 让 LLM 自己判断 | 生成前返回 `conflicting_evidence` |
+| 语义相似但关系未经确认 | 容易污染上下文 | 仅扩展 `confirmed` 关系 |
+| 用户无权查看某条证据 | 可能通过检索泄漏 | 检索、关系与 MCP 共用 ACL |
+| 回答看起来正确 | 很难验证 | citation + trace 回到原文 |
+| 质量是否真的提升 | 依赖主观感受 | 固定数据集 + 可重复评测 |
+
+这也是项目当前最核心的设计原则：
+
+> **先治理证据，再生成答案。**
+
+---
+
+## 🚀 60 秒体验
+
+### 路径 A：无需密钥的离线验收
+
+公开 `demo-vault/` 包含合成的企业制度、工作流和案例。下面的命令会在临时目录中完成同步、索引、Hybrid 检索、confirmed 关系扩展与消融验证，结束后自动清理。
 
 ```bash
+git clone https://github.com/kayon0209/mindgraph.git
+cd mindgraph
+
 python -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate              # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env
-```
 
-### 2. 先跑公开离线演示（无需密钥、无需私人 Vault）
-
-```powershell
 python scripts/validate_mindgraph_offline.py
 ```
 
-该命令用 `demo-vault/` 的合成企业制度，在临时目录中完成 Vault 同步、索引构建、Hybrid 检索、confirmed 关系一跳扩展及开关消融，运行结束自动清理。
+> 离线验收使用确定性的 Fake Embedding / Fake LLM，只证明工程链路可复现，不代表真实模型效果。
 
-如需生成供只读 API/数据检查使用的独立演示数据库：
+### 路径 B：启动完整 Web 工作台
 
-```powershell
-python scripts/sync_offline_demo.py
+```bash
+cp .env.example .env                   # Windows: Copy-Item .env.example .env
+# 按需填写 .env 中的模型 Provider 配置
+
+docker compose up --build
 ```
 
-默认输出为 `data/demo/product.sqlite3`，不会覆盖产品数据库。
+| 服务 | 地址 |
+|---|---|
+| Web Workspace | <http://127.0.0.1:3000> |
+| API | <http://127.0.0.1:8000> |
+| OpenAPI Docs | <http://127.0.0.1:8000/api/docs> |
+| Health | <http://127.0.0.1:8000/api/v1/health> |
 
-### 3. 同步自己的 Markdown/Vault 并建立真实索引
+---
 
-建议为企业制度登记以下 Frontmatter；缺失字段不会阻断同步，但会在 Web 台账中标记为“待治理”：
+## 🧭 核心工作流
+
+```mermaid
+flowchart LR
+    A[Markdown / Obsidian Vault] --> B[同步与治理]
+    B --> C[(SQLite WAL)]
+    B --> D[版本化 FAISS 索引]
+    Q[用户 / AI Agent] --> R[自适应检索路由]
+    C --> R
+    D --> R
+    R --> F[Dense + Sparse + RRF]
+    F --> G{证据是否冲突?}
+    G -- 是 --> H[拒绝生成并列出冲突版本]
+    G -- 否 --> I[confirmed 关系一跳扩展]
+    I --> J[LLM 生成]
+    J --> K[Answer + Citation + Trace]
+```
+
+1. 扫描 Vault，用稳定 ID 与内容哈希识别新增、修改和删除。
+2. 将正文、治理字段与 ACL 写入 SQLite，并原子切换版本化索引。
+3. 路由器理解查询意图，选择合适的检索策略。
+4. Dense 与 Sparse 结果经 RRF 融合，按需重排。
+5. 状态、生效期、分类和权限过滤贯穿基础检索与关系扩展。
+6. 若同一 `policy_key` 命中多个有效版本，系统在生成前停止。
+7. 正常回答通过 SSE 返回 citation 与检索 trace。
+
+---
+
+## 🔌 MCP × AI Agent
+
+MindGraph 内置只读 MCP Server，可作为 AI Agent 的本地证据层。当前提供 5 个工具：
+
+| Tool | 用途 |
+|---|---|
+| `mindgraph_list_notes` | 列出当前身份可见的笔记 |
+| `mindgraph_get_note` | 获取单篇笔记及治理元数据 |
+| `mindgraph_search` | 搜索可见知识并返回证据 |
+| `mindgraph_list_relations` | 查看双端均可见的已确认关系 |
+| `mindgraph_evaluation_overview` | 获取评测运行概览 |
+
+启动 stdio Server：
+
+```bash
+# macOS / Linux
+PYTHONPATH=src MCP_PRINCIPAL=local-user python -m mcp_server
+
+# Windows PowerShell
+$env:PYTHONPATH="src"
+$env:MCP_PRINCIPAL="local-user"
+python -m mcp_server
+```
+
+HTTP 端点：
+
+```text
+POST /api/v1/mcp
+GET  /api/v1/mcp/tools
+GET  /api/v1/mcp/health
+```
+
+> 当前 MCP 工具全部只读；关系提议和写回能力仍在路线图中。每次调用都会进入访问审计。
+
+---
+
+## 🏷️ 用 Frontmatter 治理知识
+
+MindGraph 仍以普通 Markdown 为源数据。对制度类文档，建议登记以下字段：
 
 ```yaml
 ---
@@ -94,96 +193,142 @@ owner: 财务运营部
 version: "2.0"
 status: active
 effective_from: 2026-07-01
-effective_to: 2027-06-30  # 长期有效可省略
+effective_to: 2027-06-30
 ---
 ```
 
-`policy_key` 是跨版本稳定的制度族标识，同一制度的 V1/V2/V3 必须使用相同值。`status` 当前接受 `draft`、`active`、`expired`、`superseded`、`archived`。同步服务会把这些字段规范化写入治理列，元数据变更会把文档重新标记为待索引；旧数据库在启动初始化时原位升级，不重建 `notes` 表。
+- `policy_key`：跨版本稳定的制度族标识；V1 / V2 / V3 使用相同值。
+- `status`：支持 `draft`、`active`、`expired`、`superseded`、`archived`。
+- 缺失字段不会阻断同步，但会在制度台账中标记为待治理。
+- 元数据变化会触发重新索引，历史版本仍可按查询日期检索。
 
-```powershell
-python scripts/sync_vault.py --vault "D:\path\to\vault"
+同步自己的 Vault：
+
+```bash
+python scripts/sync_vault.py --vault "/path/to/your/vault"
 ```
 
-### 4. 启动 API
+Obsidian 客户端见 [`obsidian-plugin/README.md`](obsidian-plugin/README.md)。
 
-```powershell
-python -m uvicorn api.main:app --app-dir src --host 127.0.0.1 --port 8000
+---
+
+## 🏗️ 系统架构
+
+<div align="center">
+  <img src="assets/architecture.svg" alt="MindGraph architecture" width="92%">
+</div>
+
+```text
+src/
+├── api/               FastAPI 路由、认证与 SSE
+├── application/       用例编排、路由、冲突治理与 Vault 同步
+├── domain/            领域模型与错误
+├── infrastructure/    SQLite、Provider、解析器与配置
+└── retrieval/         Dense、Sparse、RRF、重排与关系扩展
+
+web/                   React Web Workspace
+obsidian-plugin/       Obsidian 客户端
+evaluation/            数据集与评测逻辑
+demo-vault/            可公开复现的合成知识库
+archive/legacy-rag/     历史报销 RAG 实现
 ```
 
-- API 文档：<http://127.0.0.1:8000/api/docs>
-- 健康检查：<http://127.0.0.1:8000/api/v1/health>
+当前生产 API 入口是 `src/api/main.py`；`src/retrieval/` 是活跃核心，而不是历史遗留目录。
 
-### 5. 启动 React Web
+---
 
-```powershell
-cd web
-corepack enable
-corepack prepare pnpm@11.19.0 --activate
-pnpm install
-pnpm dev
-```
+## 📊 评测与可信边界
 
-打开 <http://127.0.0.1:5173>。开发服务器会把 `/api` 代理到本机 `8000` 端口。
-
-也可以从仓库根目录构建完整容器：
-
-```powershell
-docker compose up --build
-```
-
-Web：<http://127.0.0.1:3000>；API：<http://127.0.0.1:8000>。
-
-### 6. Obsidian 插件
-
-仓库内客户端见 [obsidian-plugin/README.md](obsidian-plugin/README.md)。插件消费 `/api/v1/mindgraph/chat/stream`，支持流式问答和插入当前笔记。
-
-## 当前开箱边界
-
-仓库已附带公开 `demo-vault/`，无需模型密钥即可验证同步、索引、Hybrid 检索和一跳关系扩展。离线演示使用确定性的 Fake Embedding/Fake LLM，只证明工程链路，不代表真实模型质量。
-
-React Web 已并入 `web/`，并由同一 CI 和 Docker Compose 构建。真实回答仍需配置模型 Provider，真实语义索引需准备本地 BGE 模型或允许首次下载；离线脚本中的 Fake 模型不会被 Web 冒充为生产能力。
-
-制度台账会展示 `policy_key`、owner、version、生效区间、制度状态和治理缺口；这些字段也会进入检索 chunk 与 citation。基础 Hybrid 检索和 confirmed 关系扩展共用状态、生效期与分类过滤，避免历史制度通过图扩展重新进入当前答案。同一 `policy_key` 在查询日期存在多个有效版本时，服务返回 `conflicting_evidence`，不调用生成模型；Web 证据轨道会完整展示冲突版本并要求责任人裁决。
-
-## 评测
-
-```powershell
+```bash
 # 检索层：BM25 / Hybrid / Hybrid + Graph
 python scripts/run_ablation.py
 
-# 回答层：直接运行 12 条 Golden case，保存预测并写入 evaluation_runs
-.\.venv\Scripts\python.exe scripts\run_answer_evaluation.py --live --strategy hybrid
+# 路由层
+python scripts/run_routing_evaluation.py
 
-# 对已有预测文件复评分，不写 evaluation_runs
-.\.venv\Scripts\python.exe scripts\run_answer_evaluation.py `
-  --predictions evaluation\results\answer_predictions_YYYYMMDDTHHMMSSZ.jsonl `
-  --dry-run
+# 回答层
+python scripts/run_answer_evaluation.py --live --strategy hybrid
 ```
 
-默认使用 `evaluation/datasets/mindgraph_golden.jsonl`：12 条人工编写、与运行关系库独立的企业制度样本，覆盖版本替代、审批阈值、例外、跨制度组合、无答案和歧义场景。答案评测会量化 citation F1、拒答正确性、版本有效性、必需事实覆盖与禁用事实规避，并在同一账本聚合 P95 总延迟、平均 Token、平均估算成本及各项数据覆盖率；成本缺少币种或混用币种时评测会失败。版本比较样本只允许 Golden 明确标注的历史来源。`--live --dry-run` 只禁止写入 `evaluation_runs`，问答服务仍会按现有隐私配置记录 `query_logs`。
+当前 `evaluation/datasets/mindgraph_golden.jsonl` 是 12 条人工编写、与运行关系库独立的冻结样本，覆盖：
 
-这些指标是可重复的字符串和元数据回归，不等同于语义正确性或人工判断。当前 12 条规模只够做确定性回归，不能作为生产效果或多跳 GraphRAG 增益证明。
+- 版本替代与历史查询
+- 审批阈值和例外
+- 跨制度组合
+- 无答案与歧义
+- citation、拒答、必需事实与禁用事实
+- P95 延迟、Token 与成本口径
 
-## 文档
+### 我们不会夸大的部分
+
+- 12 条样本只适合确定性回归，**不能**证明生产效果。
+- 当前关系候选主要来自笔记级语义相似度，只有人工确认关系进入检索。
+- 当前准确描述是**带人工确认关系扩展的 Hybrid RAG**，不是完整的实体消歧、多跳推理或社区摘要系统。
+- Fake Embedding / Fake LLM 只用于离线工程验收，不会被 Web 冒充为生产能力。
+
+---
+
+## 🗺️ 项目状态
+
+| 已完成 | 下一步 | 后续探索 |
+|---|---|---|
+| Hybrid 检索与 RRF | 扩展 100+ 分层 Golden Set | Typed policy edges |
+| 自适应检索路由 | MCP 关系提议与写回 | 实体—事件双图 |
+| 版本冲突生成前拦截 | 完整 Ruff / mypy 门禁 | 社区发现与摘要 |
+| ACL / OIDC / 审计 | 活跃核心覆盖率提升 | 多跳图推理 |
+| Web / Obsidian / MCP | 一键 Agent 配置 | 更多企业连接器 |
+
+完整边界和演进计划见 [`docs/PRODUCT_STRATEGY.md`](docs/PRODUCT_STRATEGY.md)。
+
+---
+
+## 📚 文档
 
 - [产品边界与升级路线](docs/PRODUCT_STRATEGY.md)
 - [当前架构与落地说明](docs/MindGraph-ARCH.md)
+- [部署指南](docs/DEPLOYMENT.md)
 - [检索成本效率分析](docs/MindGraph-cost-efficiency.md)
+- [Obsidian 插件](obsidian-plugin/README.md)
 - [历史报销 RAG PRD](archive/legacy-rag/docs/PRD-v2.md)
 
-## 开发验证
+---
 
-```powershell
-.\.venv\Scripts\python.exe -m pytest
-.\.venv\Scripts\ruff.exe check src scripts tests --select F821,F822,F823,E902
+## 🧪 开发验证
+
+```bash
+python -m pytest
+ruff check src scripts tests --select F821,F822,F823,E902
+
 cd web
 pnpm typecheck
 pnpm test
 pnpm build
 ```
 
-当前测试覆盖率门槛按已测基线暂设为 55%，用于保证 CI 不虚假标绿或永久红灯；全量 Ruff/格式遗留与覆盖率提升属于 Phase 1 的显式偿债项，目标是将活跃核心覆盖率提升到至少 60%。
+当前 CI 覆盖率门槛为 55%。全量 Ruff、格式遗留、mypy 阻断和更高覆盖率仍是显式偿债项，而不是已经完成的质量声明。
 
-## License
+---
 
-[MIT](LICENSE)
+## 🤝 参与项目
+
+欢迎提交 bug、可复现评测样本、文档改进和小而清晰的 Pull Request。
+
+特别欢迎这些方向：
+
+- 更真实且可公开的企业制度 Golden Cases
+- Claude Desktop / Claude Code / Cursor 的 MCP 配置示例
+- Obsidian 日常工作流与使用案例
+- 检索、权限或版本治理方面的边界测试
+- README 英文版与演示 GIF
+
+<div align="center">
+
+如果 MindGraph 对你有启发，欢迎点一个 ⭐，让更多人看到“证据优先”的本地知识系统。
+
+[Report Bug](https://github.com/kayon0209/mindgraph/issues) · [Read the Roadmap](docs/PRODUCT_STRATEGY.md) · [View the License](LICENSE)
+
+<br>
+
+**MIT License**
+
+</div>
