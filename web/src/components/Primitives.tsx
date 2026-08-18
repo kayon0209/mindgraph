@@ -24,6 +24,20 @@ export function PageHeader({
   );
 }
 
+const STATUS_LABELS: Record<string, string> = {
+  queued: "排队中",
+  running: "运行中",
+  completed: "已完成",
+  failed: "失败",
+  cancelled: "已取消",
+  interrupted: "已中断",
+  active: "在行",
+  indexed: "已索引",
+  confirmed: "已确认",
+  rejected: "已拒绝",
+  healthy: "健康",
+};
+
 export function StatusPill({ value }: { value: string }) {
   const normalized = value.toLowerCase();
   const tone = ["active", "completed", "indexed", "confirmed", "healthy"].includes(normalized)
@@ -31,7 +45,7 @@ export function StatusPill({ value }: { value: string }) {
     : ["failed", "rejected", "conflict"].includes(normalized)
       ? "negative"
       : "neutral";
-  return <span className={`status-pill ${tone}`}>{value || "unknown"}</span>;
+  return <span className={`status-pill ${tone}`}>{STATUS_LABELS[normalized] || value || "unknown"}</span>;
 }
 
 export function LoadingState({ label = "正在读取真实数据" }: { label?: string }) {

@@ -57,6 +57,7 @@ class VaultScanResult(NamedTuple):
 
 class PolicyMetadata(NamedTuple):
     owner: str | None
+    policy_key: str | None
     document_version: str | None
     effective_from: str | None
     effective_to: str | None
@@ -100,6 +101,7 @@ def _metadata_text(value: Any) -> str | None:
 
 def _policy_metadata(fm: dict[str, Any]) -> PolicyMetadata:
     owner = _metadata_text(fm.get("owner"))
+    policy_key = _metadata_text(fm.get("policy_key"))
     version = _metadata_text(fm.get("version"))
     effective_from = _metadata_text(fm.get("effective_from"))
     effective_to = _metadata_text(fm.get("effective_to"))
@@ -108,6 +110,8 @@ def _policy_metadata(fm: dict[str, Any]) -> PolicyMetadata:
 
     if not owner:
         issues.append("missing_owner")
+    if not policy_key:
+        issues.append("missing_policy_key")
     if not version:
         issues.append("missing_version")
     if not effective_from:
@@ -123,7 +127,7 @@ def _policy_metadata(fm: dict[str, Any]) -> PolicyMetadata:
     if effective_from and effective_to and effective_to < effective_from:
         issues.append("invalid_effective_range")
 
-    return PolicyMetadata(owner, version, effective_from, effective_to, status, issues)
+    return PolicyMetadata(owner, policy_key, version, effective_from, effective_to, status, issues)
 
 
 class VaultSyncService:
@@ -216,9 +220,9 @@ class VaultSyncService:
         INSERT INTO notes
             (note_id, vault_path, title, content_hash, frontmatter_json, ai_access_level,
              chunk_count, index_status, index_version, owner, document_version,
-             effective_from, effective_to, policy_status, metadata_issues_json,
+             policy_key, effective_from, effective_to, policy_status, metadata_issues_json,
              created_at, updated_at, last_indexed_at)
-        VALUES (?, ?, ?, ?, ?, ?, 0, 'pending', NULL, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+        VALUES (?, ?, ?, ?, ?, ?, 0, 'pending', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
         ON CONFLICT(note_id) DO UPDATE SET
             vault_path=excluded.vault_path,
             title=excluded.title,
@@ -227,6 +231,7 @@ class VaultSyncService:
             ai_access_level=excluded.ai_access_level,
             owner=excluded.owner,
             document_version=excluded.document_version,
+            policy_key=excluded.policy_key,
             effective_from=excluded.effective_from,
             effective_to=excluded.effective_to,
             policy_status=excluded.policy_status,
@@ -236,6 +241,7 @@ class VaultSyncService:
                 WHEN excluded.content_hash <> notes.content_hash
                   OR excluded.owner IS NOT notes.owner
                   OR excluded.document_version IS NOT notes.document_version
+                  OR excluded.policy_key IS NOT notes.policy_key
                   OR excluded.effective_from IS NOT notes.effective_from
                   OR excluded.effective_to IS NOT notes.effective_to
                   OR excluded.policy_status IS NOT notes.policy_status
@@ -251,7 +257,7 @@ class VaultSyncService:
         self.db.execute(
             self._UPSERT,
             (note_id, vault_path, title, content_hash, json.dumps(fm, ensure_ascii=False, default=_json_default),
-             access, policy.owner, policy.document_version, policy.effective_from,
+             access, policy.owner, policy.document_version, policy.policy_key, policy.effective_from,
              policy.effective_to, policy.policy_status, json.dumps(policy.issues, ensure_ascii=False),
              now, now),
         )

@@ -1,6 +1,7 @@
 """生产级中间件：安全 Headers、请求日志、速率限制、请求体大小限制、响应计时。"""
 from __future__ import annotations
 
+import json
 import logging
 import time
 import uuid
@@ -12,6 +13,42 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 
 logger = logging.getLogger("mindgraph.api.middleware")
+
+
+def _actor_from_request(request: Request) -> str:
+    api_key = request.headers.get("X-API-Key") or ""
+    auth_header = request.headers.get("Authorization", "")
+    token = api_key or (auth_header[7:] if auth_header.startswith("Bearer ") else "")
+    if not token:
+        return "anonymous"
+    return f"api_key:{token[:6]}…"
+
+
+def _record_access_audit(request: Request, response: Response, elapsed_ms: float) -> None:
+    try:
+        from api.dependencies import get_container
+
+        container = get_container()
+        container.database.execute(
+            "INSERT INTO access_audit (audit_id, request_id, actor, action, resource, decision, reason, metadata_json, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                str(uuid.uuid4()),
+                getattr(request.state, "request_id", None),
+                _actor_from_request(request),
+                request.method,
+                request.url.path,
+                "deny" if response.status_code >= 400 else "allow",
+                None,
+                json.dumps({
+                    "status_code": response.status_code,
+                    "latency_ms": elapsed_ms,
+                    "query": request.url.query,
+                }, ensure_ascii=False),
+                time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            ),
+        )
+    except Exception:
+        logger.debug("access_audit_write_skipped", exc_info=True)
 
 
 # ── 安全 Headers 中间件 ──
@@ -71,6 +108,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                 "latency_ms": elapsed_ms,
             },
         )
+        _record_access_audit(request, response, elapsed_ms)
 
         return response
 

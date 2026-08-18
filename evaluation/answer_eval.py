@@ -8,7 +8,7 @@ from statistics import fmean
 from typing import Any
 
 
-REFUSAL_STATES = {"insufficient_evidence", "out_of_scope"}
+REFUSAL_STATES = {"insufficient_evidence", "out_of_scope", "conflicting_evidence"}
 ANSWER_METRICS = (
     "citation_correctness",
     "refusal_correctness",
@@ -61,8 +61,10 @@ def evaluate_answer_case(case: dict[str, Any], prediction: dict[str, Any]) -> di
     failures: list[str] = []
     expected_behavior = case["expected_behavior"]
     result_state = prediction.get("result_state")
-    refused = result_state in REFUSAL_STATES
-    refusal_correctness = float(refused == (expected_behavior == "abstain"))
+    if expected_behavior == "abstain":
+        refusal_correctness = float(result_state in REFUSAL_STATES)
+    else:
+        refusal_correctness = float(result_state == "answered")
     if not refusal_correctness:
         failures.append("expected_abstention" if expected_behavior == "abstain" else "unexpected_refusal")
 

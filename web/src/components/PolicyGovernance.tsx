@@ -27,7 +27,7 @@ export function PolicyGovernance({ compact = false, value }: { compact?: boolean
       {view.issueLabels.length ? (
         <ul>{view.issueLabels.map((issue) => <li key={issue}>{issue}</li>)}</ul>
       ) : (
-        <p>责任部门、版本、生效期和状态均已登记。</p>
+        <p>制度族、责任部门、版本、生效期和状态均已登记。</p>
       )}
     </section>
   );

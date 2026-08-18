@@ -51,6 +51,8 @@ def _governance_from_row(row: dict) -> dict:
     derived_issues = []
     if not row.get("owner"):
         derived_issues.append("missing_owner")
+    if not row.get("policy_key"):
+        derived_issues.append("missing_policy_key")
     if not row.get("document_version"):
         derived_issues.append("missing_version")
     if not row.get("effective_from"):
@@ -62,6 +64,7 @@ def _governance_from_row(row: dict) -> dict:
             issues.append(issue)
     complete = bool(
         row.get("owner")
+        and row.get("policy_key")
         and row.get("document_version")
         and row.get("effective_from")
         and row.get("policy_status") != "unspecified"
@@ -69,6 +72,7 @@ def _governance_from_row(row: dict) -> dict:
     )
     return {
         "owner": row.get("owner"),
+        "policy_key": row.get("policy_key"),
         "version": row.get("document_version"),
         "effective_from": row.get("effective_from"),
         "effective_to": row.get("effective_to"),
@@ -112,7 +116,8 @@ def list_notes(
         where.append("policy_status = ?")
         params.append(policy_status)
     governance_complete_sql = (
-        "COALESCE(TRIM(owner), '') <> '' AND COALESCE(TRIM(document_version), '') <> '' "
+        "COALESCE(TRIM(owner), '') <> '' AND COALESCE(TRIM(policy_key), '') <> '' "
+        "AND COALESCE(TRIM(document_version), '') <> '' "
         "AND COALESCE(TRIM(effective_from), '') <> '' AND policy_status <> 'unspecified' "
         "AND metadata_issues_json = '[]'"
     )
@@ -127,7 +132,7 @@ def list_notes(
     rows = db.fetch_all(
         f"""SELECT note_id, vault_path, title, ai_access_level, chunk_count,
                    index_status, updated_at, frontmatter_json, owner, document_version,
-                   effective_from, effective_to, policy_status, metadata_issues_json
+                   policy_key, effective_from, effective_to, policy_status, metadata_issues_json
             FROM notes {where_sql}
             ORDER BY updated_at DESC LIMIT ? OFFSET ?""",
         (*params, limit, offset),
@@ -144,7 +149,7 @@ def get_note(note_id: str):
     row = db.fetch_one(
         """SELECT note_id, vault_path, title, ai_access_level, chunk_count,
                   index_status, updated_at, frontmatter_json, created_at, owner,
-                  document_version, effective_from, effective_to, policy_status,
+                  document_version, policy_key, effective_from, effective_to, policy_status,
                   metadata_issues_json
            FROM notes WHERE note_id = ?""",
         (note_id,),

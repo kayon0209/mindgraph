@@ -110,6 +110,7 @@ export function RelationsPage() {
                 <div className="relation-meta">
                   <span>置信度 <strong>{typeof relation.confidence === "number" ? `${(relation.confidence * 100).toFixed(0)}%` : "—"}</strong></span>
                   {relation.proposed_at ? <span>提出于 {relation.proposed_at}</span> : null}
+                  {relation.evidence_chunk_id ? <span>证据片段 {relation.evidence_chunk_id}</span> : null}
                   {relation.conflict ? <span className="conflict-label"><AlertOctagon size={14} /> 已有确认边</span> : null}
                 </div>
                 {tab === "proposed" ? (
@@ -134,10 +135,6 @@ export function RelationsPage() {
                 ) : (
                   <span className="confirmed-stamp">CONFIRMED</span>
                 )}
-                <details className="technical-details relation-technical">
-                  <summary>技术标识</summary>
-                  <code>{relation.source_id} → {relation.target_id}</code>
-                </details>
               </article>
             ))}
           </div>

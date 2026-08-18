@@ -41,6 +41,7 @@ export function EvaluationPage() {
   const latest = data?.runs[0] ?? null;
   const latestAnswerRun = latestRunWithMetric(data?.runs ?? [], "citation_correctness");
   const latestEfficiencyRun = latestRunWithMetric(data?.runs ?? [], "p95_total_latency_ms");
+  const latestRoutingRun = latestRunWithMetric(data?.runs ?? [], "route_accuracy");
   const efficiency = evaluationEfficiencyView(latestEfficiencyRun);
 
   return (
@@ -66,6 +67,9 @@ export function EvaluationPage() {
             <MetricCard label="引用正确性" note="最新答案级评测" value={percent(latestAnswerRun ? metricValue(latestAnswerRun, "citation_correctness") : null)} />
             <MetricCard label="拒答正确性" note="最新答案级评测" value={percent(latestAnswerRun ? metricValue(latestAnswerRun, "refusal_correctness") : null)} />
             <MetricCard label="版本有效性" note="状态与生效期一致" value={percent(latestAnswerRun ? metricValue(latestAnswerRun, "version_validity") : null)} />
+            <MetricCard label="路由准确率" note="冻结路由矩阵" value={percent(latestRoutingRun ? metricValue(latestRoutingRun, "route_accuracy") : null)} />
+            <MetricCard label="重排路由占比" note="高成本路径使用率" value={percent(latestRoutingRun ? metricValue(latestRoutingRun, "rerank_route_rate") : null)} />
+            <MetricCard label="关系扩展占比" note="受控图路径使用率" value={percent(latestRoutingRun ? metricValue(latestRoutingRun, "graph_route_rate") : null)} />
             <MetricCard label="P95 总延迟" note="最新答案级评测" value={efficiency.p95Latency} />
             <MetricCard label="平均 Token" note="仅统计 Provider 已上报样本" value={efficiency.meanTokens} />
             <MetricCard label="平均估算成本" note={`成本覆盖率 ${efficiency.costCoverage}`} value={efficiency.meanCost} />
@@ -73,6 +77,13 @@ export function EvaluationPage() {
             <MetricCard label="已索引制度" note="真实 CURRENT manifest" value={data.library_stats.indexed_notes} />
             <MetricCard label="待审核关系" note="不会自动进入检索" value={data.library_stats.relations_proposed} />
           </div>
+
+          {data.runs.length === 0 ? (
+            <EmptyState
+              title="还没有评测运行"
+              detail="可以先运行 scripts/run_ablation.py，再回到这里查看策略对比和真实指标。"
+            />
+          ) : null}
 
           {comparisonRuns.length ? (
             <section className="comparison-section reveal reveal-3">
@@ -112,6 +123,7 @@ export function EvaluationPage() {
                       <th>引用正确性</th>
                       <th>拒答正确性</th>
                       <th>版本有效性</th>
+                      <th>路由准确率</th>
                       <th>P95 / 检索平均延迟</th>
                       <th>平均成本</th>
                       <th>状态</th>
@@ -128,6 +140,7 @@ export function EvaluationPage() {
                         <td>{percent(metricValue(run, "citation_correctness"))}</td>
                         <td>{percent(metricValue(run, "refusal_correctness"))}</td>
                         <td>{percent(metricValue(run, "version_validity"))}</td>
+                        <td>{percent(metricValue(run, "route_accuracy"))}</td>
                         <td>{numericMetricValue(run, "p95_total_latency_ms") !== null
                           ? `${numericMetricValue(run, "p95_total_latency_ms")!.toFixed(0)} ms`
                           : typeof run.metrics.mean_retrieval_latency_ms === "number"

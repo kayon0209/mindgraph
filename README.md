@@ -21,6 +21,7 @@ MindGraph 面向制度密集、版本频繁、错误代价高的企业知识场�
 - **可溯源回答**：SSE 流式生成，回答携带 citation 与检索 trace
 - **本地优先**：SQLite(WAL) + 版本化 FAISS 索引 + 本地 BGE
 - **人工审核闭环**：候选关系 proposed → confirmed/rejected
+- **制度版本防冲突**：同一 `policy_key` 在查询日期命中多个有效版本时，停止模型生成并列出待人工裁决版本
 - **可复现质量评测**：检索消融 + 确定性答案级可信评分，结果进入同一评测账本
 - **同仓 Web 工作台**：可信问答、制度台账、评测对比和关系审核
 
@@ -88,6 +89,7 @@ python scripts/sync_offline_demo.py
 
 ```yaml
 ---
+policy_key: expense.general
 owner: 财务运营部
 version: "2.0"
 status: active
@@ -96,7 +98,7 @@ effective_to: 2027-06-30  # 长期有效可省略
 ---
 ```
 
-`status` 当前接受 `draft`、`active`、`expired`、`superseded`、`archived`。同步服务会把这些字段规范化写入治理列，元数据变更会把文档重新标记为待索引；旧数据库在启动初始化时原位升级，不重建 `notes` 表。
+`policy_key` 是跨版本稳定的制度族标识，同一制度的 V1/V2/V3 必须使用相同值。`status` 当前接受 `draft`、`active`、`expired`、`superseded`、`archived`。同步服务会把这些字段规范化写入治理列，元数据变更会把文档重新标记为待索引；旧数据库在启动初始化时原位升级，不重建 `notes` 表。
 
 ```powershell
 python scripts/sync_vault.py --vault "D:\path\to\vault"
@@ -141,7 +143,7 @@ Web：<http://127.0.0.1:3000>；API：<http://127.0.0.1:8000>。
 
 React Web 已并入 `web/`，并由同一 CI 和 Docker Compose 构建。真实回答仍需配置模型 Provider，真实语义索引需准备本地 BGE 模型或允许首次下载；离线脚本中的 Fake 模型不会被 Web 冒充为生产能力。
 
-制度台账会展示 owner、version、生效区间、制度状态和治理缺口；这些字段也会进入检索 chunk 与 citation。基础 Hybrid 检索和 confirmed 关系扩展共用状态、生效期与分类过滤，避免历史制度通过图扩展重新进入当前答案。
+制度台账会展示 `policy_key`、owner、version、生效区间、制度状态和治理缺口；这些字段也会进入检索 chunk 与 citation。基础 Hybrid 检索和 confirmed 关系扩展共用状态、生效期与分类过滤，避免历史制度通过图扩展重新进入当前答案。同一 `policy_key` 在查询日期存在多个有效版本时，服务返回 `conflicting_evidence`，不调用生成模型；Web 证据轨道会完整展示冲突版本并要求责任人裁决。
 
 ## 评测
 

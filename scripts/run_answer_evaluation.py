@@ -130,7 +130,11 @@ def main() -> None:
     source.add_argument("--live", action="store_true", help="run every Golden question through the configured service")
     parser.add_argument("--output", help="live prediction JSONL output path")
     parser.add_argument("--dataset-name", default="mindgraph_enterprise_answer_v2")
-    parser.add_argument("--strategy", default="hybrid", choices=["dense", "bm25", "hybrid", "hybrid_rerank"])
+    parser.add_argument(
+        "--strategy",
+        default="auto",
+        choices=["auto", "dense", "bm25", "hybrid", "hybrid_rerank"],
+    )
     parser.add_argument("--provider")
     parser.add_argument("--model")
     parser.add_argument("--no-graph", action="store_true")

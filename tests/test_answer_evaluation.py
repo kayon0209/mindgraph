@@ -103,6 +103,30 @@ def test_refusal_correctness_distinguishes_expected_abstention_from_answer() -> 
     assert "expected_abstention" in unsupported["failures"]
 
 
+@pytest.mark.parametrize("result_state", ["conflicting_evidence", "clarification_required", "model_unavailable", "system_error"])
+def test_non_answer_terminal_states_fail_answer_expected_cases(result_state: str) -> None:
+    """Catches unavailable or conflicting outcomes being counted as successful answers."""
+    result = evaluate_answer_case(
+        {
+            "case_id": "answer-required",
+            "expected_behavior": "answer",
+            "evaluation_date": "2026-08-18",
+            "gold_vault_paths": ["policies/current.md"],
+            "historical_vault_paths": [],
+            "required_facts": [],
+            "forbidden_facts": [],
+        },
+        {
+            "result_state": result_state,
+            "answer": "未生成答案",
+            "citations": [_citation("policies/current.md")],
+        },
+    )
+
+    assert result["refusal_correctness"] == 0.0
+    assert "unexpected_refusal" in result["failures"]
+
+
 def test_version_validity_rejects_expired_current_source_but_allows_labeled_history() -> None:
     """Catches archived policy being accepted as a current rule."""
     base_case = {

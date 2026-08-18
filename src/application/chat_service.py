@@ -8,6 +8,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
+from application.adaptive_retrieval_router import AdaptiveRetrievalRouter, RetrievalRouteDecision
+from application.policy_conflict_service import PolicyConflictService
 from domain.errors import ProviderUnavailableError, RetrievalUnavailableError
 from domain.models import (
     AnswerResult, ChatRequest, Citation, ResultState, RetrievalTraceModel,
@@ -19,40 +21,66 @@ from infrastructure.database import ProductDatabase, dumps
 OUT_OF_SCOPE = ("工资", "薪资", "年终奖", "股票", "请假", "年假", "辞职", "离职", "wifi", "食堂", "系统提示词", "ignore previous", "system prompt")
 REFUSAL = "抱歉，我只能回答公司报销相关问题。"
 INSUFFICIENT = "未在制度文件中找到足够依据。建议联系 HR/财务确认。"
+CONFLICTING = "检测到同一制度在查询日期存在多个有效版本，已停止生成答案。请由制度责任人确认有效版本。"
 logger = logging.getLogger("mindgraph.chat")
 
 DEFAULT_SYSTEM_PROMPT = "你是企业报销政策助手。只能依据给定制度证据回答；不得编造。先给结论，再给简要依据，并使用 [citation-N] 标注引用。"
 
 
 class ChatService:
-    def __init__(self, database: ProductDatabase, pipeline_factory, provider, privacy_log_questions: bool = True, system_prompt: str | None = None) -> None:
+    def __init__(self, database: ProductDatabase, pipeline_factory, provider, privacy_log_questions: bool = True, system_prompt: str | None = None, retrieval_router: AdaptiveRetrievalRouter | None = None) -> None:
         self.database = database
         self.pipeline_factory = pipeline_factory
         self.provider = provider
         self.privacy_log_questions = privacy_log_questions
         self.system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
+        self.policy_conflict_service = PolicyConflictService(database)
+        self.retrieval_router = retrieval_router or AdaptiveRetrievalRouter()
 
     def _provider(self, name: str | None = None, model: str | None = None):
         return self.provider.get(name, model) if hasattr(self.provider, "get") else self.provider
 
-    def _retrieve(self, request: ChatRequest):
+    def _route(self, request: ChatRequest) -> tuple[RetrievalRouteDecision, float]:
+        started = time.perf_counter()
+        decision = self.retrieval_router.decide(
+            request.question,
+            requested_strategy=request.retrieval_strategy,
+            graph_allowed=request.graph_enabled,
+        )
+        return decision, round((time.perf_counter() - started) * 1000, 3)
+
+    def _retrieve(self, request: ChatRequest, decision: RetrievalRouteDecision, routing_ms: float):
         pipeline = self.pipeline_factory(request.final_top_k)
         parameters = inspect.signature(pipeline.retrieve).parameters
-        graph_enabled = getattr(request, "graph_enabled", True)
         if "graph_enabled" not in parameters:
             # 普通检索管线不支持图谱扩展，忽略该参数
             if "query_date" not in parameters:
-                return pipeline.retrieve(request.question, request.retrieval_strategy)
-            return pipeline.retrieve(
-                request.question, request.retrieval_strategy, request.query_date,
-                request.knowledge_categories, request.include_historical,
+                trace = pipeline.retrieve(request.question, decision.selected_strategy)
+            else:
+                trace = pipeline.retrieve(
+                    request.question, decision.selected_strategy, request.query_date,
+                    request.knowledge_categories, request.include_historical,
+                )
+        elif "query_date" not in parameters:
+            trace = pipeline.retrieve(
+                request.question,
+                decision.selected_strategy,
+                graph_enabled=decision.graph_enabled,
             )
-        if "query_date" not in parameters:
-            return pipeline.retrieve(request.question, request.retrieval_strategy, graph_enabled=graph_enabled)
-        return pipeline.retrieve(
-            request.question, request.retrieval_strategy, request.query_date,
-            request.knowledge_categories, request.include_historical, graph_enabled=graph_enabled,
+        else:
+            trace = pipeline.retrieve(
+                request.question, decision.selected_strategy, request.query_date,
+                request.knowledge_categories, request.include_historical,
+                graph_enabled=decision.graph_enabled,
+            )
+        trace.requested_strategy = request.retrieval_strategy
+        trace.route_decision = decision.to_dict()
+        trace.latency_ms["routing_ms"] = routing_ms
+        trace.latency_ms["total_retrieval_ms"] = round(
+            sum(value for key, value in trace.latency_ms.items() if key != "total_retrieval_ms"),
+            3,
         )
+        return trace
 
     @staticmethod
     def _is_out_of_scope(question: str) -> bool:
@@ -73,6 +101,7 @@ class ChatService:
             warnings=payload.get("warnings", []),
             graph_enabled=getattr(trace, "graph_enabled", False),
             graph_links=getattr(trace, "graph_links", []),
+            route_decision=payload.get("route_decision", {}),
         )
 
     @staticmethod
@@ -91,8 +120,16 @@ class ChatService:
                 effective_to=metadata.get("effective_to"), policy_status=metadata.get("policy_status"),
                 authority_level=metadata.get("authority_level"), knowledge_category=metadata.get("knowledge_category"),
                 authority_adjustment=candidate.authority_adjustment, vault_path=metadata.get("vault_path"),
+                policy_key=metadata.get("policy_key"),
             ))
         return citations
+
+    def _policy_conflicts(self, citations: list[Citation], request: ChatRequest) -> list[dict[str, Any]]:
+        return self.policy_conflict_service.find_for_policy_keys(
+            {item.policy_key for item in citations if item.policy_key},
+            as_of=request.query_date,
+            include_historical=request.include_historical,
+        )
 
     def _messages(self, question: str, citations: list[Citation], graph_links: list[dict] | None = None) -> list[dict[str, str]]:
         context = "\n\n".join(f"[{item.citation_id}] {item.document_name} / {item.section_path or '-'}\n{item.excerpt}" for item in citations)
@@ -156,11 +193,27 @@ class ChatService:
             self._persist(result)
             return result
         try:
-            trace = self._retrieve(request)
+            decision, routing_ms = self._route(request)
+            trace = self._retrieve(request, decision, routing_ms)
         except Exception as exc:
             raise RetrievalUnavailableError("Retrieval is unavailable") from exc
         citations = self._citations(trace)
         trace_model = self._trace_model(trace) if request.include_retrieval_trace else None
+        conflicts = self._policy_conflicts(citations, request)
+        if conflicts:
+            conflict_trace = trace_model or self._trace_model(trace)
+            conflict_trace.policy_conflicts = conflicts
+            result = AnswerResult(
+                request_id=request_id, question=request.question, answer=CONFLICTING,
+                result_state=ResultState.conflicting_evidence, citations=citations, retrieval_trace=conflict_trace,
+                timing=self._timing(trace, started, None, None), requested_strategy=request.retrieval_strategy,
+                actual_strategy=trace.actual_strategy, degraded=trace.degraded,
+                degradation_reason=trace.degradation_reason, model=provider.model_name,
+                requested_provider=request.chat_provider or provider.provider_name,
+                actual_provider=provider.provider_name, index_version=trace.index_version,
+            )
+            self._persist(result)
+            return result
         if not citations:
             result = AnswerResult(
                 request_id=request_id, question=request.question, answer=INSUFFICIENT,
@@ -219,19 +272,37 @@ class ChatService:
             yield event("usage", result.usage.model_dump(mode="json"))
             yield event("completed", result.model_dump(mode="json"))
             return
-        yield event("retrieval_started", {})
+        decision, routing_ms = self._route(request)
+        yield event("retrieval_routed", {**decision.to_dict(), "routing_ms": routing_ms})
+        yield event("retrieval_started", {"strategy": decision.selected_strategy})
         try:
-            trace = self._retrieve(request)
+            trace = self._retrieve(request, decision, routing_ms)
         except Exception:
             yield event("error", {"code": "retrieval_unavailable", "message": "Retrieval is unavailable"})
             return
-        yield event("retrieval_completed", {"actual_strategy": trace.actual_strategy, "candidate_counts": trace.candidate_counts})
-        if request.retrieval_strategy == "hybrid_rerank":
+        yield event("retrieval_completed", {
+            "actual_strategy": trace.actual_strategy,
+            "candidate_counts": trace.candidate_counts,
+            "route_decision": trace.route_decision,
+        })
+        if decision.selected_strategy == "hybrid_rerank":
             yield event("rerank_completed", {"degraded": trace.degraded})
         if trace.degraded:
             yield event("degraded", {"reason": trace.degradation_reason, "actual_strategy": trace.actual_strategy})
         citations = self._citations(trace)
-        if not citations:
+        conflicts = self._policy_conflicts(citations, request)
+        if conflicts:
+            yield event("policy_conflict_detected", {"conflicts": conflicts})
+            yield event("answer_delta", {"text": CONFLICTING, "stream_mode": "deterministic"})
+            conflict_trace = self._trace_model(trace)
+            conflict_trace.policy_conflicts = conflicts
+            result = AnswerResult(request_id=request_id, question=request.question, answer=CONFLICTING,
+                result_state=ResultState.conflicting_evidence, citations=citations, retrieval_trace=conflict_trace,
+                timing=self._timing(trace, started, None, 0.0), requested_strategy=request.retrieval_strategy,
+                actual_strategy=trace.actual_strategy, degraded=trace.degraded, degradation_reason=trace.degradation_reason,
+                model=provider.model_name, requested_provider=request.chat_provider or provider.provider_name,
+                actual_provider=provider.provider_name, index_version=trace.index_version)
+        elif not citations:
             yield event("answer_delta", {"text": INSUFFICIENT, "stream_mode": "deterministic"})
             result = AnswerResult(request_id=request_id, question=request.question, answer=INSUFFICIENT,
                 result_state=ResultState.insufficient_evidence, citations=[], retrieval_trace=self._trace_model(trace),

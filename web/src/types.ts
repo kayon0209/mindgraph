@@ -8,7 +8,7 @@ export type HealthStatus = {
 
 export type ChatRequest = {
   question: string;
-  retrieval_strategy: "dense" | "bm25" | "hybrid" | "hybrid_rerank";
+  retrieval_strategy: "auto" | "dense" | "bm25" | "hybrid" | "hybrid_rerank";
   final_top_k: number;
   include_retrieval_trace: boolean;
   include_historical: boolean;
@@ -30,6 +30,7 @@ export type Citation = {
   effective_from?: string | null;
   effective_to?: string | null;
   policy_status?: string | null;
+  policy_key?: string | null;
   authority_level?: string | null;
   vault_path?: string | null;
 };
@@ -43,6 +44,35 @@ export type GraphLink = {
   confidence?: number;
 };
 
+export type PolicyConflictVersion = {
+  note_id: string;
+  title: string;
+  vault_path: string;
+  version: string | null;
+  effective_from: string | null;
+  effective_to: string | null;
+  policy_status: string;
+  owner: string | null;
+};
+
+export type PolicyConflict = {
+  policy_key: string;
+  as_of: string;
+  versions: PolicyConflictVersion[];
+};
+
+export type RouteDecision = {
+  mode: "adaptive" | "manual";
+  route: string;
+  requested_strategy: string;
+  selected_strategy: string;
+  graph_enabled: boolean;
+  reasons: string[];
+  estimated_cost_tier?: string;
+  estimated_latency_tier?: string;
+  degraded?: boolean;
+};
+
 export type RetrievalTrace = {
   requested_strategy: string;
   actual_strategy: string;
@@ -53,6 +83,8 @@ export type RetrievalTrace = {
   index_version?: string | null;
   graph_enabled: boolean;
   graph_links: GraphLink[];
+  policy_conflicts?: PolicyConflict[];
+  route_decision?: RouteDecision;
 };
 
 export type AnswerResult = {
@@ -92,6 +124,7 @@ export type NoteItem = {
 };
 
 export type PolicyGovernance = {
+  policy_key: string | null;
   owner: string | null;
   version: string | null;
   effective_from: string | null;

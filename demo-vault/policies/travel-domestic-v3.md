@@ -1,4 +1,5 @@
 ---
+policy_key: travel.domestic
 owner: 行政与财务联合小组
 version: "3.0"
 status: active

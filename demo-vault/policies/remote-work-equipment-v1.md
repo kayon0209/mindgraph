@@ -1,4 +1,5 @@
 ---
+policy_key: hr.remote-work-equipment
 owner: 人力资源部
 version: "1.0"
 status: active

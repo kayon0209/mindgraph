@@ -39,6 +39,7 @@ Obsidian Vault 是当前已实现的数据源和客户端之一，不是产品�
 在线：用户问题
    → 范围检查 → 向量化 → 融合检索(RRF) → [重排]
    → MindGraphRetrievalPipeline：命中笔记沿 confirmed note_relations 一跳扩展补充证据
+   → PolicyConflictService：按 policy_key + 查询日期检查有效版本唯一性；冲突则拒绝生成并转人工
    → 拼装 Prompt（系统指令 + 引用证据 + graph_links）
    → LLM 流式生成（SSE）→ 结论 + [citation-N] + 关系面板
 ```
@@ -46,15 +47,15 @@ Obsidian Vault 是当前已实现的数据源和客户端之一，不是产品�
 ## 4. 数据模型
 
 - **notes**(`note_id` PK, `vault_path` UNIQUE, `title`, `content_hash`, `frontmatter_json`,
-  `ai_access_level`, `owner`, `document_version`, `effective_from/to`, `policy_status`,
+  `ai_access_level`, `policy_key`, `owner`, `document_version`, `effective_from/to`, `policy_status`,
   `metadata_issues_json`, `chunk_count`, `index_status`, `index_version`, 时间戳)
   - 稳定 ID：Frontmatter 注入 `mindgraph_id`；`vault_path` 作跨重命名 / 移动溯源键
   - 治理字段由 Vault Frontmatter 规范化；缺失/非法字段记录为 issue，不静默伪造默认业务含义
-  - schema v4 使用兼容 `ALTER TABLE ADD COLUMN` 原位升级，保留既有笔记数据
+  - `policy_key` 是跨版本稳定的制度族标识；schema v5 使用兼容 `ALTER TABLE ADD COLUMN` 原位升级，并建立生命周期联合索引，保留既有笔记数据
 - **note_relations**(`relation_id` PK, `source_note_id` / `target_note_id` FK, `relation_type`,
   `direction`, `status`∈{proposed,confirmed}, `evidence_chunk_id`, `confidence`,
   `model_version`, `prompt_version`, `proposed_at`, `resolved_at`, `resolved_by`)
-  - 冲突检测：若某 proposed 关系反向已存在 confirmed 对，标记为 `conflict=true`
+  - 关系候选冲突：若某 proposed 关系反向已存在 confirmed 对，标记为 `conflict=true`；这与制度有效版本冲突是两个不同概念
 - 真实元数据库：`data/product/product.sqlite3`（非 `mindgraph.db`，后者为无用残留已归档）
 
 ## 5. 关键技术决策
@@ -81,6 +82,7 @@ Obsidian Vault 是当前已实现的数据源和客户端之一，不是产品�
 | 关系 seed（图谱 / 链接建议有内容） | ✅ 完成 | `seed_relations.py` 为演示数据生成 proposed 关系 |
 | Web 控制台（4 页、无 mock） | ✅ 完成 | `web/`；问答 SSE、知识库、评测指标和关系审核均连接真实 API |
 | 制度元数据治理 | ✅ 第一批完成 | owner/version/effective dates/status 入库、质量标记、API 过滤、Web 台账与 citation 透传 |
+| 制度版本冲突保护 | ✅ 第一批完成 | policy_key 入库；查询日期存在多个有效版本时在模型前安全拒答，SSE/Web 展示全部冲突依据 |
 | 生命周期检索约束 | ✅ 第一批完成 | policy 字段映射到检索过滤元数据；关系扩展复用状态、生效期与分类过滤，不能重新引入历史制度 |
 | **Obsidian 插件（双前端①）** | ✅ 完成 | `obsidian-plugin/`（纯 JS 可加载，调 `/chat/stream`） |
 | **关系抽取自动化（闭环最后一环）** | ✅ 完成 | `relation_extraction_service.py` + `POST /api/v1/mindgraph/relations/extract` + `scripts/extract_relations.py` |

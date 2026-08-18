@@ -54,6 +54,8 @@ def test_answer_evaluation_cli_dry_run_emits_auditable_summary(tmp_path: Path) -
             str(golden),
             "--predictions",
             str(predictions),
+            "--strategy",
+            "auto",
             "--dry-run",
         ],
         cwd=ROOT,

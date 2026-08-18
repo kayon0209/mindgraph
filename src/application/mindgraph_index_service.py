@@ -95,6 +95,7 @@ class MindGraphIndexService:
                         "chunk_index": idx,
                         "ai_access_level": note.get("ai_access_level", "local_only"),
                         "owner": note.get("owner"),
+                        "policy_key": note.get("policy_key"),
                         "document_version": note.get("document_version"),
                         "effective_from": note.get("effective_from"),
                         "effective_to": note.get("effective_to"),

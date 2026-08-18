@@ -13,19 +13,32 @@ export function KnowledgePage() {
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [statsUnavailable, setStatsUnavailable] = useState(false);
   const [selected, setSelected] = useState<NoteDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
 
   const load = async (search = "") => {
     setLoading(true);
     setError("");
+    setStatsUnavailable(false);
     try {
-      const [noteData, evaluation] = await Promise.all([api.notes(search), api.evaluations()]);
-      setNotes(noteData.items);
-      setTotal(noteData.total);
-      setStats(evaluation.library_stats);
-    } catch (loadError) {
-      setError((loadError as Error).message);
+      const [noteResult, evaluationResult] = await Promise.allSettled([api.notes(search), api.evaluations()]);
+
+      if (noteResult.status === "fulfilled") {
+        setNotes(noteResult.value.items);
+        setTotal(noteResult.value.total);
+      } else {
+        setError(noteResult.reason instanceof Error ? noteResult.reason.message : "制度清单读取失败");
+      }
+
+      if (evaluationResult.status === "fulfilled") {
+        setStats(evaluationResult.value.library_stats);
+      } else {
+        setStats(null);
+        if (noteResult.status === "fulfilled") {
+          setStatsUnavailable(true);
+        }
+      }
     } finally {
       setLoading(false);
     }
@@ -68,8 +81,8 @@ export function KnowledgePage() {
 
       <div className="metrics-grid reveal reveal-2">
         <MetricCard label="已同步制度" note="notes 表真实数量" value={total} />
-        <MetricCard label="已进入当前索引" note="读取 CURRENT manifest" value={stats?.indexed_notes ?? "—"} />
-        <MetricCard label="有效分块" note="当前索引版本" value={stats?.chunks_total ?? "—"} />
+        <MetricCard label="已进入当前索引" note={statsUnavailable ? "评测看板暂不可用，展示台账主数据" : "读取 CURRENT manifest"} value={stats?.indexed_notes ?? "—"} />
+        <MetricCard label="有效分块" note={statsUnavailable ? "评测看板暂不可用，展示台账主数据" : "当前索引版本"} value={stats?.chunks_total ?? "—"} />
         <MetricCard label="已确认关系" note="可参与一跳扩展" value={stats?.relations_confirmed ?? "—"} />
       </div>
 
@@ -119,6 +132,7 @@ export function KnowledgePage() {
             <h2>{selected.title}</h2>
             <p className="drawer-path">{selected.vault_path}</p>
             <div className="drawer-metadata">
+              <span><small>制度族标识</small><strong>{selected.governance.policy_key || "未设置"}</strong></span>
               <span><small>责任部门</small><strong>{selected.governance.owner || "未设置"}</strong></span>
               <span><small>制度版本</small><strong>{selected.governance.version ? `V${selected.governance.version}` : "未设置"}</strong></span>
               <span><small>制度状态</small><PolicyGovernance compact value={selected.governance} /></span>

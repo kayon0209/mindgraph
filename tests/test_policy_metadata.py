@@ -47,12 +47,13 @@ def test_initialize_migrates_existing_notes_without_losing_rows(tmp_path: Path) 
     database.initialize()
 
     row = database.fetch_one(
-        """SELECT note_id, owner, document_version, effective_from, effective_to,
+        """SELECT note_id, policy_key, owner, document_version, effective_from, effective_to,
                   policy_status, metadata_issues_json
            FROM notes WHERE note_id = 'note-1'"""
     )
     assert row == {
         "note_id": "note-1",
+        "policy_key": None,
         "owner": None,
         "document_version": None,
         "effective_from": None,
@@ -60,6 +61,10 @@ def test_initialize_migrates_existing_notes_without_losing_rows(tmp_path: Path) 
         "policy_status": "unspecified",
         "metadata_issues_json": "[]",
     }
+    assert database.fetch_one("SELECT version FROM schema_meta") == {"version": 5}
+    with database.connect() as connection:
+        indexes = {item[1] for item in connection.execute("PRAGMA index_list(notes)")}
+    assert "idx_notes_policy_lifecycle" in indexes
 
     graph_store = SimpleNamespace(
         related_note_ids=lambda *_args, **_kwargs: [],
@@ -72,6 +77,7 @@ def test_initialize_migrates_existing_notes_without_losing_rows(tmp_path: Path) 
         assert governance["metadata_complete"] is False
         assert governance["issues"] == [
             "missing_owner",
+            "missing_policy_key",
             "missing_version",
             "missing_effective_from",
             "missing_policy_status",
@@ -89,6 +95,7 @@ def test_vault_sync_normalizes_policy_metadata_and_records_quality_issues(tmp_pa
         """---
 mindgraph_id: complete-note
 owner: 财务运营部
+policy_key: expense.general
 version: "2.0"
 status: active
 effective_from: 2026-07-01
@@ -120,6 +127,7 @@ effective_to: 2027-01-01
     complete = database.fetch_one("SELECT * FROM notes WHERE note_id='complete-note'")
     assert complete is not None
     assert complete["owner"] == "财务运营部"
+    assert complete["policy_key"] == "expense.general"
     assert complete["document_version"] == "2.0"
     assert complete["effective_from"] == "2026-07-01"
     assert complete["effective_to"] == "2027-06-30"
@@ -139,6 +147,7 @@ effective_to: 2027-01-01
         key: complete_chunk.metadata[key]
         for key in (
             "owner",
+            "policy_key",
             "document_version",
             "effective_from",
             "effective_to",
@@ -150,6 +159,7 @@ effective_to: 2027-01-01
         )
     } == {
         "owner": "财务运营部",
+        "policy_key": "expense.general",
         "document_version": "2.0",
         "effective_from": "2026-07-01",
         "effective_to": "2027-06-30",
@@ -175,6 +185,7 @@ effective_to: 2027-01-01
     assert incomplete["policy_status"] == "unspecified"
     assert set(json.loads(incomplete["metadata_issues_json"])) == {
         "missing_owner",
+        "missing_policy_key",
         "missing_version",
         "invalid_policy_status",
         "invalid_effective_range",
@@ -189,6 +200,7 @@ def test_notes_api_exposes_governance_metadata_and_filters_policy_status(tmp_pat
         """---
 mindgraph_id: active-note
 owner: 财务部
+policy_key: expense.general
 version: "3.0"
 status: active
 effective_from: 2026-08-01
@@ -201,6 +213,7 @@ effective_from: 2026-08-01
         """---
 mindgraph_id: archived-note
 owner: 财务部
+policy_key: expense.general
 version: "2.0"
 status: archived
 effective_from: 2025-01-01
@@ -237,6 +250,7 @@ effective_from: 2026-09-01
         assert payload["items"][0]["id"] == "active-note"
         assert payload["items"][0]["governance"] == {
             "owner": "财务部",
+            "policy_key": "expense.general",
             "version": "3.0",
             "effective_from": "2026-08-01",
             "effective_to": None,

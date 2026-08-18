@@ -13,6 +13,7 @@ const {
 } = metricHelpers;
 
 type GovernanceInput = {
+  policy_key: string | null;
   owner: string | null;
   version: string | null;
   effective_from: string | null;
@@ -105,6 +106,7 @@ describe("evaluation metric helpers", () => {
 describe("policy governance view", () => {
   it("distinguishes an active governed policy from an incomplete record", () => {
     expect(policyGovernanceView?.({
+      policy_key: "expense.general",
       owner: "财务部",
       version: "3.0",
       effective_from: "2026-08-01",
@@ -121,19 +123,20 @@ describe("policy governance view", () => {
     });
 
     expect(policyGovernanceView?.({
+      policy_key: null,
       owner: null,
       version: null,
       effective_from: "2027-12-31",
       effective_to: "2027-01-01",
       policy_status: "unspecified",
       metadata_complete: false,
-      issues: ["missing_owner", "missing_version", "invalid_effective_range"],
+      issues: ["missing_policy_key", "missing_owner", "missing_version", "invalid_effective_range"],
     })).toEqual({
       statusLabel: "状态未治理",
       statusTone: "negative",
-      completenessLabel: "3 项待治理",
+      completenessLabel: "4 项待治理",
       period: "2027-12-31 → 2027-01-01",
-      issueLabels: ["缺少责任部门", "缺少版本号", "生效区间无效"],
+      issueLabels: ["缺少制度族标识", "缺少责任部门", "缺少版本号", "生效区间无效"],
     });
   });
 });

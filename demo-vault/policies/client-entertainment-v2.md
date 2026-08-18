@@ -1,4 +1,5 @@
 ---
+policy_key: expense.client-entertainment
 owner: 销售运营部
 version: "2.0"
 status: active

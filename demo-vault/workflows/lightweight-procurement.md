@@ -1,4 +1,5 @@
 ---
+policy_key: procurement.lightweight
 owner: 采购部
 version: "1.1"
 status: active

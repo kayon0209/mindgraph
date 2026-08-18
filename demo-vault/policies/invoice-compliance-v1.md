@@ -1,4 +1,5 @@
 ---
+policy_key: expense.invoice-compliance
 owner: 税务与财务共享中心
 version: "1.0"
 status: active

@@ -1,4 +1,5 @@
 ---
+policy_key: travel.exception
 owner: 行政与财务联合小组
 version: "1.0"
 status: active

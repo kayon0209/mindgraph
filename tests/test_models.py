@@ -11,7 +11,7 @@ class TestChatRequest:
     def test_valid_chat_request(self):
         req = ChatRequest(question="差旅费怎么报销？")
         assert req.question == "差旅费怎么报销？"
-        assert req.retrieval_strategy == "hybrid"
+        assert req.retrieval_strategy == "auto"
         assert req.final_top_k == 5
 
     def test_question_too_short(self):
@@ -39,6 +39,14 @@ class TestChatRequest:
     def test_valid_top_k_boundaries(self):
         assert ChatRequest(question="test", final_top_k=1).final_top_k == 1
         assert ChatRequest(question="test", final_top_k=10).final_top_k == 10
+
+    def test_query_date_must_be_an_iso_calendar_date(self):
+        with pytest.raises(ValidationError):
+            ChatRequest(question="test", query_date="2026-02-30")
+        with pytest.raises(ValidationError):
+            ChatRequest(question="test", query_date="08/18/2026")
+
+        assert ChatRequest(question="test", query_date="2026-08-18").query_date == "2026-08-18"
 
     def test_defaults(self):
         req = ChatRequest(question="test")

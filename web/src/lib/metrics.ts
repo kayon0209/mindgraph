@@ -62,6 +62,7 @@ const POLICY_STATUS_LABELS: Record<string, { label: string; tone: "positive" | "
 };
 
 const POLICY_ISSUE_LABELS: Record<string, string> = {
+  missing_policy_key: "缺少制度族标识",
   missing_owner: "缺少责任部门",
   missing_version: "缺少版本号",
   missing_effective_from: "缺少生效日期",

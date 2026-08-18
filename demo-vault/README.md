@@ -1,4 +1,5 @@
 ---
+policy_key: demo.readme
 owner: MindGraph Demo
 version: "1.0"
 status: active
@@ -16,7 +17,7 @@ ai_access_level: excluded
 - `policies/`：当前或历史制度原文；文件名使用 `领域-主题-v版本.md`。
 - `workflows/`：审批、例外与执行流程；文件名使用 `流程名.md`。
 - `cases/`：完全虚构的边界案例；文件名使用 `case-编号-简述.md`。
-- 文档 frontmatter 必须包含 `owner`、`version`、`status`、`effective_from` 与 `tags`。
+- 文档 frontmatter 必须包含 `policy_key`、`owner`、`version`、`status`、`effective_from` 与 `tags`；同一制度的不同版本共用稳定 `policy_key`。
 - `status` 仅允许 `active`、`draft`、`archived`；历史版本不得删除，以便测试版本与冲突治理。
 - 文档之间使用标准 Markdown 链接，避免依赖某个笔记软件的私有语法。
 

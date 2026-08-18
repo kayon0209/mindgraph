@@ -1,0 +1,12 @@
+{"case_id":"route-fact-001","question":"差旅费最晚多久提交？","expected_route":"factual","expected_strategy":"hybrid","expected_graph_enabled":false,"dataset_version":"routing-v1.0"}
+{"case_id":"route-fact-002","question":"远程办公设备补贴包括哪些品类？","expected_route":"factual","expected_strategy":"hybrid","expected_graph_enabled":false,"dataset_version":"routing-v1.0"}
+{"case_id":"route-title-001","question":"《费用报销管理办法》中如何定义业务目的？","expected_route":"exact_title","expected_strategy":"bm25","expected_graph_enabled":false,"dataset_version":"routing-v1.0"}
+{"case_id":"route-title-002","question":"请概括《票据与税务合规要求》的适用范围。","expected_route":"exact_title","expected_strategy":"bm25","expected_graph_enabled":false,"dataset_version":"routing-v1.0"}
+{"case_id":"route-exception-001","question":"无发票费用有什么例外流程？","expected_route":"exception_or_conflict","expected_strategy":"hybrid_rerank","expected_graph_enabled":true,"dataset_version":"routing-v1.0"}
+{"case_id":"route-exception-002","question":"新旧制度冲突时应适用哪个版本？","expected_route":"exception_or_conflict","expected_strategy":"hybrid_rerank","expected_graph_enabled":true,"dataset_version":"routing-v1.0"}
+{"case_id":"route-exception-003","question":"制度条款互相矛盾时应该如何处理？","expected_route":"exception_or_conflict","expected_strategy":"hybrid_rerank","expected_graph_enabled":true,"dataset_version":"routing-v1.0"}
+{"case_id":"route-cross-001","question":"客户晚餐和差旅餐补能同时报销吗？","expected_route":"cross_policy","expected_strategy":"hybrid_rerank","expected_graph_enabled":true,"dataset_version":"routing-v1.0"}
+{"case_id":"route-cross-002","question":"请分别说明住宿和交通的审批要求。","expected_route":"cross_policy","expected_strategy":"hybrid_rerank","expected_graph_enabled":true,"dataset_version":"routing-v1.0"}
+{"case_id":"route-structured-001","question":"费用报销管理办法 V2 的提交时限是什么？","expected_route":"structured_fallback","expected_strategy":"hybrid","expected_graph_enabled":false,"dataset_version":"routing-v1.0"}
+{"case_id":"route-structured-002","question":"超过 5000 元的费用需要谁审批？","expected_route":"structured_fallback","expected_strategy":"hybrid","expected_graph_enabled":false,"dataset_version":"routing-v1.0"}
+{"case_id":"route-structured-003","question":"出差当日不足 8 小时是否有餐补？","expected_route":"structured_fallback","expected_strategy":"hybrid","expected_graph_enabled":false,"dataset_version":"routing-v1.0"}

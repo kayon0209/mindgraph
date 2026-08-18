@@ -60,14 +60,14 @@ MindGraph 是**本地优先的企业制度与决策依据知识服务**。首个
 
 - 建立人工冻结且独立于运行关系库的 Golden Set；
 - 覆盖事实、条件组合、版本、例外、冲突、无答案、多文档和权限场景；
-- 为文档增加 owner、version、effective_from/to、status；
+- 为文档增加 policy_key、owner、version、effective_from/to、status；
 - 将确定性回归放入 CI，将 LLM judge/RAGAS 放入校准后的周期评测。
 
 验收：能够量化检索质量、引用正确性、拒答正确性、延迟和成本。
 
 当前进度：已用公开 `demo-vault/` 建立 12 条人工冻结 V2.1 回归集，并禁止从运行数据库或 confirmed 关系反向生成 Golden 标签。检索消融与答案评测已拆分：答案层可直接运行当前服务或复用冻结预测，确定性量化 citation F1、拒答正确性、版本有效性、必需事实覆盖与禁用事实规避；P95 总延迟、平均 Token、平均估算成本和数据覆盖率进入同一 `evaluation_runs` 账本，缺失用量不会被当作零成本。样本量、权限场景和人工/LLM judge 校准仍未达到本阶段最终验收。
 
-元数据治理第一批已落地：Vault 中的 owner、version、effective_from/to、status 会规范化进入 schema v4，缺失或非法值形成显式质量问题；API、Web 制度台账、检索 chunk 和 citation 均保留版本、稳定 Vault 路径与有效期语境。尚未完成的是版本冲突裁决、权限场景评测、人工复核校准，以及回答质量与 token/P95/单问成本的正式发布门槛。
+元数据治理第二批已落地：Vault 中的 policy_key、owner、version、effective_from/to、status 会规范化进入 schema v5，缺失或非法值形成显式质量问题；API、Web 制度台账、检索 chunk 和 citation 均保留制度族、版本、稳定 Vault 路径与有效期语境。同一 policy_key 在查询日期存在多个有效版本时，问答服务会在调用模型前返回 `conflicting_evidence`，SSE 与 Web 完整展示待人工裁决版本。该机制解决“检测并安全拒答”，不自动决定哪个冲突版本有效；权限场景评测、人工复核校准，以及回答质量与 token/P95/单问成本的正式发布门槛仍未完成。
 
 ### Phase 3：自适应检索路由
 

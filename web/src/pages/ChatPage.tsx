@@ -1,9 +1,11 @@
 import { FormEvent, useRef, useState } from "react";
 import {
+  AlertTriangle,
   ArrowUp,
   BookOpenCheck,
   Check,
   Circle,
+  Gauge,
   GitBranch,
   LoaderCircle,
   RotateCcw,
@@ -11,7 +13,9 @@ import {
 } from "lucide-react";
 
 import { streamChat } from "../lib/api";
-import type { AnswerResult, Citation, ChatRequest, RetrievalTrace, StreamEvent } from "../types";
+import { completionGenerationState, policyConflictItems } from "../lib/policy-conflicts";
+import { routeDecisionView } from "../lib/route-decision";
+import type { AnswerResult, Citation, ChatRequest, RetrievalTrace, RouteDecision, StreamEvent } from "../types";
 import { PageHeader } from "../components/Primitives";
 
 type Turn = { id: string; question: string; answer: string; state: "streaming" | "complete" | "error" };
@@ -35,12 +39,14 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 export function ChatPage() {
   const [question, setQuestion] = useState("");
-  const [strategy, setStrategy] = useState<ChatRequest["retrieval_strategy"]>("hybrid");
+  const [strategy, setStrategy] = useState<ChatRequest["retrieval_strategy"]>("auto");
   const [topK, setTopK] = useState(5);
   const [graphEnabled, setGraphEnabled] = useState(true);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [citations, setCitations] = useState<Citation[]>([]);
   const [trace, setTrace] = useState<RetrievalTrace | null>(null);
+  const [routeDecision, setRouteDecision] = useState<RouteDecision | null>(null);
+  const [resultState, setResultState] = useState<string | null>(null);
   const [steps, setSteps] = useState(INITIAL_STEPS);
   const [running, setRunning] = useState(false);
   const controller = useRef<AbortController | null>(null);
@@ -66,6 +72,9 @@ export function ChatPage() {
     if (event.event === "retrieval_started") {
       setSteps((current) => ({ ...current, retrieval: "running" }));
     }
+    if (event.event === "retrieval_routed") {
+      setRouteDecision(data as unknown as RouteDecision);
+    }
     if (event.event === "retrieval_completed" || event.event === "rerank_completed") {
       setSteps((current) => ({ ...current, retrieval: "done" }));
     }
@@ -78,7 +87,7 @@ export function ChatPage() {
     if (event.event === "citations" && Array.isArray(data.citations)) {
       setCitations(data.citations as Citation[]);
     }
-    if (event.event === "degraded") {
+    if (event.event === "degraded" || event.event === "policy_conflict_detected") {
       setSteps((current) => ({ ...current, generation: "warning" }));
     }
     if (event.event === "completed") {
@@ -86,10 +95,11 @@ export function ChatPage() {
       updateTurn(turnId, { answer: result.answer, state: "complete" });
       setCitations(result.citations || []);
       setTrace(result.retrieval_trace || null);
+      setRouteDecision(result.retrieval_trace?.route_decision || null);
       setSteps((current) => ({
         scope: current.scope === "running" ? "done" : current.scope,
         retrieval: result.retrieval_trace ? "done" : current.retrieval,
-        generation: result.degraded ? "warning" : "done",
+        generation: completionGenerationState(result),
       }));
     }
     if (event.event === "error") {
@@ -99,6 +109,9 @@ export function ChatPage() {
       });
     }
   };
+
+  const conflictItems = policyConflictItems(trace);
+  const routeView = routeDecision ? routeDecisionView(routeDecision) : null;
 
   const submit = async (event?: FormEvent, preset?: string) => {
     event?.preventDefault();
@@ -110,6 +123,8 @@ export function ChatPage() {
     setQuestion("");
     setCitations([]);
     setTrace(null);
+    setRouteDecision(null);
+    setResultState(null);
     setSteps(INITIAL_STEPS);
     setRunning(true);
     controller.current = new AbortController();
@@ -130,6 +145,7 @@ export function ChatPage() {
     } catch (error) {
       if ((error as Error).name !== "AbortError") {
         updateTurn(id, { answer: `连接失败：${(error as Error).message}`, state: "error" });
+        setResultState("system_error");
       }
     } finally {
       setRunning(false);
@@ -151,6 +167,7 @@ export function ChatPage() {
             <label>
               <span>检索策略</span>
               <select value={strategy} onChange={(event) => setStrategy(event.target.value as ChatRequest["retrieval_strategy"])}>
+                <option value="auto">Auto · 推荐</option>
                 <option value="hybrid">Hybrid</option>
                 <option value="hybrid_rerank">Hybrid + Rerank</option>
                 <option value="dense">Dense</option>
@@ -257,6 +274,35 @@ export function ChatPage() {
             <TraceStep label="依据约束下生成" state={steps.generation} last />
           </div>
 
+          <section className="rail-section route-section">
+            <div className="rail-section-title">
+              <Gauge size={16} />
+              <strong>检索路由</strong>
+              <span>{routeDecision ? (routeDecision.mode === "adaptive" ? "AUTO" : "MAN") : "—"}</span>
+            </div>
+            {routeView ? (
+              <div className="route-decision-card">
+                <div className="route-decision-heading">
+                  <strong>{routeView.routeLabel}</strong>
+                  <span>{routeView.strategyLabel}</span>
+                </div>
+                <p>{routeView.graphLabel}</p>
+                <ul>{routeView.reasonLabels.map((reason) => <li key={reason}>{reason}</li>)}</ul>
+                <small>成本 {routeView.costTierLabel} · 延迟 {routeView.latencyTierLabel}</small>
+                <div className="route-decision-tags">
+                  <span>{routeView.costTierLabel}</span>
+                  <span>{routeView.latencyTierLabel}</span>
+                  {routeView.degraded ? <span>已降级</span> : null}
+                </div>
+                {trace?.stage_latency_ms.routing_ms !== undefined ? (
+                  <small>路由耗时 {trace.stage_latency_ms.routing_ms.toFixed(3)} ms</small>
+                ) : null}
+              </div>
+            ) : (
+              <p className="rail-placeholder">提交问题后，系统会说明为何选择当前检索成本与证据路径。</p>
+            )}
+          </section>
+
           <section className="rail-section">
             <div className="rail-section-title">
               <BookOpenCheck size={16} />
@@ -271,8 +317,9 @@ export function ChatPage() {
                     <div>
                       <strong>{citation.document_name}</strong>
                       <small>{citation.section_path || "文档正文"}</small>
-                      {citation.document_version || citation.policy_status || citation.effective_from ? (
+                      {citation.policy_key || citation.document_version || citation.policy_status || citation.effective_from ? (
                         <span className="citation-policy-meta">
+                          {citation.policy_key ? `${citation.policy_key} · ` : ""}
                           {citation.document_version ? `V${citation.document_version}` : "版本未登记"}
                           {citation.policy_status ? ` · ${citation.policy_status}` : ""}
                           {citation.effective_from ? ` · ${citation.effective_from} 起` : ""}
@@ -283,10 +330,55 @@ export function ChatPage() {
                   </li>
                 ))}
               </ol>
+            ) : resultState === "out_of_scope" ? (
+              <p className="rail-placeholder">问题已被范围检查拦截，因此没有引用原文。</p>
+            ) : resultState === "insufficient_evidence" ? (
+              <p className="rail-placeholder">检索到了问题，但未找到足够的制度证据，因此没有可展示引用。</p>
+            ) : resultState === "conflicting_evidence" ? (
+              <p className="rail-placeholder">系统已因版本冲突停止生成，因此不会展示引用结果。</p>
+            ) : resultState === "system_error" ? (
+              <p className="rail-placeholder">本次请求发生系统错误，没有生成可展示的引用。</p>
             ) : (
               <p className="rail-placeholder">回答完成后，这里会显示实际引用，而不是预设示例。</p>
             )}
           </section>
+
+          {conflictItems.length ? (
+            <section className="rail-section conflict-section" aria-label="制度版本冲突">
+              <div className="rail-section-title conflict-title">
+                <AlertTriangle size={16} />
+                <strong>有效版本冲突</strong>
+                <span>{conflictItems.length}</span>
+              </div>
+              <p className="conflict-guidance">系统已停止生成。请制度责任人确认查询日期应适用的唯一版本。</p>
+              <div className="conflict-list">
+                {conflictItems.map((item) => (
+                  <article className="conflict-item" key={item.key}>
+                    <div className="conflict-item-heading">
+                      <strong>{item.title}</strong>
+                      <span>V{item.version}</span>
+                    </div>
+                    <dl>
+                      <div><dt>制度族</dt><dd>{item.policyKey}</dd></div>
+                      <div><dt>查询日期</dt><dd>{item.asOf}</dd></div>
+                      <div><dt>有效期</dt><dd>{item.period}</dd></div>
+                      <div><dt>责任人</dt><dd>{item.owner}</dd></div>
+                      <div><dt>来源</dt><dd>{item.vaultPath}</dd></div>
+                    </dl>
+                  </article>
+                ))}
+              </div>
+            </section>
+          ) : resultState === "conflicting_evidence" ? (
+            <section className="rail-section conflict-section" aria-label="制度版本冲突">
+              <div className="rail-section-title conflict-title">
+                <AlertTriangle size={16} />
+                <strong>有效版本冲突</strong>
+                <span>1</span>
+              </div>
+              <p className="conflict-guidance">系统已停止生成，但当前轮次没有返回可枚举的冲突版本明细。</p>
+            </section>
+          ) : null}
 
           <section className="rail-section">
             <div className="rail-section-title">
@@ -318,7 +410,15 @@ function TraceStep({ label, state, last = false }: { label: string; state: StepS
   return (
     <div className={`trace-step ${state}`}>
       <span className="trace-step-icon">
-        {state === "running" ? <LoaderCircle className="spin" size={15} /> : state === "done" ? <Check size={15} /> : <Circle size={11} />}
+        {state === "running" ? (
+          <LoaderCircle className="spin" size={15} />
+        ) : state === "done" ? (
+          <Check size={15} />
+        ) : state === "warning" ? (
+          <AlertTriangle size={14} />
+        ) : (
+          <Circle size={11} />
+        )}
       </span>
       <span>{label}</span>
       {!last ? <i /> : null}

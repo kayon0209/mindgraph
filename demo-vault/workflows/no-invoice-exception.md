@@ -1,4 +1,5 @@
 ---
+policy_key: expense.no-invoice-exception
 owner: 财务共享中心
 version: "1.0"
 status: active

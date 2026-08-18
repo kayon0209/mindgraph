@@ -1,4 +1,5 @@
 ---
+policy_key: expense.general
 owner: 财务运营部
 version: "1.0"
 status: archived
