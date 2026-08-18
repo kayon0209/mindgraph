@@ -61,7 +61,7 @@ def test_initialize_migrates_existing_notes_without_losing_rows(tmp_path: Path) 
         "policy_status": "unspecified",
         "metadata_issues_json": "[]",
     }
-    assert database.fetch_one("SELECT version FROM schema_meta") == {"version": 5}
+    assert database.fetch_one("SELECT version FROM schema_meta") == {"version": 7}
     with database.connect() as connection:
         indexes = {item[1] for item in connection.execute("PRAGMA index_list(notes)")}
     assert "idx_notes_policy_lifecycle" in indexes
@@ -331,7 +331,7 @@ def test_graph_expansion_does_not_reintroduce_archived_policy() -> None:
     class BasePipeline:
         dense = SimpleNamespace(chunks=[active, archived])
 
-        def retrieve(self, _query, strategy, query_date, categories, include_historical):
+        def retrieve(self, _query, strategy, query_date, categories, include_historical, access_scope=None):
             return RetrievalTrace(
                 query="当前规则",
                 requested_strategy=strategy,
@@ -341,6 +341,7 @@ def test_graph_expansion_does_not_reintroduce_archived_policy() -> None:
                     "query_date": query_date,
                     "knowledge_categories": categories,
                     "include_historical": include_historical,
+                    "access_scope": access_scope,
                 },
             )
 

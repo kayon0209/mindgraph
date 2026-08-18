@@ -68,6 +68,8 @@ class RetrievalTraceModel(BaseModel):
     graph_links: list[dict[str, Any]] = Field(default_factory=list)
     policy_conflicts: list[dict[str, Any]] = Field(default_factory=list)
     route_decision: dict[str, Any] = Field(default_factory=dict)
+    query_variants: list[str] = Field(default_factory=list)
+    original_query: str | None = None
 
 
 class UsageMetrics(BaseModel):
@@ -308,3 +310,7 @@ class DocumentVersionModel(BaseModel):
     updated_at: datetime = Field(default_factory=utc_now)
     indexed_at: datetime | None = None
     created_by: str | None = None
+    workspace: str | None = None
+    department: str | None = None
+    acl_json: str = "{}"
+    acl_public: bool = False

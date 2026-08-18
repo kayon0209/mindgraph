@@ -40,9 +40,11 @@ class MindGraphRetrievalPipeline:
         return self.base.dense
 
     def retrieve(self, query, strategy, query_date=None, categories=None,
-                 include_historical=False, graph_enabled=None):
+                 include_historical=False, graph_enabled=None, access_scope=None):
         ge = self.graph_enabled if graph_enabled is None else graph_enabled
-        trace = self.base.retrieve(query, strategy, query_date, categories, include_historical)
+        trace = self.base.retrieve(
+            query, strategy, query_date, categories, include_historical, access_scope=access_scope,
+        )
         trace.graph_enabled = ge
         if ge and strategy in {"hybrid", "hybrid_rerank"}:
             self._expand_graph(trace)
@@ -131,8 +133,7 @@ class MindGraphRetrievalPipeline:
             "graph_expanded": added,
         }
 
-    @staticmethod
-    def _visible_for_trace(chunk, trace: RetrievalTrace) -> bool:
+    def _visible_for_trace(self, chunk, trace: RetrievalTrace) -> bool:
         filters = trace.applied_filters
         metadata = chunk.metadata
         status = metadata.get("document_status") or metadata.get("policy_status")
@@ -148,4 +149,9 @@ class MindGraphRetrievalPipeline:
             return False
         if expiration and date.fromisoformat(expiration) < target_date and not filters.get("include_historical", False):
             return False
+        access_scope = filters.get("access_scope")
+        if access_scope:
+            from application.access_control import chunk_acl_matches
+            if not chunk_acl_matches(metadata, access_scope):
+                return False
         return True

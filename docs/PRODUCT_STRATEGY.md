@@ -37,7 +37,7 @@ MindGraph 是**本地优先的企业制度与决策依据知识服务**。首个
 ### Phase 0：产品边界与品牌迁移
 
 - 统一 README、API、包元数据和当前活跃模块的 MindGraph 命名；
-- 保留 Expense RAG QA 的历史演进记录和必要兼容代码；
+- 保留历史报销领域 RAG 项目的演进记录和必要兼容代码；
 - 明确当前入口与历史入口；
 - 建立后续迁移清单。
 
@@ -91,12 +91,15 @@ MindGraph 是**本地优先的企业制度与决策依据知识服务**。首个
 
 ### Phase 5：企业接入与受控 MCP
 
-- 先完成一个连接器的增量同步、删除同步、版本同步和 ACL 继承；
-- 增加 workspace/部门/文档权限、SSO/OIDC 与审计日志；
-- 本地 stdio MCP 可先作为开发者预览；
-- Streamable HTTP MCP 必须在认证、ACL、审计和速率限制完成后开放。
+- [x] 本地 Markdown 目录连接器的增量同步、删除同步与 ACL 继承（`DirectoryConnectorService`）
+- [x] workspace/部门/文档级 ACL 过滤（检索前裁剪，非生成后过滤）
+- [x] SSO/OIDC 最小可行接入（Bearer JWT 校验 + claims → principal 映射）
+- [x] 审计日志（`access_audit` 表：谁问了什么、引用了什么、依据什么版本回答）
+- [x] 本地 stdio MCP（开发者预览，默认只读）
+- [x] 企业 HTTP MCP（`/api/v1/mcp`，走认证 + ACL + 审计）
+- [x] 部署指南（`docs/DEPLOYMENT.md`）
 
-验收：越权检索为零，回答可按用户、来源版本和证据完整回放。
+验收：越权检索为零（`tests/test_access_control.py` 全绿），回答可按用户、来源版本和证据完整回放（`access_audit` 可追溯）。
 
 ## 4. 品牌迁移清单
 
@@ -110,7 +113,7 @@ MindGraph 是**本地优先的企业制度与决策依据知识服务**。首个
 
 ### 后续兼容迁移
 
-- [ ] 已将 `src/app.py` 移入归档；`rag_engine.py`、`vector_store.py` 待评测基线迁移后隔离
+- [x] 已将 `src/app.py` 移入归档；`rag_engine.py`、`vector_store.py`、`special_cases.py` 仅被 `evaluation/baseline.py` 引用，待评测基线迁移后隔离
 - [x] 新备份切换为 `mindgraph-backup-*`，同时兼容读取和清理旧命名
 - [x] 更新 `.env.example` 标题与兼容配置说明
 - [x] 更新 Nginx、Docker 镜像名和 CI/CD 标签

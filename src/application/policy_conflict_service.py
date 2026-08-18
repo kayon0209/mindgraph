@@ -22,6 +22,7 @@ class PolicyConflictService:
         *,
         as_of: str | None,
         include_historical: bool,
+        access_scope: dict | None = None,
     ) -> list[dict[str, Any]]:
         keys = sorted(key.strip() for key in policy_keys if key and key.strip())
         if not keys:
@@ -32,7 +33,8 @@ class PolicyConflictService:
         status_placeholders = ",".join("?" for _ in statuses)
         rows = self.database.fetch_all(
             f"""SELECT note_id, policy_key, title, vault_path, owner, document_version,
-                       effective_from, effective_to, policy_status
+                       effective_from, effective_to, policy_status, workspace, department,
+                       acl_json, acl_public
                 FROM notes
                 WHERE policy_key IN ({key_placeholders})
                   AND policy_status IN ({status_placeholders})
@@ -41,6 +43,9 @@ class PolicyConflictService:
                 ORDER BY policy_key, effective_from, document_version, note_id""",
             (*keys, *statuses, target_date, target_date),
         )
+        if access_scope:
+            from application.access_control import note_acl_matches
+            rows = [row for row in rows if note_acl_matches(row, access_scope)]
         grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for row in rows:
             grouped[row["policy_key"]].append(

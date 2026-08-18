@@ -11,7 +11,7 @@
 
 MindGraph 面向制度密集、版本频繁、错误代价高的企业知识场景。首个垂直方向是报销、财务与制度合规问答：回答不仅要“像是正确”，还必须能够回到原文证据，并逐步支持版本、生效期、例外和冲突治理。
 
-本项目由 Expense RAG QA 演进而来。历史报销领域代码与评测经验被保留，但当前产品入口和新增能力统一使用 MindGraph 命名。
+本项目由历史报销领域 RAG 项目演进而来。历史代码与评测经验保留在 `archive/legacy-rag/`，当前产品入口和新增能力统一使用 MindGraph 命名。
 
 ## 当前能力
 
@@ -169,7 +169,7 @@ python scripts/run_ablation.py
 - [产品边界与升级路线](docs/PRODUCT_STRATEGY.md)
 - [当前架构与落地说明](docs/MindGraph-ARCH.md)
 - [检索成本效率分析](docs/MindGraph-cost-efficiency.md)
-- [历史报销 RAG PRD](docs/PRD-v2.md)
+- [历史报销 RAG PRD](archive/legacy-rag/docs/PRD-v2.md)
 
 ## 开发验证
 

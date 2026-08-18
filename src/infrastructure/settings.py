@@ -46,6 +46,19 @@ class Settings(BaseSettings):
     API_KEY_HEADER: str = "X-API-Key"
     SESSION_TIMEOUT_SECONDS: int = 3600
 
+    # ── SSO / OIDC（Phase 5-4） ──
+    OIDC_ENABLED: bool = False
+    OIDC_ISSUER_URL: str = ""  # e.g. https://login.microsoftonline.com/{tenant}/v2.0
+    OIDC_CLIENT_ID: str = ""
+    OIDC_CLIENT_SECRET: str = ""
+    OIDC_AUDIENCE: str = ""  # 可选；为空时回退到 client_id
+    OIDC_ALGORITHMS: str = "RS256"  # 逗号分隔
+    OIDC_JWKS_CACHE_TTL_SECONDS: int = 600
+    OIDC_ROLES_CLAIM: str = "roles"
+    OIDC_WORKSPACES_CLAIM: str = "workspaces"
+    OIDC_DEPARTMENTS_CLAIM: str = "departments"
+    OIDC_USERNAME_CLAIM: str = "preferred_username"
+
     # ── 安全 ──
     RATE_LIMIT_ENABLED: bool = False
     RATE_LIMIT_MAX_REQUESTS: int = 60

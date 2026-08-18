@@ -34,7 +34,7 @@ from api.middleware import (
     SecurityHeadersMiddleware,
     TimingMiddleware,
 )
-from api.routes import chat, evaluation, feedback, governance, health, knowledge, mindgraph_chat, mindgraph_readonly
+from api.routes import chat, connectors, evaluation, feedback, governance, health, knowledge, mcp, mindgraph_chat, mindgraph_readonly
 from domain.errors import (
     AuthenticationError,
     AuthorizationError,
@@ -127,7 +127,7 @@ app.add_exception_handler(Exception, unhandled_error_handler)
 # ── 路由注册 ──
 
 API_PREFIX = "/api/v1"
-for route in (health.router, chat.router, knowledge.router, evaluation.router, feedback.router, governance.router, mindgraph_chat.router, mindgraph_readonly.router):
+for route in (health.router, chat.router, connectors.router, knowledge.router, evaluation.router, feedback.router, governance.router, mindgraph_chat.router, mindgraph_readonly.router, mcp.router):
     app.include_router(route, prefix=API_PREFIX)
 
 

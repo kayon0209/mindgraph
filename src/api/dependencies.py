@@ -86,6 +86,15 @@ class ServiceContainer:
                 "先给结论，再给简要依据，并使用 [citation-N] 标注引用来源。"
             ),
         )
+        # 本地目录 / Markdown 目录增量同步连接器（Phase 5-2）
+        from application.directory_connector_service import DirectoryConnectorService
+        from application.mindgraph_index_service import MindGraphIndexService
+        self.mindgraph_index_service = MindGraphIndexService(
+            self.database, self.root / "knowledge", self.mindgraph_index_root
+        )
+        self.directory_connector = DirectoryConnectorService(
+            self.database, self.root / "knowledge", self.mindgraph_index_service
+        )
 
     def mindgraph_pipeline(self, top_k: int, graph_enabled: bool = True):
         key = (top_k, graph_enabled)

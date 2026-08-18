@@ -11,10 +11,12 @@ import logging
 from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
+from api.auth import resolve_access_scope, current_actor
 from api.dependencies import get_container
+from application.access_control import note_acl_matches, record_access_audit
 
 logger = logging.getLogger("mindgraph.api.readonly")
 router = APIRouter(prefix="/mindgraph", tags=["mindgraph-readonly"])
@@ -87,8 +89,10 @@ def _note_item(row: dict) -> dict:
         "id": row["note_id"],
         "title": row["title"],
         "vault_path": row["vault_path"],
-        "category": _category_from_path(row["vault_path"]),
+        "category": row.get("department") or row.get("workspace") or _category_from_path(row["vault_path"]),
         "access_level": row["ai_access_level"],
+        "workspace": row.get("workspace"),
+        "department": row.get("department"),
         "status": row["index_status"],
         "chunk_count": row["chunk_count"],
         "updated": (row["updated_at"] or "")[:10],
@@ -99,15 +103,20 @@ def _note_item(row: dict) -> dict:
 
 @router.get("/notes")
 def list_notes(
+    request: Request,
     limit: int = Query(200, ge=1, le=1000),
     offset: int = Query(0, ge=0),
     status: str | None = None,
     policy_status: str | None = None,
     governance: Literal["complete", "incomplete"] | None = None,
+    workspace: str | None = None,
+    department: str | None = None,
     q: str | None = None,
 ):
-    """知识库笔记列表（分页 / 按 index_status 过滤 / 关键词搜索）。"""
+    """知识库笔记列表（分页 / 按 index_status 过滤 / 关键词搜索 / ACL 裁剪）。"""
     db = get_container().database
+    access_scope = resolve_access_scope(request)
+    actor = current_actor(request)
     where, params = [], []
     if status:
         where.append("index_status = ?")
@@ -115,6 +124,12 @@ def list_notes(
     if policy_status:
         where.append("policy_status = ?")
         params.append(policy_status)
+    if workspace:
+        where.append("workspace = ?")
+        params.append(workspace)
+    if department:
+        where.append("department = ?")
+        params.append(department)
     governance_complete_sql = (
         "COALESCE(TRIM(owner), '') <> '' AND COALESCE(TRIM(policy_key), '') <> '' "
         "AND COALESCE(TRIM(document_version), '') <> '' "
@@ -132,30 +147,66 @@ def list_notes(
     rows = db.fetch_all(
         f"""SELECT note_id, vault_path, title, ai_access_level, chunk_count,
                    index_status, updated_at, frontmatter_json, owner, document_version,
-                   policy_key, effective_from, effective_to, policy_status, metadata_issues_json
+                   policy_key, effective_from, effective_to, policy_status, metadata_issues_json,
+                   workspace, department, acl_json, acl_public
             FROM notes {where_sql}
-            ORDER BY updated_at DESC LIMIT ? OFFSET ?""",
-        (*params, limit, offset),
+            ORDER BY updated_at DESC""",
+        tuple(params),
     )
-    total_row = db.fetch_one(f"SELECT COUNT(*) AS c FROM notes {where_sql}", tuple(params))
-    total = total_row["c"] if total_row else 0
-    return {"total": total, "items": [_note_item(r) for r in rows]}
+    visible = [r for r in rows if note_acl_matches(r, access_scope)]
+    total = len(visible)
+    page = visible[offset : offset + limit]
+    record_access_audit(
+        db,
+        actor=actor,
+        action="list_notes",
+        resource="notes",
+        decision="allow" if total or not access_scope else "deny",
+        reason=None,
+        metadata={
+            "filters": {"status": status, "policy_status": policy_status, "q": q, "workspace": workspace, "department": department},
+            "matched": total,
+            "scope_user": (access_scope or {}).get("user"),
+        },
+    )
+    return {"total": total, "items": [_note_item(r) for r in page]}
 
 
 @router.get("/notes/{note_id}")
-def get_note(note_id: str):
-    """单篇笔记详情 + 其 incoming/outgoing 的 confirmed 关系。"""
+def get_note(note_id: str, request: Request):
+    """单篇笔记详情 + 其 incoming/outgoing 的 confirmed 关系（ACL 裁剪）。"""
     db = get_container().database
+    access_scope = resolve_access_scope(request)
+    actor = current_actor(request)
     row = db.fetch_one(
         """SELECT note_id, vault_path, title, ai_access_level, chunk_count,
                   index_status, updated_at, frontmatter_json, created_at, owner,
                   document_version, policy_key, effective_from, effective_to, policy_status,
-                  metadata_issues_json
+                  metadata_issues_json, workspace, department, acl_json, acl_public
            FROM notes WHERE note_id = ?""",
         (note_id,),
     )
     if not row:
         raise HTTPException(status_code=404, detail="note not found")
+    if not note_acl_matches(row, access_scope):
+        record_access_audit(
+            db,
+            actor=actor,
+            action="get_note",
+            resource=f"notes/{note_id}",
+            decision="deny",
+            reason="out_of_scope",
+            metadata={"scope_user": (access_scope or {}).get("user")},
+        )
+        raise HTTPException(status_code=404, detail="note not found")
+    record_access_audit(
+        db,
+        actor=actor,
+        action="get_note",
+        resource=f"notes/{note_id}",
+        decision="allow",
+        metadata={"scope_user": (access_scope or {}).get("user")},
+    )
     store = get_container().mindgraph_graph_store
     outgoing = store.related_note_ids([note_id], status="confirmed")
     incoming_rows = db.fetch_all(
@@ -171,6 +222,8 @@ def get_note(note_id: str):
         "vault_path": row["vault_path"],
         "category": _category_from_path(row["vault_path"]),
         "access_level": row["ai_access_level"],
+        "workspace": row.get("workspace"),
+        "department": row.get("department"),
         "status": row["index_status"],
         "chunk_count": row["chunk_count"],
         "updated": (row["updated_at"] or "")[:10],
@@ -216,19 +269,32 @@ def _active_index_stats() -> dict:
 
 
 @router.get("/evaluation/ablation")
-def evaluation_ablation():
+def evaluation_ablation(request: Request):
     """评测看板：真实知识库规模 + 真实 evaluation_runs（按策略分组的消融结果）。"""
     db = get_container().database
+    access_scope = resolve_access_scope(request)
+    actor = current_actor(request)
 
     def cnt(sql: str, params=()) -> int:
         row = db.fetch_one(sql, params)
         return row["c"] if row else 0
 
-    notes_total = cnt("SELECT COUNT(*) AS c FROM notes")
+    if access_scope:
+        notes_rows = db.fetch_all("SELECT note_id, workspace, department, acl_json, acl_public FROM notes")
+        visible_ids = {r["note_id"] for r in notes_rows if note_acl_matches(r, access_scope)}
+        notes_total = len(visible_ids)
+        relations_confirmed = 0
+        relations_proposed = 0
+        if visible_ids:
+            placeholders = ",".join("?" for _ in visible_ids)
+            relations_confirmed = cnt(f"SELECT COUNT(*) AS c FROM note_relations WHERE status='confirmed' AND source_note_id IN ({placeholders}) AND target_note_id IN ({placeholders})", tuple(visible_ids) * 2)
+            relations_proposed = cnt(f"SELECT COUNT(*) AS c FROM note_relations WHERE status='proposed' AND source_note_id IN ({placeholders}) AND target_note_id IN ({placeholders})", tuple(visible_ids) * 2)
+    else:
+        notes_total = cnt("SELECT COUNT(*) AS c FROM notes")
+        relations_confirmed = cnt("SELECT COUNT(*) AS c FROM note_relations WHERE status='confirmed'")
+        relations_proposed = cnt("SELECT COUNT(*) AS c FROM note_relations WHERE status='proposed'")
     idx = _active_index_stats()
     chunks_total = idx["chunks"]
-    relations_confirmed = cnt("SELECT COUNT(*) AS c FROM note_relations WHERE status='confirmed'")
-    relations_proposed = cnt("SELECT COUNT(*) AS c FROM note_relations WHERE status='proposed'")
     indexed_notes = idx["notes"]
 
     run_rows = db.fetch_all(
@@ -254,6 +320,7 @@ def evaluation_ablation():
                 "metrics": metrics,
             }
         )
+    record_access_audit(db, actor=actor, action="evaluation_ablation", resource="evaluation/ablation", decision="allow", metadata={"notes_total": notes_total, "scope_user": (access_scope or {}).get("user")})
     return {
         "library_stats": {
             "notes_total": notes_total,
@@ -267,9 +334,11 @@ def evaluation_ablation():
 
 
 @router.get("/relations/proposed")
-def list_proposed(limit: int = Query(200, ge=1, le=500)):
+def list_proposed(request: Request, limit: int = Query(200, ge=1, le=500)):
     """链接建议队列（Human-in-the-loop）：proposed 关系 + 采纳率趋势 + 冲突检测。"""
     db = get_container().database
+    access_scope = resolve_access_scope(request)
+    actor = current_actor(request)
     store = get_container().mindgraph_graph_store
     rows = db.fetch_all(
         """SELECT relation_id, source_note_id, target_note_id, relation_type,
@@ -278,36 +347,40 @@ def list_proposed(limit: int = Query(200, ge=1, le=500)):
            ORDER BY confidence DESC LIMIT ?""",
         (limit,),
     )
-    titles = store.note_titles(
-        [r["source_note_id"] for r in rows] + [r["target_note_id"] for r in rows]
-    )
-    # 冲突检测：是否已存在 confirmed 的同 pair（任一方向）
+    note_ids = [r["source_note_id"] for r in rows] + [r["target_note_id"] for r in rows]
+    note_rows = {}
+    if note_ids:
+        placeholders = ",".join("?" for _ in note_ids)
+        fetched = db.fetch_all(f"SELECT note_id, title, vault_path, workspace, department, acl_json, acl_public FROM notes WHERE note_id IN ({placeholders})", tuple(note_ids))
+        note_rows = {row["note_id"]: row for row in fetched}
+    titles = store.note_titles(note_ids)
     confirmed_pairs = set()
-    for c in db.fetch_all(
-        "SELECT source_note_id, target_note_id FROM note_relations WHERE status='confirmed'"
-    ):
+    for c in db.fetch_all("SELECT source_note_id, target_note_id FROM note_relations WHERE status='confirmed'"):
         confirmed_pairs.add((c["source_note_id"], c["target_note_id"]))
         confirmed_pairs.add((c["target_note_id"], c["source_note_id"]))
-
     items = []
     for r in rows:
+        source_row = note_rows.get(r["source_note_id"])
+        target_row = note_rows.get(r["target_note_id"])
+        if not source_row or not target_row:
+            continue
+        if not note_acl_matches(source_row, access_scope) or not note_acl_matches(target_row, access_scope):
+            continue
         s, t = r["source_note_id"], r["target_note_id"]
         conflict = (s, t) in confirmed_pairs or (t, s) in confirmed_pairs
-        items.append(
-            {
-                "id": r["relation_id"],
-                "source": titles.get(s, s),
-                "target": titles.get(t, t),
-                "source_id": s,
-                "target_id": t,
-                "type": r["relation_type"],
-                "confidence": r["confidence"],
-                "proposed_at": (r["proposed_at"] or "")[:10],
-                "evidence_chunk_id": r["evidence_chunk_id"],
-                "conflict": conflict,
-            }
-        )
-
+        items.append({
+            "id": r["relation_id"],
+            "source": titles.get(s, s),
+            "target": titles.get(t, t),
+            "source_id": s,
+            "target_id": t,
+            "type": r["relation_type"],
+            "confidence": r["confidence"],
+            "proposed_at": (r["proposed_at"] or "")[:10],
+            "evidence_chunk_id": r["evidence_chunk_id"],
+            "conflict": conflict,
+        })
+    record_access_audit(db, actor=actor, action="list_relations_proposed", resource="note_relations/proposed", decision="allow", metadata={"count": len(items)})
     trend_rows = db.fetch_all(
         """SELECT substr(resolved_at,1,7) AS month, COUNT(*) AS c
            FROM note_relations WHERE status='confirmed' AND resolved_at IS NOT NULL
@@ -318,9 +391,11 @@ def list_proposed(limit: int = Query(200, ge=1, le=500)):
 
 
 @router.get("/relations/confirmed")
-def list_confirmed(limit: int = Query(200, ge=1, le=500)):
+def list_confirmed(request: Request, limit: int = Query(200, ge=1, le=500)):
     """已确认关系列表（已进入 Graph RAG 检索路径），用于知识库关系概览。"""
     db = get_container().database
+    access_scope = resolve_access_scope(request)
+    actor = current_actor(request)
     store = get_container().mindgraph_graph_store
     rows = db.fetch_all(
         """SELECT relation_id, source_note_id, target_note_id, relation_type, confidence
@@ -328,11 +403,22 @@ def list_confirmed(limit: int = Query(200, ge=1, le=500)):
            ORDER BY confidence DESC LIMIT ?""",
         (limit,),
     )
-    titles = store.note_titles(
-        [r["source_note_id"] for r in rows] + [r["target_note_id"] for r in rows]
-    )
-    items = [
-        {
+    note_ids = [r["source_note_id"] for r in rows] + [r["target_note_id"] for r in rows]
+    note_rows = {}
+    if note_ids:
+        placeholders = ",".join("?" for _ in note_ids)
+        fetched = db.fetch_all(f"SELECT note_id, title, vault_path, workspace, department, acl_json, acl_public FROM notes WHERE note_id IN ({placeholders})", tuple(note_ids))
+        note_rows = {row["note_id"]: row for row in fetched}
+    titles = store.note_titles(note_ids)
+    items = []
+    for r in rows:
+        source_row = note_rows.get(r["source_note_id"])
+        target_row = note_rows.get(r["target_note_id"])
+        if not source_row or not target_row:
+            continue
+        if not note_acl_matches(source_row, access_scope) or not note_acl_matches(target_row, access_scope):
+            continue
+        items.append({
             "id": r["relation_id"],
             "source": titles.get(r["source_note_id"], r["source_note_id"]),
             "target": titles.get(r["target_note_id"], r["target_note_id"]),
@@ -340,9 +426,8 @@ def list_confirmed(limit: int = Query(200, ge=1, le=500)):
             "target_id": r["target_note_id"],
             "type": r["relation_type"],
             "confidence": r["confidence"],
-        }
-        for r in rows
-    ]
+        })
+    record_access_audit(db, actor=actor, action="list_relations_confirmed", resource="note_relations/confirmed", decision="allow", metadata={"count": len(items)})
     return {"confirmed": items}
 
 
@@ -352,20 +437,33 @@ class ResolveBody(BaseModel):
 
 
 @router.post("/relations/{relation_id}/resolve")
-def resolve_relation(relation_id: str, body: ResolveBody):
-    """确认（confirm）或拒绝（reject）一条 proposed 关系。
+def resolve_relation(relation_id: str, body: ResolveBody, request: Request):
+    """确认（confirm）或拒绝（reject）一条 proposed 关系（需对两端笔记有 ACL 权限）。
 
     confirm 后 status=confirmed，该关系进入 Graph RAG 检索路径。
     """
     db = get_container().database
-    row = db.fetch_one("SELECT relation_id, status FROM note_relations WHERE relation_id=?", (relation_id,))
+    access_scope = resolve_access_scope(request)
+    actor = current_actor(request)
+    row = db.fetch_one("SELECT relation_id, status, source_note_id, target_note_id FROM note_relations WHERE relation_id=?", (relation_id,))
     if not row:
         raise HTTPException(status_code=404, detail="relation not found")
+    note_rows = db.fetch_all(
+        "SELECT note_id, title, vault_path, workspace, department, acl_json, acl_public FROM notes WHERE note_id IN (?, ?)",
+        (row["source_note_id"], row["target_note_id"]),
+    )
+    note_by_id = {n["note_id"]: n for n in note_rows}
+    for nid in (row["source_note_id"], row["target_note_id"]):
+        n = note_by_id.get(nid)
+        if not n or not note_acl_matches(n, access_scope):
+            record_access_audit(db, actor=actor, action="resolve_relation", resource=f"note_relations/{relation_id}", decision="deny", reason="out_of_scope")
+            raise HTTPException(status_code=403, detail="not allowed to resolve this relation")
     new_status = "confirmed" if body.decision == "confirm" else "rejected"
     db.execute(
         "UPDATE note_relations SET status=?, resolved_at=?, resolved_by=? WHERE relation_id=?",
         (new_status, _now_iso(), body.resolved_by, relation_id),
     )
+    record_access_audit(db, actor=actor, action="resolve_relation", resource=f"note_relations/{relation_id}", decision="allow", metadata={"new_status": new_status})
     return {"ok": True, "relation_id": relation_id, "status": new_status}
 
 

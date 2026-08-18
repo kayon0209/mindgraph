@@ -16,6 +16,10 @@ DEFAULT_AUTHORITY_WEIGHTS = {
 }
 
 
+class PermissionDeniedError(ValueError):
+    pass
+
+
 class RetrievalPipeline:
     def __init__(
         self,
@@ -71,13 +75,46 @@ class RetrievalPipeline:
             trace.warnings.append("explicit_date_filter_has_incomplete_metadata")
         return sorted(selected, key=lambda item: (item.adjusted_score or 0.0, item.chunk.chunk_id), reverse=True)
 
+    def _filter_by_access(self, candidates, access_scope: dict | None, trace: RetrievalTrace) -> list:
+        """按当前主体的 ACL 范围裁剪候选。
+
+        access_scope 形如：{"allow": [...], "deny": [...], "user": "...", "roles": [...]}
+        - 无 access_scope（单用户 / demo / 旧版调用）→ 不裁剪；
+        - 有 access_scope → 拒绝无 ACL 元数据的 chunk，仅保留显式命中的。
+        """
+        if not access_scope:
+            return candidates
+        from application.access_control import chunk_acl_matches
+
+        allowed = set(access_scope.get("allow") or [])
+        denied = set(access_scope.get("deny") or [])
+        scope = {
+            "allow": allowed,
+            "deny": denied,
+            "roles": access_scope.get("roles", []),
+            "user": access_scope.get("user"),
+        }
+        if "*" in allowed:
+            return candidates
+        visible = []
+        for candidate in candidates:
+            metadata = candidate.chunk.metadata
+            if not chunk_acl_matches(metadata, scope):
+                continue
+            visible.append(candidate)
+        if len(visible) < len(candidates):
+            trace.warnings.append("access_denied_chunks_filtered")
+            trace.warnings = list(dict.fromkeys(trace.warnings))
+        return visible
+
     def retrieve(self, query: str, strategy: str, query_date: str | None = None,
-                 categories: list[str] | None = None, include_historical: bool = False) -> RetrievalTrace:
+                 categories: list[str] | None = None, include_historical: bool = False,
+                 access_scope: dict | None = None) -> RetrievalTrace:
         if strategy not in VALID_STRATEGIES:
             raise ValueError(f"Unknown retrieval strategy: {strategy}")
         trace = RetrievalTrace(query=query, requested_strategy=strategy, actual_strategy=strategy)
         trace.index_version = getattr(self.dense, "metadata", {}).get("index_version")
-        trace.applied_filters = {"query_date": query_date, "knowledge_categories": categories or [], "include_historical": include_historical}
+        trace.applied_filters = {"query_date": query_date, "knowledge_categories": categories or [], "include_historical": include_historical, "access_scope": access_scope}
         dense_results, sparse_results = [], []
         if strategy in {"dense", "hybrid", "hybrid_rerank"}:
             dense_results, timings = self.dense.search(query, self.candidate_count)
@@ -88,15 +125,24 @@ class RetrievalPipeline:
             trace.latency_ms.update(timings)
             trace.sparse_results = sparse_results
         if strategy == "dense":
-            final = self._filter_and_adjust(dense_results, query_date, categories or [], include_historical, trace)[:self.final_top_k]
+            final = self._filter_by_access(
+                self._filter_and_adjust(dense_results, query_date, categories or [], include_historical, trace),
+                access_scope, trace,
+            )[:self.final_top_k]
         elif strategy == "bm25":
-            final = self._filter_and_adjust(sparse_results, query_date, categories or [], include_historical, trace)[:self.final_top_k]
+            final = self._filter_by_access(
+                self._filter_and_adjust(sparse_results, query_date, categories or [], include_historical, trace),
+                access_scope, trace,
+            )[:self.final_top_k]
         else:
             start = time.perf_counter()
             fused = self.fusion.fuse([dense_results, sparse_results], self.candidate_count)
             trace.latency_ms["fusion_ms"] = round((time.perf_counter() - start) * 1000, 3)
             trace.fused_results = fused
-            filtered = self._filter_and_adjust(fused, query_date, categories or [], include_historical, trace)
+            filtered = self._filter_by_access(
+                self._filter_and_adjust(fused, query_date, categories or [], include_historical, trace),
+                access_scope, trace,
+            )
             final = filtered[:self.final_top_k]
             if strategy == "hybrid_rerank":
                 if self.reranker is None:
@@ -108,7 +154,10 @@ class RetrievalPipeline:
                     try:
                         reranked = self.reranker.rerank(query, filtered[:self.rerank_top_n], self.final_top_k)
                         trace.reranked_results = reranked
-                        final = self._filter_and_adjust(reranked, query_date, categories or [], include_historical, trace)[:self.final_top_k]
+                        final = self._filter_by_access(
+                            self._filter_and_adjust(reranked, query_date, categories or [], include_historical, trace),
+                            access_scope, trace,
+                        )[:self.final_top_k]
                     except Exception as exc:
                         trace.degraded = True
                         trace.actual_strategy = "hybrid"

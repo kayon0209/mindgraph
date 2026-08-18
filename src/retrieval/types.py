@@ -53,6 +53,8 @@ class RetrievalTrace:
     graph_enabled: bool = False
     graph_links: list[dict] = field(default_factory=list)
     route_decision: dict[str, Any] = field(default_factory=dict)
+    query_variants: list[str] = field(default_factory=list)
+    original_query: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -72,6 +74,8 @@ class RetrievalTrace:
             "applied_filters": self.applied_filters,
             "warnings": self.warnings,
             "route_decision": self.route_decision,
+            "query_variants": self.query_variants,
+            "original_query": self.original_query,
         }
 
 

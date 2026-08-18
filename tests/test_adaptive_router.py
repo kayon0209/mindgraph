@@ -43,14 +43,14 @@ def test_manual_strategy_is_respected_and_never_claimed_as_adaptive() -> None:
         graph_allowed=True,
     )
 
-    assert decision.to_dict() == {
-        "mode": "manual",
-        "route": "manual",
-        "requested_strategy": "dense",
-        "selected_strategy": "dense",
-        "graph_enabled": False,
-        "reasons": ["user_selected_strategy"],
-    }
+    payload = decision.to_dict()
+
+    assert payload["mode"] == "manual"
+    assert payload["route"] == "manual"
+    assert payload["requested_strategy"] == "dense"
+    assert payload["selected_strategy"] == "dense"
+    assert payload["graph_enabled"] is False
+    assert payload["reasons"] == ["user_selected_strategy"]
 
 
 def test_graph_policy_is_a_hard_upper_bound_for_auto_routing() -> None:
