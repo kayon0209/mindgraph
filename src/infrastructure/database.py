@@ -11,6 +11,7 @@ from typing import Any
 logger = logging.getLogger("mindgraph.database")
 
 SCHEMA_VERSION = 8
+SOURCE_OWNERSHIP_SCHEMA_VERSION = 8
 
 
 class ProductDatabase:
@@ -265,7 +266,8 @@ class ProductDatabase:
                 "SELECT version FROM schema_meta LIMIT 1"
             ).fetchone()
             migrate_source_ownership = (
-                schema_row is None or schema_row[0] < SCHEMA_VERSION
+                schema_row is None
+                or schema_row[0] < SOURCE_OWNERSHIP_SCHEMA_VERSION
             )
             self._ensure_columns(connection, "query_logs", {
                 "index_version": "TEXT", "prompt_version": "TEXT",
