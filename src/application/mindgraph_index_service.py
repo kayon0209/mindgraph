@@ -79,8 +79,41 @@ class MindGraphIndexService:
     # ------------------------------------------------------------------ #
     # 分块（带 mindgraph_id，正文剥离 Frontmatter）
     # ------------------------------------------------------------------ #
+    def _resolve_note_path(self, vault_path: str) -> Path:
+        """Resolve built-in and connector-backed note paths safely.
+
+        Connector notes use ``connector_id/relative/path.md`` as their stable,
+        globally unique database path.  The real source root is stored in the
+        connector audit record, whereas built-in vault notes remain relative to
+        ``self.vault_root``.
+        """
+        stored_path = Path(vault_path)
+        built_in_path = self.vault_root / stored_path
+        if built_in_path.is_file():
+            return built_in_path
+
+        parts = stored_path.parts
+        if len(parts) < 2:
+            return built_in_path
+        connector = self.db.fetch_one(
+            "SELECT source_path FROM connector_syncs "
+            "WHERE connector_id=? AND status='completed' "
+            "ORDER BY finished_at DESC LIMIT 1",
+            (parts[0],),
+        )
+        if not connector:
+            return built_in_path
+        try:
+            source_root = Path(connector["source_path"]).resolve(strict=True)
+            candidate = source_root.joinpath(*parts[1:]).resolve(strict=True)
+        except OSError:
+            return built_in_path
+        if source_root in candidate.parents and candidate.is_file():
+            return candidate
+        return built_in_path
+
     def _load_note_chunks(self, note: dict[str, Any]) -> list[Chunk]:
-        path = self.vault_root / note["vault_path"]
+        path = self._resolve_note_path(note["vault_path"])
         category = Path(note["vault_path"]).parent.name or "根目录"
         try:
             raw = path.read_text(encoding="utf-8")

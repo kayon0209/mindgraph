@@ -7,6 +7,7 @@ import faiss
 import pytest
 
 from api.dependencies import ServiceContainer
+from application.directory_connector_service import DirectoryConnectorService
 from application.mindgraph_index_service import MindGraphIndexService
 from application.vault_sync_service import VaultSyncService
 from infrastructure.database import ProductDatabase
@@ -124,6 +125,41 @@ def test_successful_activation_invalidates_cached_pipelines(tmp_path: Path) -> N
     service.build()
 
     assert callbacks == ["activated"]
+
+
+def test_connector_note_is_loaded_from_its_configured_source(tmp_path: Path) -> None:
+    database = ProductDatabase(tmp_path / "product.sqlite3")
+    database.initialize()
+    built_in_vault = tmp_path / "knowledge"
+    built_in_vault.mkdir()
+    external_source = tmp_path / "external-source"
+    external_source.mkdir()
+    (external_source / "policy.md").write_text(
+        "# External policy\nThe connector source must be indexed.\n",
+        encoding="utf-8",
+    )
+    index_service = MindGraphIndexService(
+        database,
+        built_in_vault,
+        tmp_path / "indexes",
+        provider=FakeEmbeddingProvider(),
+    )
+    connector = DirectoryConnectorService(
+        database,
+        built_in_vault,
+        index_service=index_service,
+        allowed_roots=(external_source,),
+    )
+
+    result = connector.sync(external_source, trigger_index=True)
+
+    assert result["index_version"]
+    manifest = json.loads(
+        (tmp_path / "indexes" / result["index_version"] / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["chunk_count"] == 1
 
 
 def test_container_invalidation_clears_both_pipeline_caches() -> None:
