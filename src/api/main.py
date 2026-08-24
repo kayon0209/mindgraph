@@ -8,14 +8,15 @@ FastAPI 应用入口 — 生产级配置。
 """
 from __future__ import annotations
 
-import logging
 from contextlib import asynccontextmanager
+import logging
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from api.auth import require_authenticated
 from api.dependencies import get_container
 from api.exception_handlers import (
     authentication_error_handler,
@@ -41,7 +42,6 @@ from domain.errors import (
     ProductError,
     RateLimitError,
 )
-
 from infrastructure.logging_config import configure_logging
 from infrastructure.settings import get_settings
 
@@ -127,8 +127,9 @@ app.add_exception_handler(Exception, unhandled_error_handler)
 # ── 路由注册 ──
 
 API_PREFIX = "/api/v1"
-for route in (health.router, chat.router, connectors.router, knowledge.router, evaluation.router, feedback.router, governance.router, mindgraph_chat.router, mindgraph_readonly.router, mcp.router):
-    app.include_router(route, prefix=API_PREFIX)
+app.include_router(health.router, prefix=API_PREFIX)
+for route in (chat.router, connectors.router, knowledge.router, evaluation.router, feedback.router, governance.router, mindgraph_chat.router, mindgraph_readonly.router, mcp.router):
+    app.include_router(route, prefix=API_PREFIX, dependencies=[Depends(require_authenticated)])
 
 
 # ── 根路径 ──

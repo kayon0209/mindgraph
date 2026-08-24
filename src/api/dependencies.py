@@ -1,27 +1,26 @@
 from __future__ import annotations
 
-import logging
-import os
-import json
-from pathlib import Path
 from functools import lru_cache
+import json
+import logging
+from pathlib import Path
 from typing import Any
 
 from application.chat_service import ChatService
+from application.document_lifecycle_service import DocumentLifecycleService
+from application.evaluation_governance_service import EvaluationGovernanceService
 from application.evaluation_service import EvaluationService
 from application.feedback_service import FeedbackService
-from application.knowledge_service import KnowledgeService
-from application.document_lifecycle_service import DocumentLifecycleService
 from application.index_lifecycle_service import IndexLifecycleService
-from application.evaluation_governance_service import EvaluationGovernanceService
+from application.knowledge_service import KnowledgeService
 from application.mindgraph_graph_store import MindGraphGraphStore
 from application.relation_extraction_service import RelationExtractionService
-from infrastructure.chat_provider import ZhipuChatProvider
-from infrastructure.openai_compatible_provider import OpenAICompatibleProvider
 from infrastructure.anthropic_provider import AnthropicProvider
-from infrastructure.provider_registry import ProviderRegistry
+from infrastructure.chat_provider import ZhipuChatProvider
 from infrastructure.database import ProductDatabase
-from infrastructure.retrieval_factory import INDEX_ROOT, create_retrieval_pipeline, create_mindgraph_retrieval_pipeline
+from infrastructure.openai_compatible_provider import OpenAICompatibleProvider
+from infrastructure.provider_registry import ProviderRegistry
+from infrastructure.retrieval_factory import INDEX_ROOT, create_mindgraph_retrieval_pipeline, create_retrieval_pipeline
 from infrastructure.settings import get_settings
 
 logger = logging.getLogger("mindgraph.dependencies")
@@ -70,6 +69,7 @@ class ServiceContainer:
 
     def _init_mindgraph(self) -> None:
         """装配 MindGraph Graph RAG 管线（复用 ChatService + MindGraph 检索包装）。"""
+        settings = get_settings()
         self.mindgraph_index_root = self.root / "data" / "mindgraph_indexes"
         self.mindgraph_graph_store = MindGraphGraphStore(self.database)
         self.relation_extraction = RelationExtractionService(
@@ -93,7 +93,10 @@ class ServiceContainer:
             self.database, self.root / "knowledge", self.mindgraph_index_root
         )
         self.directory_connector = DirectoryConnectorService(
-            self.database, self.root / "knowledge", self.mindgraph_index_service
+            self.database,
+            self.root / "knowledge",
+            self.mindgraph_index_service,
+            allowed_roots=(self.root / "knowledge", *settings.connector_allowed_root_list),
         )
 
     def mindgraph_pipeline(self, top_k: int, graph_enabled: bool = True):

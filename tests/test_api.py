@@ -1,11 +1,11 @@
 """FastAPI 端点集成测试。"""
 from __future__ import annotations
 
-import pytest
-from fastapi.testclient import TestClient
-
 # 必须在导入 app 前设置环境变量
 import os
+
+from fastapi.testclient import TestClient
+import pytest
 
 os.environ["ENVIRONMENT"] = "development"
 os.environ["AUTH_MODE"] = "off"
@@ -18,13 +18,18 @@ os.environ["OPENAI_COMPAT_BASE_URL"] = "https://test.example.com"
 @pytest.fixture(scope="module")
 def client():
     """FastAPI TestClient。"""
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import patch
 
+    import api.auth as auth
+
+    previous_auth_mode = auth.AUTH_MODE
+    auth.AUTH_MODE = "off"
     with patch("infrastructure.database.ProductDatabase.initialize"), \
          patch("api.dependencies.ServiceContainer._register_builtin_datasets"):
         from api.main import app
         with TestClient(app) as c:
             yield c
+    auth.AUTH_MODE = previous_auth_mode
 
 
 class TestHealthEndpoints:

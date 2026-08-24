@@ -6,6 +6,24 @@ from typing import Any
 PUBLIC_TOKENS = {"*", "all", "public"}
 
 
+def public_access_scope() -> dict[str, Any]:
+    """Return the explicit scope used by unauthenticated demo users.
+
+    ``None`` is reserved for the deliberate ``AUTH_MODE=off`` bypass.  An
+    anonymous caller must carry a real scope so private records are denied by
+    default while records marked public remain visible.
+    """
+    return {
+        "user": "anonymous",
+        "roles": [],
+        "allow": [],
+        "deny": [],
+        "workspace": None,
+        "department": None,
+        "public_only": True,
+    }
+
+
 def _normalized_items(value: Any) -> list[str]:
     if value is None:
         return []
@@ -198,6 +216,7 @@ def record_access_audit(
 ) -> None:
     from datetime import datetime, timezone
     from uuid import uuid4
+
     from infrastructure.database import dumps
 
     audit_id = f"audit-{uuid4().hex}"

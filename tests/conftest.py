@@ -1,17 +1,16 @@
 """测试夹具和共享配置。"""
 from __future__ import annotations
 
-import json
 import os
-import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+import tempfile
+from unittest.mock import MagicMock
 
 import pytest
 
 
 @pytest.fixture(autouse=True)
-def clean_env():
+def clean_env(monkeypatch):
     """每个测试运行前清理环境变量影响。"""
     old_environ = dict(os.environ)
     # 确保测试时不会读取真实 .env
@@ -23,6 +22,12 @@ def clean_env():
     os.environ["OPENAI_COMPAT_BASE_URL"] = "https://test.example.com"
     os.environ["BGE_LOCAL_FILES_ONLY"] = "true"
     os.environ["RATE_LIMIT_ENABLED"] = "false"
+    # api.auth reads AUTH_MODE at import time; keep the module-level value in
+    # sync with the isolated test environment. Tests for enterprise modes can
+    # override it explicitly after this autouse fixture runs.
+    import api.auth as auth
+
+    monkeypatch.setattr(auth, "AUTH_MODE", "off")
     yield
     os.environ.clear()
     os.environ.update(old_environ)

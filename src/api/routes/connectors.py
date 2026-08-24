@@ -16,7 +16,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from api.auth import require_role, resolve_access_scope, current_actor
+from api.auth import require_role
 from api.dependencies import get_container
 from application.access_control import record_access_audit
 
@@ -36,7 +36,7 @@ class SyncDirectoryRequest(BaseModel):
 @router.post("/directories")
 def sync_directory(
     body: SyncDirectoryRequest,
-    _auth: dict = Depends(require_role("write")),
+    _auth: dict = Depends(require_role("admin")),
 ):
     """同步一个本地 Markdown 目录到 MindGraph（增量）。"""
     source = Path(body.source_path)
