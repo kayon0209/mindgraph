@@ -11,15 +11,14 @@
 """
 from __future__ import annotations
 
+from datetime import date, datetime, timezone
 import hashlib
 import json
-import re
-import uuid
-from datetime import date, datetime, timezone
 from pathlib import Path
+import re
 from typing import Any, NamedTuple
+import uuid
 
-from application.access_control import access_tags
 from infrastructure.database import ProductDatabase
 from infrastructure.markdown_frontmatter import inject_mindgraph_id, parse_frontmatter
 
@@ -182,10 +181,14 @@ class VaultSyncService:
         vault_path: Path,
         write_ids: bool = True,
         ignore_dirs: set[str] | None = None,
+        path_prefix: str | None = None,
+        id_namespace: str | None = None,
     ) -> None:
         self.db = db
         self.vault_path = Path(vault_path)
         self.write_ids = write_ids
+        self.path_prefix = path_prefix.strip("/") if path_prefix else None
+        self.id_namespace = id_namespace
         # None → 使用默认忽略集合；空集合 → 不忽略任何目录
         self.ignore_dirs = DEFAULT_IGNORE_DIRS if ignore_dirs is None else frozenset(ignore_dirs)
 
@@ -198,7 +201,9 @@ class VaultSyncService:
                 return True
         return False
 
-    def scan_vault(self) -> VaultScanResult:
+    def scan_vault(self, *, prune_missing: bool = True) -> VaultScanResult:
+        if not self.vault_path.exists() or not self.vault_path.is_dir():
+            raise ValueError(f"Vault path is not a directory: {self.vault_path}")
         scanned: list[ScannedNote] = []
         skipped: list[str] = []
         errors: list[str] = []
@@ -221,18 +226,26 @@ class VaultSyncService:
             except Exception as exc:  # 单文件失败不影响整体
                 errors.append(f"{path.relative_to(self.vault_path)}: {exc}")
 
-        pruned = self._prune_missing({n.vault_path for n in scanned})
+        # A partial scan is not a reliable deletion snapshot.  Connector
+        # callers also disable prune until notes have source ownership.
+        pruned = 0
+        if prune_missing and not errors:
+            pruned = self._prune_missing({n.vault_path for n in scanned})
         return VaultScanResult(scanned, skipped, errors, pruned)
 
     def _process_file(self, path: Path, now: str, seen_ids: dict[str, Path]) -> ScannedNote | None:
-        rel = path.relative_to(self.vault_path).as_posix()
+        source_rel = path.relative_to(self.vault_path).as_posix()
+        rel = f"{self.path_prefix}/{source_rel}" if self.path_prefix else source_rel
         raw = path.read_text(encoding="utf-8")
         fm, body, _ = parse_frontmatter(raw)
         id_injected = False
         duplicate_resolved = False
 
         if not fm.get("mindgraph_id"):
-            mid = uuid.uuid4().hex
+            if self.id_namespace:
+                mid = uuid.uuid5(uuid.NAMESPACE_URL, f"{self.id_namespace}:{source_rel}").hex
+            else:
+                mid = uuid.uuid4().hex
             id_injected = True
         else:
             mid = str(fm["mindgraph_id"])

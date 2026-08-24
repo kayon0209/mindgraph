@@ -15,6 +15,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
+import pytest
 
 from api.dependencies import override_container
 from api.main import app
@@ -24,6 +25,7 @@ from application.access_control import (
     note_acl_matches,
 )
 from application.vault_sync_service import VaultSyncService
+from domain.errors import AuthenticationError
 from infrastructure.database import ProductDatabase
 from retrieval.pipeline import RetrievalPipeline
 from retrieval.types import Chunk, RetrievalCandidate, RetrievalTrace
@@ -113,6 +115,47 @@ def test_unauthenticated_principal_returns_none_scope():
     assert build_access_scope(None) is None
 
 
+def test_demo_anonymous_scope_is_public_only(monkeypatch):
+    """Removing the explicit public scope would expose private notes again."""
+    import api.auth as auth
+
+    monkeypatch.setattr(auth, "AUTH_MODE", "demo")
+    monkeypatch.setattr(
+        auth,
+        "get_optional_principal",
+        lambda _request: {
+            "name": "anonymous",
+            "roles": [],
+            "authenticated": False,
+            "auth_mode": "demo",
+            "allow": [],
+            "deny": [],
+        },
+    )
+
+    scope = auth.resolve_access_scope(SimpleNamespace(headers={}))
+    private_note = {"workspace": "corp", "department": "finance", "acl_json": "{}", "acl_public": 0}
+    public_note = {"workspace": "corp", "department": "finance", "acl_json": "{}", "acl_public": 1}
+
+    assert scope is not None
+    assert scope["public_only"] is True
+    assert note_acl_matches(private_note, scope) is False
+    assert note_acl_matches(public_note, scope) is True
+
+
+@pytest.mark.parametrize("provided_key", [None, "invalid-key"])
+def test_api_key_mode_rejects_missing_or_invalid_credentials(monkeypatch, provided_key):
+    """Enterprise auth must not downgrade a bad credential to anonymous."""
+    import api.auth as auth
+
+    monkeypatch.setattr(auth, "AUTH_MODE", "api_key")
+    monkeypatch.setattr(auth, "validate_api_key", lambda _key: None)
+    headers = {} if provided_key is None else {"X-API-Key": provided_key}
+
+    with pytest.raises(AuthenticationError):
+        auth.get_required_principal(SimpleNamespace(headers=headers, state=SimpleNamespace()))
+
+
 def test_note_acl_matches_workspace_and_department():
     # finance scope grants workspace:corp + department:finance
     scope = {"allow": ["workspace:corp", "department:finance"], "deny": []}
@@ -188,7 +231,13 @@ def test_notes_list_filtered_by_principal_scope(tmp_path: Path):
     import api.auth as auth
 
     original_optional = auth.get_optional_principal
+    original_auth_mode = auth.AUTH_MODE
+    auth.AUTH_MODE = "api_key"
     auth.get_optional_principal = lambda _request: {  # type: ignore[assignment]
+        "authenticated": True, "name": "finance_user", "roles": ["read"],
+        "departments": ["finance"],
+    }
+    app.dependency_overrides[auth.get_required_principal] = lambda: {
         "authenticated": True, "name": "finance_user", "roles": ["read"],
         "departments": ["finance"],
     }
@@ -203,6 +252,8 @@ def test_notes_list_filtered_by_principal_scope(tmp_path: Path):
         assert "note-hr" not in ids
     finally:
         auth.get_optional_principal = original_optional  # type: ignore[assignment]
+        auth.AUTH_MODE = original_auth_mode
+        app.dependency_overrides.pop(auth.get_required_principal, None)
         client.close()
         override_container(None)
 
@@ -215,7 +266,13 @@ def test_notes_get_note_out_of_scope_returns_404_and_audits(tmp_path: Path):
     import api.auth as auth
 
     original_optional = auth.get_optional_principal
+    original_auth_mode = auth.AUTH_MODE
+    auth.AUTH_MODE = "api_key"
     auth.get_optional_principal = lambda _request: {  # type: ignore[assignment]
+        "authenticated": True, "name": "finance_user", "roles": ["read"],
+        "departments": ["finance"],
+    }
+    app.dependency_overrides[auth.get_required_principal] = lambda: {
         "authenticated": True, "name": "finance_user", "roles": ["read"],
         "departments": ["finance"],
     }
@@ -229,6 +286,8 @@ def test_notes_get_note_out_of_scope_returns_404_and_audits(tmp_path: Path):
         assert any(row["decision"] == "deny" and row["reason"] == "out_of_scope" for row in audit)
     finally:
         auth.get_optional_principal = original_optional  # type: ignore[assignment]
+        auth.AUTH_MODE = original_auth_mode
+        app.dependency_overrides.pop(auth.get_required_principal, None)
         client.close()
         override_container(None)
 

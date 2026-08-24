@@ -11,7 +11,6 @@
 """
 from __future__ import annotations
 
-import json
 import logging
 import time
 from typing import Any
@@ -22,38 +21,59 @@ from infrastructure.settings import get_settings
 
 logger = logging.getLogger("mindgraph.auth.oidc")
 
-_JWKS_CACHE: dict[str, Any] = {"keys": None, "fetched_at": 0.0}
+_JWKS_CACHE: dict[str, Any] = {
+    "issuer": None,
+    "jwks_uri": None,
+    "client": None,
+    "fetched_at": 0.0,
+}
 
 
 def _algorithms() -> list[str]:
     return [a.strip() for a in get_settings().OIDC_ALGORITHMS.split(",") if a.strip()]
 
 
-def _fetch_jwks(force: bool = False) -> dict[str, Any] | None:
+def _get_jwks_client(force: bool = False) -> Any | None:
     settings = get_settings()
     if not settings.OIDC_ISSUER_URL:
         return None
+    issuer = settings.OIDC_ISSUER_URL.rstrip("/")
     ttl = settings.OIDC_JWKS_CACHE_TTL_SECONDS
     now = time.time()
-    if not force and _JWKS_CACHE["keys"] is not None and (now - _JWKS_CACHE["fetched_at"]) < ttl:
-        return _JWKS_CACHE["keys"]
-    jwks_uri = settings.OIDC_ISSUER_URL.rstrip("/") + "/.well-known/openid-configuration"
+    if (
+        not force
+        and _JWKS_CACHE["issuer"] == issuer
+        and _JWKS_CACHE["client"] is not None
+        and (now - _JWKS_CACHE["fetched_at"]) < ttl
+    ):
+        return _JWKS_CACHE["client"]
+
     try:
+        from jwt import PyJWKClient
+
+        discovery_url = issuer + "/.well-known/openid-configuration"
         with httpx.Client(timeout=10.0) as client:
-            discovery = client.get(jwks_uri)
+            discovery = client.get(discovery_url)
             discovery.raise_for_status()
-            jwks_url = discovery.json().get("jwks_uri")
-            if not jwks_url:
+            jwks_uri = discovery.json().get("jwks_uri")
+            if not jwks_uri:
+                logger.error("oidc_discovery_missing_jwks_uri", extra={"issuer": issuer})
                 return None
-            jwks_resp = client.get(jwks_url)
-            jwks_resp.raise_for_status()
-            keys = jwks_resp.json()
-        _JWKS_CACHE["keys"] = keys
-        _JWKS_CACHE["fetched_at"] = now
-        return keys
+        jwks_client = PyJWKClient(jwks_uri, cache_keys=True)
+        _JWKS_CACHE.update(
+            {
+                "issuer": issuer,
+                "jwks_uri": jwks_uri,
+                "client": jwks_client,
+                "fetched_at": now,
+            }
+        )
+        return jwks_client
     except Exception:
         logger.exception("oidc_jwks_fetch_failed", extra={"issuer": settings.OIDC_ISSUER_URL})
-        return _JWKS_CACHE["keys"]
+        if _JWKS_CACHE["issuer"] == issuer:
+            return _JWKS_CACHE["client"]
+        return None
 
 
 def validate_id_token(token: str) -> dict[str, Any] | None:
@@ -66,7 +86,6 @@ def validate_id_token(token: str) -> dict[str, Any] | None:
         return None
     try:
         import jwt as pyjwt  # type: ignore
-        from jwt import PyJWKClient
     except ImportError:
         logger.warning("oidc_disabled_pyjwt_missing")
         return None
@@ -76,8 +95,9 @@ def validate_id_token(token: str) -> dict[str, Any] | None:
     issuer = settings.OIDC_ISSUER_URL
 
     try:
-        # PyJWKClient 内部会缓存 JWKS
-        jwks_client = PyJWKClient(f"{issuer.rstrip('/')}/.well-known/jwks.json", cache_keys=True)
+        jwks_client = _get_jwks_client()
+        if jwks_client is None:
+            return None
         signing_key = jwks_client.get_signing_key_from_jwt(token)
         claims = pyjwt.decode(
             token,

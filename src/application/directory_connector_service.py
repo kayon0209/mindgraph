@@ -13,10 +13,10 @@
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
+import hashlib
 import json
 import logging
-import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -60,17 +60,34 @@ class DirectoryConnectorService:
         vault_root: Path,
         index_service: Any | None = None,
         vault_sync: VaultSyncService | None = None,
+        allowed_roots: tuple[Path, ...] | None = None,
     ) -> None:
         self.database = database
         self.vault_root = Path(vault_root)
         self.index_service = index_service
         self._vault_sync = vault_sync
+        configured_roots = allowed_roots if allowed_roots is not None else (self.vault_root,)
+        self.allowed_roots = tuple(Path(root).resolve() for root in configured_roots)
 
-    def _sync_service(self, source_path: Path) -> VaultSyncService:
-        """为指定源目录构建 VaultSyncService（write_ids=True 以注入稳定 ID）。"""
+    def _validate_source(self, source_path: Path) -> Path:
+        if not source_path.exists() or not source_path.is_dir():
+            raise ValueError(f"Source path is not a directory: {source_path}")
+        source = source_path.resolve(strict=True)
+        if not any(source == root or root in source.parents for root in self.allowed_roots):
+            raise ValueError(f"Source path is outside configured connector roots: {source}")
+        return source
+
+    def _sync_service(self, source_path: Path, connector_id: str) -> VaultSyncService:
+        """为指定源目录构建只读 VaultSyncService。"""
         if self._vault_sync is not None:
             return self._vault_sync
-        return VaultSyncService(self.database, source_path, write_ids=True)
+        return VaultSyncService(
+            self.database,
+            source_path,
+            write_ids=False,
+            path_prefix=connector_id,
+            id_namespace=str(source_path),
+        )
 
     def _load_root_acl_map(self, source_path: Path) -> dict[str, dict[str, Any]]:
         """加载根目录 acl.json，返回顶层 ACL 配置。"""
@@ -127,11 +144,9 @@ class DirectoryConnectorService:
         - 同步后若 trigger_index=True，触发索引构建；
         - 结果写入 connector_syncs 表。
         """
-        source = Path(source_path)
-        if not source.exists() or not source.is_dir():
-            raise ValueError(f"Source path is not a directory: {source}")
+        source = self._validate_source(Path(source_path))
 
-        connector_id = connector_id or f"dir-{uuid.uuid4().hex[:12]}"
+        connector_id = connector_id or f"dir-{hashlib.sha256(str(source).casefold().encode()).hexdigest()[:12]}"
         started_at = _utc_iso()
         root_acl_map = self._load_root_acl_map(source)
 
@@ -149,8 +164,11 @@ class DirectoryConnectorService:
                 row["note_id"]
                 for row in self.database.fetch_all("SELECT note_id FROM notes")
             }
-            sync = self._sync_service(source)
-            result = sync.scan_vault()
+            sync = self._sync_service(source, connector_id)
+            # Generic VaultSync pruning is global because the current notes
+            # schema has no source_id.  Disable it for connectors until the
+            # source-ownership migration is explicitly performed.
+            result = sync.scan_vault(prune_missing=False)
             file_count = len(result.scanned)
             pruned = result.pruned
 
@@ -162,7 +180,16 @@ class DirectoryConnectorService:
                 else:
                     added += 1
 
-            self._apply_connector_acl(source, root_acl_map, workspace, department, acl_json, acl_public)
+            self._apply_connector_acl(
+                source,
+                root_acl_map,
+                workspace,
+                department,
+                acl_json,
+                acl_public,
+                {note.note_id for note in result.scanned},
+                connector_id,
+            )
 
             metadata = {
                 "scanned": file_count,
@@ -207,10 +234,16 @@ class DirectoryConnectorService:
         default_department: str | None,
         acl_json: str | None,
         acl_public: bool,
+        note_ids: set[str],
+        path_prefix: str,
     ) -> None:
         """对同步后的 notes 按目录结构回填 workspace/department/ACL（仅对缺失值的行）。"""
+        if not note_ids:
+            return
+        placeholders = ",".join("?" for _ in note_ids)
         rows = self.database.fetch_all(
-            "SELECT note_id, vault_path, workspace, department FROM notes"
+            f"SELECT note_id, vault_path, workspace, department, acl_json FROM notes WHERE note_id IN ({placeholders})",
+            tuple(sorted(note_ids)),
         )
         if not rows:
             return
@@ -227,7 +260,11 @@ class DirectoryConnectorService:
         if not target_rows:
             return
         for row in target_rows:
-            rel = Path(row["vault_path"])
+            stored_path = Path(row["vault_path"])
+            try:
+                rel = stored_path.relative_to(path_prefix)
+            except ValueError:
+                continue
             parts = [p for p in rel.parts if p]
             # 目录结构推断：第一级目录=department（如 finance/、hr/）；workspace 用 default_workspace
             dir_department = parts[0] if parts else None
