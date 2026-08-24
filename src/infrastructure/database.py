@@ -261,6 +261,12 @@ class ProductDatabase:
                 CREATE INDEX IF NOT EXISTS idx_acl_backfill_items_note
                     ON acl_backfill_items(note_id);
             """)
+            schema_row = connection.execute(
+                "SELECT version FROM schema_meta LIMIT 1"
+            ).fetchone()
+            migrate_source_ownership = (
+                schema_row is None or schema_row[0] < SCHEMA_VERSION
+            )
             self._ensure_columns(connection, "query_logs", {
                 "index_version": "TEXT", "prompt_version": "TEXT",
                 "requested_provider": "TEXT", "actual_provider": "TEXT",
@@ -305,30 +311,30 @@ class ProductDatabase:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_notes_source_id ON notes(source_id)"
             )
-            connection.execute(
-                """
-                UPDATE notes
-                SET source_id = COALESCE(
-                    (
-                        SELECT connector_id
-                        FROM connector_syncs
-                        WHERE status = 'completed'
-                          AND substr(
-                              replace(notes.vault_path, '\\', '/'),
-                              1,
-                              length(connector_id) + 1
-                          ) = connector_id || '/'
-                        ORDER BY finished_at DESC
-                        LIMIT 1
-                    ),
-                    'builtin'
+            if migrate_source_ownership:
+                connection.execute(
+                    """
+                    UPDATE notes
+                    SET source_id = COALESCE(
+                        (
+                            SELECT connector_id
+                            FROM connector_syncs
+                            WHERE status = 'completed'
+                              AND substr(
+                                  replace(notes.vault_path, '\\', '/'),
+                                  1,
+                                  length(connector_id) + 1
+                              ) = connector_id || '/'
+                            ORDER BY finished_at DESC
+                            LIMIT 1
+                        ),
+                        'builtin'
+                    )
+                    """
                 )
-                """
-            )
-            row = connection.execute("SELECT version FROM schema_meta LIMIT 1").fetchone()
-            if row is None:
+            if schema_row is None:
                 connection.execute("INSERT INTO schema_meta(version) VALUES (?)", (SCHEMA_VERSION,))
-            elif row[0] < SCHEMA_VERSION:
+            elif schema_row[0] < SCHEMA_VERSION:
                 connection.execute("UPDATE schema_meta SET version=?", (SCHEMA_VERSION,))
 
     @staticmethod

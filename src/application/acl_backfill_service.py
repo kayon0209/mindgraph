@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 import json
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import sqlite3
 from typing import Any
 import uuid
@@ -27,16 +27,16 @@ def _utc_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _json_object(value: Any) -> dict[str, Any]:
+def _json_object(value: Any) -> dict[str, Any] | None:
     if isinstance(value, dict):
         return dict(value)
     if not isinstance(value, str) or not value.strip():
-        return {}
+        return None
     try:
         parsed = json.loads(value)
     except (TypeError, ValueError):
-        return {}
-    return dict(parsed) if isinstance(parsed, dict) else {}
+        return None
+    return dict(parsed) if isinstance(parsed, dict) else None
 
 
 def _frontmatter_acl(value: Any) -> dict[str, Any]:
@@ -44,7 +44,7 @@ def _frontmatter_acl(value: Any) -> dict[str, Any]:
         return dict(value)
     if isinstance(value, list):
         return {"allow": list(value)}
-    return _json_object(value)
+    return _json_object(value) or {}
 
 
 def _as_bool(value: Any) -> bool:
@@ -158,7 +158,8 @@ class AclBackfillService:
             if run is None or run["status"] != "completed":
                 raise ValueError(f"unknown or incomplete ACL backfill run: {run_id}")
             items = connection.execute(
-                "SELECT note_id, old_workspace, old_department, old_acl_json, old_acl_public "
+                "SELECT note_id, old_workspace, old_department, old_acl_json, old_acl_public, "
+                "planned_workspace, planned_department, planned_acl_json, planned_acl_public "
                 "FROM acl_backfill_items WHERE run_id=? AND action='updated'",
                 (run_id,),
             ).fetchall()
@@ -166,15 +167,24 @@ class AclBackfillService:
             for item in items:
                 cursor = connection.execute(
                     "UPDATE notes SET workspace=?, department=?, acl_json=?, acl_public=? "
-                    "WHERE note_id=?",
+                    "WHERE note_id=? AND workspace IS ? AND department IS ? "
+                    "AND acl_json IS ? AND acl_public IS ?",
                     (
                         item["old_workspace"],
                         item["old_department"],
                         item["old_acl_json"],
                         item["old_acl_public"],
                         item["note_id"],
+                        item["planned_workspace"],
+                        item["planned_department"],
+                        item["planned_acl_json"],
+                        item["planned_acl_public"],
                     ),
                 )
+                if cursor.rowcount != 1:
+                    raise ValueError(
+                        f"ACL backfill rollback conflict for note: {item['note_id']}"
+                    )
                 restored += cursor.rowcount
             rolled_back_at = _utc_iso()
             connection.execute(
@@ -220,7 +230,7 @@ class AclBackfillService:
         else:
             path, root, connector = resolved
             controlled = self._controlled_defaults(path, root, connector)
-            frontmatter = _json_object(note["frontmatter_json"])
+            frontmatter = _json_object(note["frontmatter_json"]) or {}
             explicit_acl = "acl" in frontmatter
             explicit_public = any(
                 key in frontmatter for key in ("acl_public", "public", "is_public")
@@ -266,10 +276,12 @@ class AclBackfillService:
                 acl_public = 0
                 reason = "source_unavailable"
 
+        current_acl = _json_object(note["acl_json"])
         same = (
             note["workspace"] == workspace
             and note["department"] == department
-            and _json_object(note["acl_json"]) == acl
+            and current_acl is not None
+            and current_acl == acl
             and int(bool(note["acl_public"])) == acl_public
         )
         return {
@@ -290,8 +302,13 @@ class AclBackfillService:
     ) -> tuple[Path, Path, dict[str, Any] | None] | None:
         normalized = str(note["vault_path"]).replace("\\", "/")
         relative = PurePosixPath(normalized)
-        if relative.is_absolute() or not relative.parts or any(
-            part in {"", ".", ".."} for part in relative.parts
+        if (
+            relative.is_absolute()
+            or PureWindowsPath(normalized).is_absolute()
+            or not relative.parts
+            or any(
+                part in {"", ".", ".."} for part in relative.parts
+            )
         ):
             return None
 
@@ -336,7 +353,7 @@ class AclBackfillService:
         available = bool(workspace or department)
 
         if connector:
-            metadata = _json_object(connector.get("metadata_json"))
+            metadata = _json_object(connector.get("metadata_json")) or {}
             default_acl = metadata.get("acl", metadata.get("acl_json"))
             parsed_default = _frontmatter_acl(default_acl)
             if parsed_default:
