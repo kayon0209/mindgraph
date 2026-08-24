@@ -3,21 +3,21 @@ from __future__ import annotations
 import json
 import logging
 import os
+from pathlib import Path
 import sqlite3
 import time
-from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger("mindgraph.database")
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 class ProductDatabase:
     """生产级 SQLite 数据库封装。
 
     特性:
-    - WAL 模式（提升并发读写性能）
+    - WAL 模式(提升并发读写性能)
     - 自动 WAL checkpoint
     - 连接超时与重试
     - 慢查询日志
@@ -59,7 +59,7 @@ class ProductDatabase:
             )
 
     def _cursor_with_retry(self) -> sqlite3.Connection:
-        """带重试的数据库连接获取（返回普通连接，调用方负责关闭）。"""
+        """带重试的数据库连接获取(返回普通连接, 调用方负责关闭)。"""
         last_error: Exception | None = None
         for attempt in range(self._MAX_RETRIES):
             try:
@@ -170,6 +170,7 @@ class ProductDatabase:
                 CREATE TABLE IF NOT EXISTS notes (
                     note_id TEXT PRIMARY KEY,
                     vault_path TEXT NOT NULL UNIQUE,
+                    source_id TEXT NOT NULL DEFAULT 'builtin',
                     title TEXT NOT NULL,
                     content_hash TEXT NOT NULL,
                     frontmatter_json TEXT NOT NULL DEFAULT '{}',
@@ -230,6 +231,35 @@ class ProductDatabase:
                 );
                 CREATE INDEX IF NOT EXISTS idx_connector_syncs_source ON connector_syncs(source_path);
                 CREATE INDEX IF NOT EXISTS idx_connector_syncs_status ON connector_syncs(status);
+                CREATE TABLE IF NOT EXISTS acl_backfill_runs (
+                    run_id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    rolled_back_at TEXT,
+                    item_count INTEGER NOT NULL DEFAULT 0,
+                    changed_count INTEGER NOT NULL DEFAULT 0,
+                    unresolved_count INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS acl_backfill_items (
+                    run_id TEXT NOT NULL,
+                    note_id TEXT NOT NULL,
+                    old_workspace TEXT,
+                    old_department TEXT,
+                    old_acl_json TEXT NOT NULL,
+                    old_acl_public INTEGER NOT NULL,
+                    planned_workspace TEXT,
+                    planned_department TEXT,
+                    planned_acl_json TEXT NOT NULL,
+                    planned_acl_public INTEGER NOT NULL,
+                    action TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(run_id, note_id),
+                    FOREIGN KEY(run_id) REFERENCES acl_backfill_runs(run_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_acl_backfill_items_note
+                    ON acl_backfill_items(note_id);
             """)
             self._ensure_columns(connection, "query_logs", {
                 "index_version": "TEXT", "prompt_version": "TEXT",
@@ -246,6 +276,7 @@ class ProductDatabase:
                 "acl_public": "INTEGER NOT NULL DEFAULT 0",
             })
             self._ensure_columns(connection, "notes", {
+                "source_id": "TEXT NOT NULL DEFAULT 'builtin'",
                 "workspace": "TEXT",
                 "department": "TEXT",
                 "acl_json": "TEXT NOT NULL DEFAULT '{}'",
@@ -271,6 +302,29 @@ class ProductDatabase:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_notes_acl_public ON notes(acl_public)"
             )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_notes_source_id ON notes(source_id)"
+            )
+            connection.execute(
+                """
+                UPDATE notes
+                SET source_id = COALESCE(
+                    (
+                        SELECT connector_id
+                        FROM connector_syncs
+                        WHERE status = 'completed'
+                          AND substr(
+                              replace(notes.vault_path, '\\', '/'),
+                              1,
+                              length(connector_id) + 1
+                          ) = connector_id || '/'
+                        ORDER BY finished_at DESC
+                        LIMIT 1
+                    ),
+                    'builtin'
+                )
+                """
+            )
             row = connection.execute("SELECT version FROM schema_meta LIMIT 1").fetchone()
             if row is None:
                 connection.execute("INSERT INTO schema_meta(version) VALUES (?)", (SCHEMA_VERSION,))
@@ -279,7 +333,7 @@ class ProductDatabase:
 
     @staticmethod
     def _ensure_columns(connection: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
-        # PRAGMA 不支持参数化查询 —— 但 table 名来自我们自己的代码，非用户输入
+        # PRAGMA 不支持参数化查询 —— 但 table 名来自我们自己的代码, 非用户输入
         # 仅允许字母/数字/下划线组成的表名
         if not table.replace("_", "").isalnum():
             raise ValueError(f"Invalid table name: {table}")
