@@ -79,42 +79,46 @@ class MindGraphIndexService:
     # ------------------------------------------------------------------ #
     # 分块（带 mindgraph_id，正文剥离 Frontmatter）
     # ------------------------------------------------------------------ #
-    def _resolve_note_path(self, vault_path: str) -> Path:
+    def _resolve_note_path(self, note: dict[str, Any]) -> Path | None:
         """Resolve built-in and connector-backed note paths safely.
 
         Connector notes use ``connector_id/relative/path.md`` as their stable,
-        globally unique database path.  The real source root is stored in the
-        connector audit record, whereas built-in vault notes remain relative to
-        ``self.vault_root``.
+        globally unique database path. The note's source ownership selects the
+        root; the path prefix must agree with that owner.
         """
-        stored_path = Path(vault_path)
-        built_in_path = self.vault_root / stored_path
-        if built_in_path.is_file():
-            return built_in_path
-
-        parts = stored_path.parts
-        if len(parts) < 2:
-            return built_in_path
-        connector = self.db.fetch_one(
-            "SELECT source_path FROM connector_syncs "
-            "WHERE connector_id=? AND status='completed' "
-            "ORDER BY finished_at DESC LIMIT 1",
-            (parts[0],),
-        )
-        if not connector:
-            return built_in_path
+        stored_path = Path(note["vault_path"])
+        source_id = note.get("source_id") or "builtin"
+        if source_id == "builtin":
+            source_root = self.vault_root
+            relative_path = stored_path
+        else:
+            parts = stored_path.parts
+            if len(parts) < 2 or parts[0] != source_id:
+                return None
+            connector = self.db.fetch_one(
+                "SELECT source_path FROM connector_syncs "
+                "WHERE connector_id=? AND status='completed' "
+                "ORDER BY finished_at DESC LIMIT 1",
+                (source_id,),
+            )
+            if not connector:
+                return None
+            source_root = Path(connector["source_path"])
+            relative_path = Path(*parts[1:])
         try:
-            source_root = Path(connector["source_path"]).resolve(strict=True)
-            candidate = source_root.joinpath(*parts[1:]).resolve(strict=True)
+            canonical_root = source_root.resolve(strict=True)
+            candidate = (canonical_root / relative_path).resolve(strict=True)
         except OSError:
-            return built_in_path
-        if source_root in candidate.parents and candidate.is_file():
+            return None
+        if canonical_root in candidate.parents and candidate.is_file():
             return candidate
-        return built_in_path
+        return None
 
     def _load_note_chunks(self, note: dict[str, Any]) -> list[Chunk]:
-        path = self._resolve_note_path(note["vault_path"])
+        path = self._resolve_note_path(note)
         category = Path(note["vault_path"]).parent.name or "根目录"
+        if path is None:
+            return []
         try:
             raw = path.read_text(encoding="utf-8")
         except OSError:
@@ -134,6 +138,7 @@ class MindGraphIndexService:
                     section_path=section_path,
                     metadata={
                         "mindgraph_id": note["note_id"],
+                        "source_id": note.get("source_id", "builtin"),
                         "vault_path": note["vault_path"],
                         "title": note["title"],
                         "doc_name": Path(note["vault_path"]).name,

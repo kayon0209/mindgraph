@@ -73,6 +73,10 @@ class AccessMetadata(NamedTuple):
     acl_public: bool
 
 
+class SourceOwnershipError(ValueError):
+    """Raised when a note ID is already owned by another source."""
+
+
 def _utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -183,12 +187,14 @@ class VaultSyncService:
         ignore_dirs: set[str] | None = None,
         path_prefix: str | None = None,
         id_namespace: str | None = None,
+        source_id: str = "builtin",
     ) -> None:
         self.db = db
         self.vault_path = Path(vault_path)
         self.write_ids = write_ids
         self.path_prefix = path_prefix.strip("/") if path_prefix else None
         self.id_namespace = id_namespace
+        self.source_id = source_id
         # None → 使用默认忽略集合；空集合 → 不忽略任何目录
         self.ignore_dirs = DEFAULT_IGNORE_DIRS if ignore_dirs is None else frozenset(ignore_dirs)
 
@@ -223,6 +229,8 @@ class VaultSyncService:
                 note = self._process_file(path, now, seen_ids)
                 if note is not None:
                     scanned.append(note)
+            except SourceOwnershipError:
+                raise
             except Exception as exc:  # 单文件失败不影响整体
                 errors.append(f"{path.relative_to(self.vault_path)}: {exc}")
 
@@ -274,11 +282,11 @@ class VaultSyncService:
 
     _UPSERT = """
         INSERT INTO notes
-            (note_id, vault_path, title, content_hash, frontmatter_json, ai_access_level,
+            (note_id, vault_path, source_id, title, content_hash, frontmatter_json, ai_access_level,
              workspace, department, acl_json, acl_public, chunk_count, index_status, index_version,
              owner, document_version, policy_key, effective_from, effective_to, policy_status,
              metadata_issues_json, created_at, updated_at, last_indexed_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'pending', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'pending', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
         ON CONFLICT(note_id) DO UPDATE SET
             vault_path=excluded.vault_path,
             title=excluded.title,
@@ -312,6 +320,7 @@ class VaultSyncService:
                 THEN 'pending'
                 ELSE notes.index_status
             END
+        WHERE notes.source_id = excluded.source_id
     """
 
     def _upsert_note(
@@ -326,41 +335,72 @@ class VaultSyncService:
         access_meta: AccessMetadata,
         now: str,
     ) -> None:
-        self.db.execute(
-            self._UPSERT,
-            (
-                note_id,
-                vault_path,
-                title,
-                content_hash,
-                json.dumps(fm, ensure_ascii=False, default=_json_default),
-                access,
-                access_meta.workspace,
-                access_meta.department,
-                access_meta.acl_json,
-                1 if access_meta.acl_public else 0,
-                policy.owner,
-                policy.document_version,
-                policy.policy_key,
-                policy.effective_from,
-                policy.effective_to,
-                policy.policy_status,
-                json.dumps(policy.issues, ensure_ascii=False),
-                now,
-                now,
-            ),
-        )
+        connection = self.db.connect()
+        try:
+            with connection:
+                cursor = connection.execute(
+                    self._UPSERT,
+                    (
+                        note_id,
+                        vault_path,
+                        self.source_id,
+                        title,
+                        content_hash,
+                        json.dumps(fm, ensure_ascii=False, default=_json_default),
+                        access,
+                        access_meta.workspace,
+                        access_meta.department,
+                        access_meta.acl_json,
+                        1 if access_meta.acl_public else 0,
+                        policy.owner,
+                        policy.document_version,
+                        policy.policy_key,
+                        policy.effective_from,
+                        policy.effective_to,
+                        policy.policy_status,
+                        json.dumps(policy.issues, ensure_ascii=False),
+                        now,
+                        now,
+                    ),
+                )
+                if cursor.rowcount == 0:
+                    owner = connection.execute(
+                        "SELECT source_id FROM notes WHERE note_id=?", (note_id,)
+                    ).fetchone()
+                    owner_id = owner["source_id"] if owner else "unknown"
+                    raise SourceOwnershipError(
+                        f"Note ID '{note_id}' is owned by source '{owner_id}' "
+                        f"and cannot be overwritten by source '{self.source_id}'"
+                    )
+        finally:
+            connection.close()
 
     def _prune_missing(self, current_paths: set[str]) -> int:
-        rows = self.db.fetch_all("SELECT note_id, vault_path FROM notes")
-        to_delete = [row["note_id"] for row in rows if row["vault_path"] not in current_paths]
-        if not to_delete:
-            return 0
-        placeholders = ",".join("?" * len(to_delete))
-        self.db.execute(
-            f"DELETE FROM note_relations "
-            f"WHERE source_note_id IN ({placeholders}) OR target_note_id IN ({placeholders})",
-            tuple(to_delete) * 2,
-        )
-        self.db.execute(f"DELETE FROM notes WHERE note_id IN ({placeholders})", tuple(to_delete))
-        return len(to_delete)
+        connection = self.db.connect()
+        try:
+            with connection:
+                rows = connection.execute(
+                    "SELECT note_id, vault_path FROM notes WHERE source_id=?",
+                    (self.source_id,),
+                ).fetchall()
+                to_delete = [
+                    row["note_id"]
+                    for row in rows
+                    if row["vault_path"] not in current_paths
+                ]
+                if not to_delete:
+                    return 0
+                placeholders = ",".join("?" * len(to_delete))
+                connection.execute(
+                    f"DELETE FROM note_relations "
+                    f"WHERE source_note_id IN ({placeholders}) "
+                    f"OR target_note_id IN ({placeholders})",
+                    tuple(to_delete) * 2,
+                )
+                connection.execute(
+                    f"DELETE FROM notes WHERE note_id IN ({placeholders})",
+                    tuple(to_delete),
+                )
+                return len(to_delete)
+        finally:
+            connection.close()
