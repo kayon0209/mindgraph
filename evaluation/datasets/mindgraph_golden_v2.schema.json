@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mindgraph_golden_v2.schema.json",
+  "title": "MindGraph V2 golden retrieval case",
+  "description": "Per-record schema. Cross-record uniqueness and dataset-version consistency are enforced by validate_golden_cases.",
+  "type": "object",
+  "required": [
+    "case_id",
+    "question",
+    "category",
+    "split",
+    "expected_behavior",
+    "gold_vault_paths",
+    "required_facts",
+    "forbidden_facts",
+    "dataset_version",
+    "label_source"
+  ],
+  "properties": {
+    "case_id": {"type": "string", "pattern": "\\S"},
+    "question": {"type": "string", "pattern": "\\S"},
+    "category": {"type": "string", "pattern": "\\S"},
+    "split": {"enum": ["development", "regression"]},
+    "expected_behavior": {"enum": ["answer", "abstain"]},
+    "gold_vault_paths": {
+      "type": "array",
+      "items": {"type": "string", "pattern": "\\S"},
+      "uniqueItems": true
+    },
+    "required_facts": {
+      "type": "array",
+      "items": {"type": "string", "pattern": "\\S"}
+    },
+    "forbidden_facts": {
+      "type": "array",
+      "items": {"type": "string", "pattern": "\\S"}
+    },
+    "dataset_version": {"type": "string", "pattern": "\\S"},
+    "label_source": {"type": "string", "pattern": "\\S"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"expected_behavior": {"const": "answer"}}},
+      "then": {
+        "properties": {
+          "gold_vault_paths": {"minItems": 1},
+          "required_facts": {"minItems": 1}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"expected_behavior": {"const": "abstain"}}},
+      "then": {"properties": {"gold_vault_paths": {"maxItems": 0}}}
+    }
+  ],
+  "additionalProperties": true
+}

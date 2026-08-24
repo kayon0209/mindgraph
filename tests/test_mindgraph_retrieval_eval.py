@@ -19,7 +19,10 @@ def case(case_id="A", behavior="answer", paths=None, question="q"):
         "split": "development",
         "expected_behavior": behavior,
         "gold_vault_paths": paths if paths is not None else ["gold.md"],
+        "required_facts": ["required"] if behavior == "answer" else [],
+        "forbidden_facts": [],
         "dataset_version": "test-v1",
+        "label_source": "human-authored-test-fixture",
     }
 
 
@@ -57,6 +60,96 @@ def test_load_and_validate_jsonl_and_locate_errors(tmp_path: Path):
     other_version["dataset_version"] = "test-v2"
     with pytest.raises(ValueError, match=r"other-version.*consistent"):
         validate_golden_cases([case(), other_version])
+
+
+def test_rejects_empty_dataset_before_reporting(tmp_path: Path):
+    empty = tmp_path / "empty.jsonl"
+    empty.write_text("\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="at least one case"):
+        load_golden_dataset(empty)
+    with pytest.raises(ValueError, match="at least one case"):
+        validate_golden_cases([])
+    with pytest.raises(ValueError, match="at least one case"):
+        evaluate_retrieval_cases([], lambda _case: trace([], [], [], [], []))
+
+
+@pytest.mark.parametrize("top_k", [0, -1, 1.5, True])
+def test_rejects_invalid_top_k_before_retrieval(top_k):
+    called = False
+
+    def retrieve(_case):
+        nonlocal called
+        called = True
+        return trace([], [], [], [], [])
+
+    with pytest.raises(ValueError, match="positive integer"):
+        evaluate_retrieval_cases([case()], retrieve, top_k=top_k)
+    assert called is False
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "case_id",
+        "question",
+        "category",
+        "split",
+        "expected_behavior",
+        "gold_vault_paths",
+        "required_facts",
+        "forbidden_facts",
+        "dataset_version",
+        "label_source",
+    ],
+)
+def test_v2_contract_requires_every_core_field(field):
+    value = case()
+    value.pop(field)
+
+    with pytest.raises(ValueError, match=field):
+        validate_golden_cases([value])
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid", "message"),
+    [
+        ("case_id", 1, "case_id"),
+        ("question", 1, "question"),
+        ("category", [], "category"),
+        ("split", "holdout", "split"),
+        ("split", [], "split"),
+        ("expected_behavior", "refuse", "expected_behavior"),
+        ("expected_behavior", [], "expected_behavior"),
+        ("gold_vault_paths", "gold.md", "gold_vault_paths"),
+        ("required_facts", "fact", "required_facts"),
+        ("forbidden_facts", [1], "forbidden_facts"),
+        ("dataset_version", 2, "dataset_version"),
+        ("label_source", "", "label_source"),
+    ],
+)
+def test_v2_contract_validates_types_and_enums(field, invalid, message):
+    value = case()
+    value[field] = invalid
+
+    with pytest.raises(ValueError, match=message):
+        validate_golden_cases([value])
+
+
+def test_v2_contract_enforces_behavior_specific_evidence_rules():
+    answer_without_facts = case()
+    answer_without_facts["required_facts"] = []
+    with pytest.raises(ValueError, match=r"answer.*required_facts"):
+        validate_golden_cases([answer_without_facts])
+
+    abstain = case("abstain", behavior="abstain", paths=[])
+    abstain["required_facts"] = []
+    abstain["forbidden_facts"] = []
+    assert validate_golden_cases([abstain]) == [abstain]
+
+    abstain["gold_vault_paths"] = ["gold.md"]
+    with pytest.raises(ValueError, match=r"abstain.*gold_vault_paths"):
+        validate_golden_cases([abstain])
 
 
 def test_repository_v2_golden_dataset_is_valid_and_structurally_complete():
@@ -98,13 +191,57 @@ def test_metrics_and_stage_attribution():
     result = evaluate_retrieval_cases(cases, lambda c: traces[c["case_id"]], top_k=2)
     rows = {row["case_id"]: row for row in result["details"]}
     assert rows["final"]["metrics"] == {"recall_at_k": 0.5, "precision_at_k": 0.5, "mrr": 0.5}
-    assert rows["final"]["evidence_stage"] == "final"
-    assert rows["retrieved"]["evidence_stage"] == "retrieved_not_ranked"
-    assert rows["ranked"]["evidence_stage"] == "ranked_not_final"
-    assert rows["missing"]["evidence_stage"] == "not_retrieved"
+    assert rows["final"]["evidence_stages"] == {"a.md": "final", "b.md": "not_retrieved"}
+    assert rows["final"]["failure_stage"] == "not_retrieved"
+    assert rows["retrieved"]["evidence_stages"] == {"a.md": "retrieved_not_ranked"}
+    assert rows["retrieved"]["failure_stage"] == "retrieved_not_ranked"
+    assert rows["ranked"]["evidence_stages"] == {"a.md": "ranked_not_final"}
+    assert rows["ranked"]["failure_stage"] == "ranked_not_final"
+    assert rows["missing"]["evidence_stages"] == {"a.md": "not_retrieved"}
+    assert rows["missing"]["failure_stage"] == "not_retrieved"
     assert result["summary"]["recall_at_k"] == 0.125
     assert result["summary"]["precision_at_k"] == 0.125
     assert result["summary"]["mrr"] == 0.125
+
+
+def test_failure_stage_uses_earliest_loss_among_missing_evidence():
+    value = case(paths=["final.md", "ranked.md", "missing.md"])
+    result = evaluate_retrieval_cases(
+        [value],
+        lambda _case: trace(
+            ["final.md", "ranked.md"],
+            [],
+            ["final.md", "ranked.md"],
+            ["final.md", "ranked.md"],
+            ["final.md"],
+        ),
+        top_k=3,
+    )
+
+    detail = result["details"][0]
+    assert detail["evidence_stages"] == {
+        "final.md": "final",
+        "ranked.md": "ranked_not_final",
+        "missing.md": "not_retrieved",
+    }
+    assert detail["failure_stage"] == "not_retrieved"
+    assert result["failed_cases"][0]["failure_stage"] == "not_retrieved"
+
+
+def test_precision_uses_k_for_short_results_and_mrr_uses_full_ranking():
+    cases = [case("short", paths=["gold.md"]), case("beyond-k", paths=["gold.md"])]
+    traces = {
+        "short": trace([], [], [], [], ["gold.md"]),
+        "beyond-k": trace([], [], [], [], ["x.md", "y.md", "gold.md"]),
+    }
+
+    result = evaluate_retrieval_cases(cases, lambda value: traces[value["case_id"]], top_k=2)
+    rows = {row["case_id"]: row for row in result["details"]}
+
+    assert rows["short"]["metrics"] == {"recall_at_k": 1.0, "precision_at_k": 0.5, "mrr": 1.0}
+    assert rows["beyond-k"]["metrics"] == {"recall_at_k": 0.0, "precision_at_k": 0.0, "mrr": 0.3333}
+    assert rows["beyond-k"]["evidence_stages"] == {"gold.md": "final"}
+    assert rows["beyond-k"]["failure_stage"] == "ranked_not_final"
 
 
 def test_abstain_is_visible_but_not_scored_and_questions_are_opt_in():

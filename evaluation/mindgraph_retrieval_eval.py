@@ -11,7 +11,18 @@ from typing import Any
 from src.retrieval.types import RetrievalTrace
 
 DEFAULT_DATASET_PATH = Path(__file__).resolve().parent / "datasets" / "mindgraph_golden.jsonl"
-_REQUIRED_FIELDS = ("case_id", "question", "expected_behavior", "gold_vault_paths", "dataset_version")
+_REQUIRED_FIELDS = (
+    "case_id",
+    "question",
+    "category",
+    "split",
+    "expected_behavior",
+    "gold_vault_paths",
+    "required_facts",
+    "forbidden_facts",
+    "dataset_version",
+    "label_source",
+)
 _STAGES = ("dense_results", "sparse_results", "fused_results", "reranked_results", "final_selected_chunks")
 _STAGE_ORDER = {"not_retrieved": 0, "retrieved_not_ranked": 1, "ranked_not_final": 2, "final": 3}
 
@@ -20,6 +31,8 @@ def validate_golden_cases(cases: Iterable[dict[str, Any]]) -> list[dict[str, Any
     """Validate and return golden cases, with identifiers in every error."""
     if not isinstance(cases, list):
         cases = list(cases)
+    if not cases:
+        raise ValueError("dataset must contain at least one case")
     seen: set[str] = set()
     validated: list[dict[str, Any]] = []
     dataset_version: str | None = None
@@ -37,25 +50,33 @@ def validate_golden_cases(cases: Iterable[dict[str, Any]]) -> list[dict[str, Any
         if case["case_id"] in seen:
             raise ValueError(f"{location} duplicate case_id")
         seen.add(case["case_id"])
-        if not isinstance(case["question"], str):
-            raise ValueError(f"{location} question must be a string")
+        for field in ("question", "category", "dataset_version", "label_source"):
+            if not isinstance(case[field], str) or not case[field].strip():
+                raise ValueError(f"{location} {field} must be a non-empty string")
         version = case["dataset_version"]
-        if not isinstance(version, str) or not version.strip():
-            raise ValueError(f"{location} dataset_version must be a non-empty string")
         if dataset_version is None:
             dataset_version = version
         elif version != dataset_version:
             raise ValueError(f"{location} dataset_version must be consistent with all cases (expected {dataset_version!r})")
+        split = case["split"]
+        if not isinstance(split, str) or split not in {"development", "regression"}:
+            raise ValueError(f"{location} split must be 'development' or 'regression'")
         behavior = case["expected_behavior"]
-        if behavior not in {"answer", "abstain"}:
+        if not isinstance(behavior, str) or behavior not in {"answer", "abstain"}:
             raise ValueError(f"{location} expected_behavior must be 'answer' or 'abstain'")
         paths = case["gold_vault_paths"]
-        if not isinstance(paths, list) or any(not isinstance(path, str) or not path for path in paths):
+        if not isinstance(paths, list) or any(not isinstance(path, str) or not path.strip() for path in paths):
             raise ValueError(f"{location} gold_vault_paths must be a list of non-empty strings")
         if len(set(paths)) != len(paths):
             raise ValueError(f"{location} gold_vault_paths must not contain duplicates")
+        for field in ("required_facts", "forbidden_facts"):
+            facts = case[field]
+            if not isinstance(facts, list) or any(not isinstance(fact, str) or not fact.strip() for fact in facts):
+                raise ValueError(f"{location} {field} must be a list of non-empty strings")
         if behavior == "answer" and not paths:
             raise ValueError(f"{location} answer case requires at least one gold_vault_paths entry")
+        if behavior == "answer" and not case["required_facts"]:
+            raise ValueError(f"{location} answer case requires at least one required_facts entry")
         if behavior == "abstain" and paths:
             raise ValueError(f"{location} abstain case must not contain gold_vault_paths")
         validated.append(case)
@@ -102,12 +123,12 @@ def _paths(items: Iterable[Any]) -> list[str]:
     return result
 
 
-def _stage_for(gold: set[str], stage_paths: dict[str, list[str]]) -> str:
-    if any(gold.intersection(stage_paths[name]) for name in ("final_selected_chunks",)):
+def _stage_for_path(gold_path: str, stage_paths: dict[str, list[str]]) -> str:
+    if gold_path in stage_paths["final_selected_chunks"]:
         return "final"
-    if any(gold.intersection(stage_paths[name]) for name in ("fused_results", "reranked_results")):
+    if any(gold_path in stage_paths[name] for name in ("fused_results", "reranked_results")):
         return "ranked_not_final"
-    if any(gold.intersection(stage_paths[name]) for name in ("dense_results", "sparse_results")):
+    if any(gold_path in stage_paths[name] for name in ("dense_results", "sparse_results")):
         return "retrieved_not_ranked"
     return "not_retrieved"
 
@@ -115,10 +136,10 @@ def _stage_for(gold: set[str], stage_paths: dict[str, list[str]]) -> str:
 def _metrics(gold: set[str], final_paths: list[str], top_k: int) -> dict[str, float]:
     selected = final_paths[:top_k]
     hits = len(gold.intersection(selected))
-    first = next((position for position, path in enumerate(selected, 1) if path in gold), None)
+    first = next((position for position, path in enumerate(final_paths, 1) if path in gold), None)
     return {
         "recall_at_k": round(hits / len(gold), 4),
-        "precision_at_k": round(hits / len(selected), 4) if selected else 0.0,
+        "precision_at_k": round(hits / top_k, 4),
         "mrr": round(1.0 / first, 4) if first else 0.0,
     }
 
@@ -128,8 +149,8 @@ def evaluate_retrieval_cases(
     top_k: int = 5, include_questions: bool = False,
 ) -> dict[str, Any]:
     """Evaluate traces without invoking retrieval, models, network, or persistence."""
-    if top_k < 1:
-        raise ValueError("top_k must be >= 1")
+    if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k < 1:
+        raise ValueError("top_k must be a positive integer")
     cases = validate_golden_cases(cases)
     details: list[dict[str, Any]] = []
     scored: list[dict[str, Any]] = []
@@ -151,8 +172,19 @@ def evaluate_retrieval_cases(
         if not isinstance(trace_value, RetrievalTrace):
             raise TypeError(f"case_id {case['case_id']!r}: retrieve must return RetrievalTrace")
         stage_paths = {name: _paths(getattr(trace_value, name)) for name in _STAGES}
-        metrics = _metrics(set(case["gold_vault_paths"]), stage_paths["final_selected_chunks"], top_k)
-        detail.update({"gold_vault_paths": case["gold_vault_paths"], "evidence_stage": _stage_for(set(case["gold_vault_paths"]), stage_paths), "metrics": metrics})
+        gold_paths = case["gold_vault_paths"]
+        gold = set(gold_paths)
+        final_paths = stage_paths["final_selected_chunks"]
+        metrics = _metrics(gold, final_paths, top_k)
+        evidence_stages = {path: _stage_for_path(path, stage_paths) for path in gold_paths}
+        detail.update({"gold_vault_paths": gold_paths, "evidence_stages": evidence_stages, "metrics": metrics})
+        missing_paths = gold.difference(final_paths[:top_k])
+        if missing_paths:
+            loss_stages = [
+                "ranked_not_final" if evidence_stages[path] == "final" else evidence_stages[path]
+                for path in missing_paths
+            ]
+            detail["failure_stage"] = min(loss_stages, key=_STAGE_ORDER.__getitem__)
         scored.append(detail)
         details.append(detail)
     summary = {name: round(sum(row["metrics"][name] for row in scored) / len(scored), 4) if scored else None for name in ("recall_at_k", "precision_at_k", "mrr")}

@@ -13,14 +13,22 @@ python -m pytest tests/test_mindgraph_retrieval_eval.py tests/test_answer_evalua
 ```
 
 `.venv` 可用时，将命令中的 `python` 替换为 `.venv\Scripts\python.exe`。上述是
-当前可用的无模型测试入口；不要把尚不存在的 `run_ablation.py` 当作运行入口。
+当前可用的无模型、无网络、无运行时数据库测试入口。`scripts/run_ablation.py` 已存在，
+但它是依赖 MindGraph 运行时索引、检索管线和本地嵌入模型的遗留消融入口，非 V2 数据
+结构回归测试；即使使用 `--dry-run`，也不能替代上述离线结构测试。
+
+单条 V2 记录的结构规范见 `mindgraph_golden_v2.schema.json`。实际校验合同集中在
+`evaluation.mindgraph_retrieval_eval.validate_golden_cases`：除逐条字段校验外，它还检查
+`case_id` 唯一和整个 JSONL 的 `dataset_version` 一致性。
 
 ## 数据划分
 
 - `development`：允许用于错误分析和参数选择。
 - `regression`：用于回归验证，不参与日常调参。
-- `holdout`：未来由未参与开发的标注者新增，格式见 `holdout_schema.json`；当前没有
-  holdout 数据，不得将 regression 宣称为独立测试集。
+
+当前 V2 合同只接受以上两种划分。未来若由未参与开发的标注者新增 `holdout`，必须先
+升级 MindGraph V2 校验合同和专用 schema；不得套用历史 Expense-QA 的
+`holdout_schema.json`，也不得将当前 regression 宣称为独立测试集。
 
 划分按题型分层后固定写入文件，不在运行时随机抽样。
 
