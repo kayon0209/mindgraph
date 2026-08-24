@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 import json
-import re
 from pathlib import Path
-from typing import Any, Callable, Iterable
+import re
+from typing import Any
 
 from src.retrieval.types import RetrievalTrace
-
 
 DEFAULT_DATASET_PATH = Path(__file__).resolve().parent / "datasets" / "mindgraph_golden.jsonl"
 _REQUIRED_FIELDS = ("case_id", "question", "expected_behavior", "gold_vault_paths", "dataset_version")

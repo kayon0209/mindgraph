@@ -31,7 +31,7 @@ def candidate(path):
 def trace(*stages):
     names = ("dense_results", "sparse_results", "fused_results", "reranked_results", "final_selected_chunks")
     value = RetrievalTrace("q", "hybrid", "hybrid")
-    for name, paths in zip(names, stages):
+    for name, paths in zip(names, stages, strict=True):
         setattr(value, name, [candidate(path) for path in paths])
     return value
 
@@ -51,11 +51,11 @@ def test_load_and_validate_jsonl_and_locate_errors(tmp_path: Path):
 
     missing_version = case("missing-version")
     missing_version.pop("dataset_version")
-    with pytest.raises(ValueError, match="missing-version.*dataset_version"):
+    with pytest.raises(ValueError, match=r"missing-version.*dataset_version"):
         validate_golden_cases([missing_version])
     other_version = case("other-version")
     other_version["dataset_version"] = "test-v2"
-    with pytest.raises(ValueError, match="other-version.*consistent"):
+    with pytest.raises(ValueError, match=r"other-version.*consistent"):
         validate_golden_cases([case(), other_version])
 
 
@@ -126,6 +126,6 @@ def test_retrieve_failure_identifies_case_and_preserves_cause():
     cause = RuntimeError("backend unavailable")
     def retrieve(_case):
         raise cause
-    with pytest.raises(RuntimeError, match="case_id 'A'.*retrieval failed") as error:
+    with pytest.raises(RuntimeError, match=r"case_id 'A'.*retrieval failed") as error:
         evaluate_retrieval_cases([case()], retrieve)
     assert error.value.__cause__ is cause
