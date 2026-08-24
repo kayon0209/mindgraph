@@ -49,6 +49,15 @@ def test_load_and_validate_jsonl_and_locate_errors(tmp_path: Path):
     with pytest.raises(ValueError, match="B"):
         validate_golden_cases([case(), case(case_id="B", behavior="abstain", paths=["bad.md"])])
 
+    missing_version = case("missing-version")
+    missing_version.pop("dataset_version")
+    with pytest.raises(ValueError, match="missing-version.*dataset_version"):
+        validate_golden_cases([missing_version])
+    other_version = case("other-version")
+    other_version["dataset_version"] = "test-v2"
+    with pytest.raises(ValueError, match="other-version.*consistent"):
+        validate_golden_cases([case(), other_version])
+
 
 def test_metrics_and_stage_attribution():
     cases = [
@@ -78,9 +87,22 @@ def test_metrics_and_stage_attribution():
 def test_abstain_is_visible_but_not_scored_and_questions_are_opt_in():
     cases = [case("answer", question="secret", paths=["a.md"]), case("refuse", "abstain", [], "private")]
     result = evaluate_retrieval_cases(cases, lambda c: trace([], [], [], [], []))
+    json.dumps(result, ensure_ascii=False)
     assert result["counts"] == {"answer": 1, "abstain": 1}
     assert result["details"][1]["scored"] is False
     assert "reason" in result["details"][1]
     assert all("question" not in row for row in result["details"])
+    assert all("question" not in row for row in result["failed_cases"])
     with_questions = evaluate_retrieval_cases(cases, lambda c: trace([], [], [], [], []), include_questions=True)
+    json.dumps(with_questions, ensure_ascii=False)
     assert with_questions["details"][0]["question"] == "secret"
+    assert with_questions["failed_cases"][0]["question"] == "secret"
+
+
+def test_retrieve_failure_identifies_case_and_preserves_cause():
+    cause = RuntimeError("backend unavailable")
+    def retrieve(_case):
+        raise cause
+    with pytest.raises(RuntimeError, match="case_id 'A'.*retrieval failed") as error:
+        evaluate_retrieval_cases([case()], retrieve)
+    assert error.value.__cause__ is cause

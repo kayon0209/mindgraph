@@ -11,7 +11,7 @@ from src.retrieval.types import RetrievalTrace
 
 
 DEFAULT_DATASET_PATH = Path(__file__).resolve().parent / "datasets" / "mindgraph_golden.jsonl"
-_REQUIRED_FIELDS = ("case_id", "question", "expected_behavior", "gold_vault_paths")
+_REQUIRED_FIELDS = ("case_id", "question", "expected_behavior", "gold_vault_paths", "dataset_version")
 _STAGES = ("dense_results", "sparse_results", "fused_results", "reranked_results", "final_selected_chunks")
 _STAGE_ORDER = {"not_retrieved": 0, "retrieved_not_ranked": 1, "ranked_not_final": 2, "final": 3}
 
@@ -22,6 +22,7 @@ def validate_golden_cases(cases: Iterable[dict[str, Any]]) -> list[dict[str, Any
         cases = list(cases)
     seen: set[str] = set()
     validated: list[dict[str, Any]] = []
+    dataset_version: str | None = None
     for index, case in enumerate(cases, 1):
         location = f"case at index {index}"
         if not isinstance(case, dict):
@@ -38,6 +39,13 @@ def validate_golden_cases(cases: Iterable[dict[str, Any]]) -> list[dict[str, Any
         seen.add(case["case_id"])
         if not isinstance(case["question"], str):
             raise ValueError(f"{location} question must be a string")
+        version = case["dataset_version"]
+        if not isinstance(version, str) or not version.strip():
+            raise ValueError(f"{location} dataset_version must be a non-empty string")
+        if dataset_version is None:
+            dataset_version = version
+        elif version != dataset_version:
+            raise ValueError(f"{location} dataset_version must be consistent with all cases (expected {dataset_version!r})")
         behavior = case["expected_behavior"]
         if behavior not in {"answer", "abstain"}:
             raise ValueError(f"{location} expected_behavior must be 'answer' or 'abstain'")
@@ -136,7 +144,10 @@ def evaluate_retrieval_cases(
             detail["reason"] = "abstain cases are excluded from retrieval metrics"
             details.append(detail)
             continue
-        trace_value = retrieve(case)
+        try:
+            trace_value = retrieve(case)
+        except Exception as exc:
+            raise RuntimeError(f"case_id {case['case_id']!r}: retrieval failed") from exc
         if not isinstance(trace_value, RetrievalTrace):
             raise TypeError(f"case_id {case['case_id']!r}: retrieve must return RetrievalTrace")
         stage_paths = {name: _paths(getattr(trace_value, name)) for name in _STAGES}
