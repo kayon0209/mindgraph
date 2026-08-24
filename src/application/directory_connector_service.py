@@ -18,6 +18,7 @@ import hashlib
 import json
 import logging
 from pathlib import Path
+import re
 from typing import Any
 
 from application.vault_sync_service import VaultSyncService
@@ -27,6 +28,7 @@ logger = logging.getLogger("mindgraph.connectors.directory")
 
 CONNECTOR_TYPE = "markdown_directory"
 SUPPORTED_SUFFIXES = {".md", ".markdown"}
+CONNECTOR_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 
 
 def _utc_iso() -> str:
@@ -59,15 +61,25 @@ class DirectoryConnectorService:
         database: ProductDatabase,
         vault_root: Path,
         index_service: Any | None = None,
-        vault_sync: VaultSyncService | None = None,
         allowed_roots: tuple[Path, ...] | None = None,
     ) -> None:
         self.database = database
         self.vault_root = Path(vault_root)
         self.index_service = index_service
-        self._vault_sync = vault_sync
         configured_roots = allowed_roots if allowed_roots is not None else (self.vault_root,)
         self.allowed_roots = tuple(Path(root).resolve() for root in configured_roots)
+
+    @staticmethod
+    def _validate_connector_id(connector_id: str) -> str:
+        if (
+            not isinstance(connector_id, str)
+            or connector_id.casefold() == "builtin"
+            or CONNECTOR_ID_PATTERN.fullmatch(connector_id) is None
+        ):
+            raise ValueError(
+                "connector_id must be one safe ASCII path segment and cannot be 'builtin'"
+            )
+        return connector_id
 
     def _validate_source(self, source_path: Path) -> Path:
         if not source_path.exists() or not source_path.is_dir():
@@ -79,8 +91,6 @@ class DirectoryConnectorService:
 
     def _sync_service(self, source_path: Path, connector_id: str) -> VaultSyncService:
         """为指定源目录构建只读 VaultSyncService。"""
-        if self._vault_sync is not None:
-            return self._vault_sync
         return VaultSyncService(
             self.database,
             source_path,
@@ -147,7 +157,9 @@ class DirectoryConnectorService:
         """
         source = self._validate_source(Path(source_path))
 
-        connector_id = connector_id or f"dir-{hashlib.sha256(str(source).casefold().encode()).hexdigest()[:12]}"
+        if connector_id is None:
+            connector_id = f"dir-{hashlib.sha256(str(source).casefold().encode()).hexdigest()[:12]}"
+        connector_id = self._validate_connector_id(connector_id)
         started_at = _utc_iso()
         root_acl_map = self._load_root_acl_map(source)
 

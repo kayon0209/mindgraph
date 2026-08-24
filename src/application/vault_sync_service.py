@@ -378,18 +378,18 @@ class VaultSyncService:
     def _prune_missing(self, current_paths: set[str]) -> int:
         connection = self.db.connect()
         try:
-            with connection:
-                rows = connection.execute(
-                    "SELECT note_id, vault_path FROM notes WHERE source_id=?",
-                    (self.source_id,),
-                ).fetchall()
-                to_delete = [
-                    row["note_id"]
-                    for row in rows
-                    if row["vault_path"] not in current_paths
-                ]
-                if not to_delete:
-                    return 0
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                "SELECT note_id, vault_path FROM notes WHERE source_id=?",
+                (self.source_id,),
+            ).fetchall()
+            to_delete = [
+                row["note_id"]
+                for row in rows
+                if row["vault_path"] not in current_paths
+            ]
+            pruned = 0
+            if to_delete:
                 placeholders = ",".join("?" * len(to_delete))
                 connection.execute(
                     f"DELETE FROM note_relations "
@@ -397,10 +397,16 @@ class VaultSyncService:
                     f"OR target_note_id IN ({placeholders})",
                     tuple(to_delete) * 2,
                 )
-                connection.execute(
-                    f"DELETE FROM notes WHERE note_id IN ({placeholders})",
-                    tuple(to_delete),
+                cursor = connection.execute(
+                    f"DELETE FROM notes WHERE note_id IN ({placeholders}) "
+                    f"AND source_id=?",
+                    (*to_delete, self.source_id),
                 )
-                return len(to_delete)
+                pruned = cursor.rowcount
+            connection.commit()
+            return pruned
+        except Exception:
+            connection.rollback()
+            raise
         finally:
             connection.close()

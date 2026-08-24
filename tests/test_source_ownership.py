@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import sqlite3
+import threading
 
 import pytest
 
@@ -234,3 +235,137 @@ def test_pruned_connector_sync_forces_requested_index_build(tmp_path: Path) -> N
 
     assert result["pruned"] == 1
     assert index.force_values == [True]
+
+
+@pytest.mark.parametrize(
+    "connector_id",
+    ["builtin", "BUILTIN", "", ".", "..", "nested/id", "nested\\id", "空白"],
+)
+def test_unsafe_connector_id_is_rejected_before_database_changes(
+    tmp_path: Path,
+    connector_id: str,
+) -> None:
+    database = ProductDatabase(tmp_path / "product.sqlite3")
+    database.initialize()
+    _insert_note(database, "builtin-note", "builtin.md", "builtin")
+    source = _make_note_source(tmp_path, "source", {"policy.md": "external-note"})
+    connector = DirectoryConnectorService(
+        database,
+        source,
+        index_service=None,
+        allowed_roots=(source,),
+    )
+    before = database.fetch_all("SELECT * FROM notes ORDER BY note_id")
+
+    with pytest.raises(ValueError, match="connector_id"):
+        connector.sync(source, connector_id=connector_id)
+
+    assert database.fetch_all("SELECT * FROM notes ORDER BY note_id") == before
+    assert database.fetch_one("SELECT 1 FROM connector_syncs") is None
+
+
+def test_prune_does_not_delete_note_after_concurrent_ownership_handoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = ProductDatabase(tmp_path / "product.sqlite3")
+    database.initialize()
+    source = tmp_path / "source"
+    source.mkdir()
+    _insert_note(database, "owned", "connector-a/owned.md", "connector-a")
+    _insert_note(database, "related", "builtin-related.md", "builtin")
+    database.execute(
+        "INSERT INTO note_relations "
+        "(relation_id, source_note_id, target_note_id, relation_type, proposed_at) "
+        "VALUES ('rel-handoff', 'owned', 'related', 'supports', '2026-08-25T00:00:00Z')"
+    )
+    sync = VaultSyncService(
+        database,
+        source,
+        write_ids=False,
+        source_id="connector-a",
+    )
+    real_connect = database.connect
+    handoff_connection = real_connect()
+    handoff_connection.execute("BEGIN IMMEDIATE")
+    handoff_connection.execute(
+        "UPDATE notes SET source_id='connector-b' WHERE note_id='owned'"
+    )
+    prune_connection = real_connect()
+    prune_attempted = threading.Event()
+
+    class SignalingConnection:
+        def execute(self, sql, params=()):
+            normalized = " ".join(sql.split()).upper()
+            if normalized.startswith("BEGIN IMMEDIATE"):
+                prune_attempted.set()
+            cursor = prune_connection.execute(sql, params)
+            if normalized.startswith("SELECT NOTE_ID, VAULT_PATH FROM NOTES"):
+                prune_attempted.set()
+            return cursor
+
+        def __enter__(self):
+            prune_connection.__enter__()
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return prune_connection.__exit__(exc_type, exc_value, traceback)
+
+        def close(self):
+            prune_connection.close()
+
+        def commit(self):
+            prune_connection.commit()
+
+        def rollback(self):
+            prune_connection.rollback()
+
+    monkeypatch.setattr(database, "connect", lambda: SignalingConnection())
+    results: list[int] = []
+    errors: list[Exception] = []
+
+    def run_prune() -> None:
+        try:
+            results.append(sync._prune_missing(set()))
+        except Exception as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=run_prune)
+    thread.start()
+    assert prune_attempted.wait(timeout=2)
+    handoff_connection.commit()
+    handoff_connection.close()
+    thread.join(timeout=5)
+    monkeypatch.setattr(database, "connect", real_connect)
+
+    assert not thread.is_alive()
+    assert errors == []
+    assert results == [0]
+    assert database.fetch_one(
+        "SELECT source_id FROM notes WHERE note_id='owned'"
+    ) == {"source_id": "connector-b"}
+    assert database.fetch_one(
+        "SELECT 1 FROM note_relations WHERE relation_id='rel-handoff'"
+    )
+
+
+def test_connector_rejects_injected_vault_sync_before_it_can_prune_builtin(
+    tmp_path: Path,
+) -> None:
+    database = ProductDatabase(tmp_path / "product.sqlite3")
+    database.initialize()
+    _insert_note(database, "builtin-note", "builtin.md", "builtin")
+    source = tmp_path / "empty-source"
+    source.mkdir()
+    injected = VaultSyncService(database, source, write_ids=False)
+
+    with pytest.raises(TypeError, match="vault_sync"):
+        DirectoryConnectorService(
+            database,
+            source,
+            index_service=None,
+            vault_sync=injected,
+            allowed_roots=(source,),
+        )
+
+    assert _note_ids(database, "builtin") == {"builtin-note"}
