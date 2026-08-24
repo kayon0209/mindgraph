@@ -1,13 +1,12 @@
+from pathlib import Path
 import tempfile
 import unittest
-from pathlib import Path
 
 from retrieval.dense import FAISSDenseRetriever, IncompatibleIndexError
 from retrieval.fusion import ReciprocalRankFusion
 from retrieval.pipeline import RetrievalPipeline
 from retrieval.sparse import BM25Retriever, tokenize_zh
 from retrieval.types import Chunk, RetrievalCandidate
-
 
 CHUNKS = [
     Chunk("policy.md::0", "差旅费报销时限为十个工作日", "policy.md", 0, "时限"),
@@ -44,6 +43,8 @@ class RetrievalTests(unittest.TestCase):
         retriever = BM25Retriever(CHUNKS)
         results, _ = retriever.search("电子发票", 1)
         self.assertEqual(results[0].chunk.chunk_id, "materials.md::0")
+        allowed, _ = retriever.search("报销", 1, allowed_chunk_ids={"policy.md::0"})
+        self.assertEqual([item.chunk.chunk_id for item in allowed], ["policy.md::0"])
         self.assertEqual(retriever.search("", 5)[0], [])
         self.assertLessEqual(len(retriever.search("报销", 2)[0]), 2)
 
@@ -69,6 +70,8 @@ class RetrievalTests(unittest.TestCase):
             results, _ = loaded.search("时限", 2)
             self.assertEqual(results[0].chunk.chunk_id, "policy.md::0")
             self.assertEqual(len(results), 2)
+            allowed, _ = loaded.search("时限", 2, allowed_chunk_ids={"policy.md::1"})
+            self.assertEqual([item.chunk.chunk_id for item in allowed], ["policy.md::1"])
             self.assertEqual(loaded.search("", 5)[0], [])
             self.assertEqual(loaded.metadata["vector_dimension"], 3)
 

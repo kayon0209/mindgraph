@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 import json
-import time
 from pathlib import Path
-from typing import Any, Sequence
+import time
+from typing import Any
 
 import numpy as np
 
@@ -77,21 +78,40 @@ class FAISSDenseRetriever:
             raise IncompatibleIndexError("FAISS row count does not match chunk metadata")
         self._metadata = metadata
 
-    def search(self, query: str, top_k: int) -> tuple[list[RetrievalCandidate], dict[str, float]]:
+    def search(
+        self,
+        query: str,
+        top_k: int,
+        allowed_chunk_ids: set[str] | None = None,
+    ) -> tuple[list[RetrievalCandidate], dict[str, float]]:
         if top_k <= 0 or not query.strip():
             return [], {"query_embedding_ms": 0.0, "dense_retrieval_ms": 0.0}
         if self._index is None:
             self.load()
+        if allowed_chunk_ids == set():
+            return [], {"query_embedding_ms": 0.0, "dense_retrieval_ms": 0.0}
         start = time.perf_counter()
         vector = np.asarray([self.provider.embed_query(query)], dtype="float32")
         embedding_ms = (time.perf_counter() - start) * 1000
         self._faiss().normalize_L2(vector)
         start = time.perf_counter()
-        scores, positions = self._index.search(vector, min(top_k, len(self._chunks)))
+        search_count = len(self._chunks) if allowed_chunk_ids is not None else min(top_k, len(self._chunks))
+        scores, positions = self._index.search(vector, search_count)
         retrieval_ms = (time.perf_counter() - start) * 1000
-        results = [
-            RetrievalCandidate(chunk=self._chunks[int(position)], dense_score=float(score), dense_rank=rank)
-            for rank, (score, position) in enumerate(zip(scores[0], positions[0]), 1)
-            if position >= 0
-        ]
+        results = []
+        for score, position in zip(scores[0], positions[0], strict=True):
+            if position < 0:
+                continue
+            chunk = self._chunks[int(position)]
+            if allowed_chunk_ids is not None and chunk.chunk_id not in allowed_chunk_ids:
+                continue
+            results.append(
+                RetrievalCandidate(
+                    chunk=chunk,
+                    dense_score=float(score),
+                    dense_rank=len(results) + 1,
+                )
+            )
+            if len(results) >= top_k:
+                break
         return results, {"query_embedding_ms": round(embedding_ms, 3), "dense_retrieval_ms": round(retrieval_ms, 3)}

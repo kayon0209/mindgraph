@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import time
 from datetime import date
+import time
 
 from .types import DenseRetriever, FusionStrategy, Reranker, RetrievalTrace, SparseRetriever
-
 
 VALID_STRATEGIES = {"dense", "bm25", "hybrid", "hybrid_rerank"}
 DEFAULT_AUTHORITY_WEIGHTS = {
@@ -82,18 +81,12 @@ class RetrievalPipeline:
         - 无 access_scope（单用户 / demo / 旧版调用）→ 不裁剪；
         - 有 access_scope → 拒绝无 ACL 元数据的 chunk，仅保留显式命中的。
         """
-        if not access_scope:
+        if access_scope is None:
             return candidates
         from application.access_control import chunk_acl_matches
 
-        allowed = set(access_scope.get("allow") or [])
-        denied = set(access_scope.get("deny") or [])
-        scope = {
-            "allow": allowed,
-            "deny": denied,
-            "roles": access_scope.get("roles", []),
-            "user": access_scope.get("user"),
-        }
+        scope = self._normalized_access_scope(access_scope)
+        allowed = set(scope["allow"])
         if "*" in allowed:
             return candidates
         visible = []
@@ -107,6 +100,60 @@ class RetrievalPipeline:
             trace.warnings = list(dict.fromkeys(trace.warnings))
         return visible
 
+    @staticmethod
+    def _normalized_access_scope(access_scope: dict) -> dict:
+        return {
+            **access_scope,
+            "allow": list(access_scope.get("allow") or []),
+            "deny": list(access_scope.get("deny") or []),
+            "roles": list(access_scope.get("roles") or []),
+            "user": access_scope.get("user"),
+        }
+
+    def _loaded_chunks(self) -> list:
+        chunks_by_id = {}
+        for retriever in (self.dense, self.sparse):
+            for chunk in getattr(retriever, "chunks", []) or []:
+                chunks_by_id.setdefault(chunk.chunk_id, chunk)
+        return list(chunks_by_id.values())
+
+    def _access_prefilter(self, access_scope: dict | None) -> tuple[set[str] | None, dict, dict | None]:
+        chunks = self._loaded_chunks()
+        corpus_count = len(chunks)
+        if access_scope is None:
+            return None, {
+                "reason": "explicit_bypass",
+                "corpus_count": corpus_count,
+                "allowed_count": corpus_count,
+                "rejected_count": 0,
+            }, None
+
+        from application.access_control import chunk_acl_matches
+
+        scope = self._normalized_access_scope(access_scope)
+        if "*" in scope["allow"]:
+            allowed_chunk_ids = {chunk.chunk_id for chunk in chunks}
+            reason = "wildcard"
+        else:
+            allowed_chunk_ids = {
+                chunk.chunk_id
+                for chunk in chunks
+                if chunk_acl_matches(chunk.metadata, scope)
+            }
+            reason = "scope_match" if scope["allow"] else "public_only"
+        return allowed_chunk_ids, {
+            "reason": reason,
+            "corpus_count": corpus_count,
+            "allowed_count": len(allowed_chunk_ids),
+            "rejected_count": corpus_count - len(allowed_chunk_ids),
+        }, scope
+
+    @staticmethod
+    def _prefilter_results(candidates, allowed_chunk_ids: set[str] | None):
+        if allowed_chunk_ids is None:
+            return candidates
+        return [candidate for candidate in candidates if candidate.chunk.chunk_id in allowed_chunk_ids]
+
     def retrieve(self, query: str, strategy: str, query_date: str | None = None,
                  categories: list[str] | None = None, include_historical: bool = False,
                  access_scope: dict | None = None) -> RetrievalTrace:
@@ -114,14 +161,42 @@ class RetrievalPipeline:
             raise ValueError(f"Unknown retrieval strategy: {strategy}")
         trace = RetrievalTrace(query=query, requested_strategy=strategy, actual_strategy=strategy)
         trace.index_version = getattr(self.dense, "metadata", {}).get("index_version")
-        trace.applied_filters = {"query_date": query_date, "knowledge_categories": categories or [], "include_historical": include_historical, "access_scope": access_scope}
+        allowed_chunk_ids, access_prefilter, normalized_scope = self._access_prefilter(access_scope)
+        trace.applied_filters = {
+            "query_date": query_date,
+            "knowledge_categories": categories or [],
+            "include_historical": include_historical,
+            "access_scope": normalized_scope,
+            "access_prefilter": access_prefilter,
+        }
         dense_results, sparse_results = [], []
+        empty_corpus = not access_prefilter["corpus_count"]
         if strategy in {"dense", "hybrid", "hybrid_rerank"}:
-            dense_results, timings = self.dense.search(query, self.candidate_count)
+            if allowed_chunk_ids == set() and empty_corpus:
+                timings = {}
+            elif allowed_chunk_ids is None:
+                dense_results, timings = self.dense.search(query, self.candidate_count)
+            else:
+                dense_results, timings = self.dense.search(
+                    query,
+                    self.candidate_count,
+                    allowed_chunk_ids=allowed_chunk_ids,
+                )
+            dense_results = self._prefilter_results(dense_results, allowed_chunk_ids)
             trace.latency_ms.update(timings)
             trace.dense_results = dense_results
         if strategy in {"bm25", "hybrid", "hybrid_rerank"}:
-            sparse_results, timings = self.sparse.search(query, self.candidate_count)
+            if allowed_chunk_ids == set() and empty_corpus:
+                timings = {}
+            elif allowed_chunk_ids is None:
+                sparse_results, timings = self.sparse.search(query, self.candidate_count)
+            else:
+                sparse_results, timings = self.sparse.search(
+                    query,
+                    self.candidate_count,
+                    allowed_chunk_ids=allowed_chunk_ids,
+                )
+            sparse_results = self._prefilter_results(sparse_results, allowed_chunk_ids)
             trace.latency_ms.update(timings)
             trace.sparse_results = sparse_results
         if strategy == "dense":
@@ -167,6 +242,9 @@ class RetrievalPipeline:
             candidate.final_rank = rank
         trace.final_selected_chunks = final
         trace.candidate_counts = {
+            "prefilter_corpus": access_prefilter["corpus_count"],
+            "prefilter_allowed": access_prefilter["allowed_count"],
+            "prefilter_rejected": access_prefilter["rejected_count"],
             "dense": len(trace.dense_results),
             "sparse": len(trace.sparse_results),
             "fused": len(trace.fused_results),

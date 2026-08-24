@@ -1,13 +1,12 @@
 from __future__ import annotations
 
+from collections import Counter, defaultdict
+from collections.abc import Sequence
 import math
 import re
 import time
-from collections import Counter, defaultdict
-from typing import Sequence
 
 from .types import Chunk, RetrievalCandidate
-
 
 _LATIN_OR_NUMBER = re.compile(r"[a-zA-Z0-9]+")
 _CJK = re.compile(r"[\u4e00-\u9fff]")
@@ -50,13 +49,27 @@ class BM25Retriever:
             score += inverse_document_frequency * frequency * (self.k1 + 1) / denominator
         return score
 
-    def search(self, query: str, top_k: int) -> tuple[list[RetrievalCandidate], dict[str, float]]:
+    def search(
+        self,
+        query: str,
+        top_k: int,
+        allowed_chunk_ids: set[str] | None = None,
+    ) -> tuple[list[RetrievalCandidate], dict[str, float]]:
         if top_k <= 0 or not query.strip() or not self.chunks:
             return [], {"bm25_retrieval_ms": 0.0}
         start = time.perf_counter()
         query_tokens = tokenize_zh(query)
+        allowed_positions = (
+            range(len(self.chunks))
+            if allowed_chunk_ids is None
+            else (
+                index
+                for index, chunk in enumerate(self.chunks)
+                if chunk.chunk_id in allowed_chunk_ids
+            )
+        )
         ranked = sorted(
-            ((self._score(query_tokens, index), index) for index in range(len(self.chunks))),
+            ((self._score(query_tokens, index), index) for index in allowed_positions),
             key=lambda item: (-item[0], self.chunks[item[1]].chunk_id),
         )[:top_k]
         elapsed = (time.perf_counter() - start) * 1000

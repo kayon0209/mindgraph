@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
-from typing import Any, Protocol, Sequence
+from typing import Any, Protocol
 
 
 @dataclass(frozen=True)
@@ -95,11 +96,21 @@ class EmbeddingProvider(Protocol):
 
 
 class DenseRetriever(Protocol):
-    def search(self, query: str, top_k: int) -> tuple[list[RetrievalCandidate], dict[str, float]]: ...
+    def search(
+        self,
+        query: str,
+        top_k: int,
+        allowed_chunk_ids: set[str] | None = None,
+    ) -> tuple[list[RetrievalCandidate], dict[str, float]]: ...
 
 
 class SparseRetriever(Protocol):
-    def search(self, query: str, top_k: int) -> tuple[list[RetrievalCandidate], dict[str, float]]: ...
+    def search(
+        self,
+        query: str,
+        top_k: int,
+        allowed_chunk_ids: set[str] | None = None,
+    ) -> tuple[list[RetrievalCandidate], dict[str, float]]: ...
 
 
 class FusionStrategy(Protocol):
