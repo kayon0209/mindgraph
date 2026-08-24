@@ -7,8 +7,8 @@
 """
 from __future__ import annotations
 
-import time
 from pathlib import Path
+import time
 
 import jwt as pyjwt
 import pytest
@@ -107,16 +107,44 @@ def test_get_optional_principal_prefers_oidc_bearer(oidc_enabled, monkeypatch):
     assert principal["name"] == "carol@corp.com"
 
 
+def test_required_principal_accepts_oidc_bearer(oidc_enabled, monkeypatch):
+    """Role-protected endpoints must consume the same OIDC principal as read paths."""
+    from types import SimpleNamespace
+
+    import api.auth as auth
+    import api.oidc as oidc
+
+    monkeypatch.setattr(auth, "AUTH_MODE", "bearer")
+    monkeypatch.setattr(
+        oidc,
+        "principal_from_bearer",
+        lambda _authorization: {
+            "authenticated": True,
+            "name": "alice@example.com",
+            "roles": ["read", "write"],
+            "workspaces": ["corp"],
+            "auth_mode": "oidc",
+        },
+    )
+
+    request = SimpleNamespace(headers={"Authorization": "Bearer oidc-token"}, state=SimpleNamespace())
+    principal = auth.get_required_principal(request)
+
+    assert principal["name"] == "alice@example.com"
+    assert "write" in principal["roles"]
+
+
 def test_oidc_principal_acl_scope_filters_notes(oidc_enabled, tmp_path: Path, monkeypatch):
     """端到端：OIDC principal 的 ACL scope 在台账列表生效。"""
     from types import SimpleNamespace
 
+    from fastapi.testclient import TestClient
+
     import api.auth as auth
-    from application.vault_sync_service import VaultSyncService
-    from infrastructure.database import ProductDatabase
     from api.dependencies import override_container
     from api.main import app
-    from fastapi.testclient import TestClient
+    from application.vault_sync_service import VaultSyncService
+    from infrastructure.database import ProductDatabase
 
     vault = tmp_path / "vault"
     vault.mkdir()

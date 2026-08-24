@@ -5,13 +5,11 @@
 """
 from __future__ import annotations
 
-import os
-import warnings
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -58,6 +56,9 @@ class Settings(BaseSettings):
     OIDC_WORKSPACES_CLAIM: str = "workspaces"
     OIDC_DEPARTMENTS_CLAIM: str = "departments"
     OIDC_USERNAME_CLAIM: str = "preferred_username"
+
+    # ── 企业连接器 ──
+    CONNECTOR_ALLOWED_ROOTS: str = ""  # 逗号分隔；knowledge/ 始终作为受控根目录
 
     # ── 安全 ──
     RATE_LIMIT_ENABLED: bool = False
@@ -139,6 +140,10 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
+
+    @property
+    def connector_allowed_root_list(self) -> tuple[Path, ...]:
+        return tuple(Path(item.strip()).resolve() for item in self.CONNECTOR_ALLOWED_ROOTS.split(",") if item.strip())
 
     @property
     def is_production(self) -> bool:

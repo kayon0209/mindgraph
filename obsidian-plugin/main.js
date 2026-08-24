@@ -1,4 +1,5 @@
 const { Plugin, Notice, ItemView, MarkdownView } = require("obsidian");
+const { buildApiHeaders, reduceMindGraphEvent } = require("./sse-events");
 
 const VIEW_TYPE = "mindgraph-view";
 
@@ -6,6 +7,7 @@ class MindGraphView extends ItemView {
   constructor(leaf) {
     super(leaf);
     this.apiBase = "http://127.0.0.1:8000/api/v1";
+    this.apiKey = "";
     this.graphEnabled = true;
     this.answer = "";
   }
@@ -41,6 +43,12 @@ class MindGraphView extends ItemView {
       value: this.apiBase,
     });
     base.onchange = () => (this.apiBase = base.value.trim().replace(/\/+$/, ""));
+    const apiKey = bar.createEl("input", {
+      type: "password",
+      cls: "mg-api-key",
+      placeholder: "API Key（仅本次会话）",
+    });
+    apiKey.oninput = () => (this.apiKey = apiKey.value);
 
     const input = el.createEl("textarea", {
       cls: "mg-input",
@@ -91,7 +99,7 @@ class MindGraphView extends ItemView {
     const url = `${this.apiBase}/mindgraph/chat/stream`;
     const resp = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: buildApiHeaders(this.apiKey),
       body: JSON.stringify({ question: q, graph_enabled: this.graphEnabled }),
     });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -100,8 +108,7 @@ class MindGraphView extends ItemView {
     const reader = resp.body.getReader();
     const dec = new TextDecoder();
     let buf = "";
-    let citations = [];
-    let graphLinks = [];
+    let state = { answer: "", citations: [], graphLinks: [] };
 
     while (true) {
       const { done, value } = await reader.read();
@@ -120,20 +127,14 @@ class MindGraphView extends ItemView {
         } catch (_) {
           continue;
         }
-        const type = ev.event || ev.type;
-        if (type === "answer_delta" && ev.text) {
-          this.answer += ev.text;
-          answerEl.setText(this.answer);
-        } else if (type === "citations" || type === "completed") {
-          if (ev.citations) citations = ev.citations;
-          if (ev.graph_links) graphLinks = ev.graph_links;
-        } else if (type === "error") {
-          throw new Error((ev.data && ev.data.message) || "stream error");
-        }
+        state = reduceMindGraphEvent(state, ev);
+        this.answer = state.answer;
+        if (this.answer) answerEl.setText(this.answer);
       }
     }
 
     answerEl.setText(this.answer || "(无回答)");
+    const { citations, graphLinks } = state;
     if (citations.length || graphLinks.length) {
       refsEl.empty();
       refsEl.createEl("div", { cls: "mg-ref-title", text: "引用 / 关系" });
