@@ -7,6 +7,8 @@ import os
 from fastapi.testclient import TestClient
 import pytest
 
+pytestmark = pytest.mark.integration
+
 os.environ["ENVIRONMENT"] = "development"
 os.environ["AUTH_MODE"] = "off"
 os.environ["CHAT_PROVIDER"] = "deepseek"

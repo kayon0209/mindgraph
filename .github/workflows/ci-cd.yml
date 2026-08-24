@@ -152,7 +152,7 @@ jobs:
           OPENAI_COMPAT_MODEL: "deepseek-test"
           RETRIEVAL_CANDIDATE_COUNT: "5"
           RETRIEVAL_FINAL_TOP_K: "3"
-        run: pytest tests/ -m "integration" -v
+        run: pytest tests/ -m "integration" -v --no-cov
 
   # ── Docker Build ──
   docker-build:
