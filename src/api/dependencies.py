@@ -90,7 +90,10 @@ class ServiceContainer:
         from application.directory_connector_service import DirectoryConnectorService
         from application.mindgraph_index_service import MindGraphIndexService
         self.mindgraph_index_service = MindGraphIndexService(
-            self.database, self.root / "knowledge", self.mindgraph_index_root
+            self.database,
+            self.root / "knowledge",
+            self.mindgraph_index_root,
+            on_activated=self.invalidate_pipelines,
         )
         self.directory_connector = DirectoryConnectorService(
             self.database,
@@ -130,6 +133,7 @@ class ServiceContainer:
 
     def invalidate_pipelines(self) -> None:
         self._pipelines.clear()
+        getattr(self, "_mindgraph_pipelines", {}).clear()
 
 
 _override: ServiceContainer | None = None

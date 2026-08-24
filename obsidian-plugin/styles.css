@@ -20,7 +20,8 @@
   gap: 4px;
   font-size: 12px;
 }
-.mg-base {
+.mg-base,
+.mg-api-key {
   flex: 1;
   min-width: 120px;
   font-size: 11px;

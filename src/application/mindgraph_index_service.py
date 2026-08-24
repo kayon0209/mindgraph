@@ -6,18 +6,20 @@
 - 增量优化：复用 ``embedding_cache`` 表（按 chunk 正文 checksum 缓存向量），
   仅变更 chunk 重新计算 embedding，未变更 chunk 直接复用；
 - 原子切换：新索引版本构建成功后，才通过 ``CURRENT.tmp`` + ``replace`` 激活，
-  失败时回滚笔记状态为 ``pending``，不影响线上可用索引
+  失败时恢复笔记原索引状态，不影响线上可用索引
   （符合索引状态机 ``pending → processing → ready/failed``）。
 - 删除的笔记在扫描阶段已物理剪枝，构建时自然排除，无需单独的「索引移除」逻辑。
 """
 from __future__ import annotations
 
+from collections.abc import Callable
+from datetime import UTC, datetime
 import hashlib
 import json
-import uuid
-from datetime import datetime, timezone
+import logging
 from pathlib import Path
 from typing import Any
+import uuid
 
 import faiss
 import numpy as np
@@ -28,9 +30,11 @@ from infrastructure.markdown_frontmatter import parse_frontmatter
 from retrieval.embeddings import BGEEmbeddingProvider
 from retrieval.types import Chunk
 
+logger = logging.getLogger("mindgraph.index")
+
 
 def _utc_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _safe_loads(value: str | None, default: Any) -> Any:
@@ -47,12 +51,14 @@ class MindGraphIndexService:
         vault_root: Path,
         index_root: Path,
         provider: Any | None = None,
+        on_activated: Callable[[], None] | None = None,
     ) -> None:
         self.db = db
         self.vault_root = Path(vault_root)
         self.index_root = Path(index_root)
         self.index_root.mkdir(parents=True, exist_ok=True)
         self.provider = provider or BGEEmbeddingProvider()  # 尊重 BGE_LOCAL_FILES_ONLY 环境变量（默认 true=离线安全；设 false 即首次自动下载）
+        self.on_activated = on_activated
 
     # ------------------------------------------------------------------ #
     # 查询待索引笔记
@@ -163,13 +169,16 @@ class MindGraphIndexService:
         if not pending and not force:
             return {"status": "noop", "reason": "no pending notes"}
         pending_ids = [n["note_id"] for n in pending]
+        note_states = self.db.fetch_all(
+            "SELECT note_id,index_status,index_version,last_indexed_at FROM notes"
+        )
 
         self.db.execute_many(
             "UPDATE notes SET index_status='processing' WHERE note_id=?",
             [(i,) for i in pending_ids],
         )
 
-        version = datetime.now(timezone.utc).strftime("mg-%Y%m%dT%H%M%SZ-") + uuid.uuid4().hex[:8]
+        version = datetime.now(UTC).strftime("mg-%Y%m%dT%H%M%SZ-") + uuid.uuid4().hex[:8]
         directory = self.index_root / version
         directory.mkdir()
         previous = self._current()
@@ -177,8 +186,6 @@ class MindGraphIndexService:
         new_count = 0
         try:
             chunks = self._all_chunks()
-            if not chunks:
-                raise ValueError("No active chunks to index")
 
             vectors: list[list[float] | None] = [None] * len(chunks)
             to_embed: list[tuple[int, str]] = []
@@ -194,15 +201,19 @@ class MindGraphIndexService:
             if to_embed:
                 texts = [chunks[i].text for i, _ in to_embed]
                 computed = self.provider.embed_documents(texts)
-                for (i, checksum), vec in zip(to_embed, computed):
+                for (i, checksum), vec in zip(to_embed, computed, strict=True):
                     vectors[i] = vec
                     self._cache_embedding(checksum, vec)
                     new_count += 1
 
-            matrix = np.asarray([v for v in vectors], dtype="float32")
-            faiss.normalize_L2(matrix)
-            index = faiss.IndexFlatIP(matrix.shape[1])
-            index.add(matrix)
+            if vectors:
+                matrix = np.asarray(vectors, dtype="float32")
+                faiss.normalize_L2(matrix)
+            else:
+                matrix = np.empty((0, self.provider.dimension), dtype="float32")
+            index = faiss.IndexFlatIP(self.provider.dimension)
+            if len(matrix):
+                index.add(matrix)
             faiss.write_index(index, str(directory / "dense.faiss"))
             (directory / "chunks.json").write_text(
                 json.dumps([c.__dict__ for c in chunks], ensure_ascii=False, indent=2),
@@ -214,7 +225,7 @@ class MindGraphIndexService:
                 "index_version": version,
                 "embedding_model_name": self.provider.model_name,
                 "embedding_model_revision": self.provider.model_revision,
-                "vector_dimension": int(matrix.shape[1]),
+                "vector_dimension": self.provider.dimension,
                 "chunk_count": len(chunks),
                 "note_count": len(all_ids),
                 "reused_embeddings": reused,
@@ -231,8 +242,6 @@ class MindGraphIndexService:
                 json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
             )
 
-            self._activate(version)
-
             now = _utc_iso()
             self.db.execute_many(
                 "UPDATE notes SET index_status='ready', index_version=?, last_indexed_at=? WHERE note_id=?",
@@ -242,6 +251,12 @@ class MindGraphIndexService:
                 "INSERT INTO index_builds VALUES (?,?,?,?,?,?,?)",
                 (version, "validated", dumps(manifest), previous, manifest["created_at"], now, None),
             )
+            self._activate(version)
+            if self.on_activated is not None:
+                try:
+                    self.on_activated()
+                except Exception:
+                    logger.exception("mindgraph_pipeline_invalidation_failed", extra={"index_version": version})
             return manifest
         except Exception as exc:
             failure = {
@@ -249,17 +264,31 @@ class MindGraphIndexService:
                 "build_status": "failed",
                 "failure_reason": f"{type(exc).__name__}: {exc}",
             }
-            (directory / "manifest.json").write_text(
-                json.dumps(failure, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-            self.db.execute(
-                "INSERT OR REPLACE INTO index_builds VALUES (?,?,?,?,?,?,?)",
-                (version, "failed", dumps(failure), previous, _utc_iso(), None, failure["failure_reason"]),
-            )
-            self.db.execute_many(
-                "UPDATE notes SET index_status='pending' WHERE note_id=?",
-                [(i,) for i in pending_ids],
-            )
+            try:
+                (directory / "manifest.json").write_text(
+                    json.dumps(failure, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+                self.db.execute(
+                    "INSERT OR REPLACE INTO index_builds VALUES (?,?,?,?,?,?,?)",
+                    (version, "failed", dumps(failure), previous, _utc_iso(), None, failure["failure_reason"]),
+                )
+            except Exception:
+                logger.exception("mindgraph_index_failure_recording_failed", extra={"index_version": version})
+            try:
+                self.db.execute_many(
+                    "UPDATE notes SET index_status=?,index_version=?,last_indexed_at=? WHERE note_id=?",
+                    [
+                        (
+                            row["index_status"],
+                            row["index_version"],
+                            row["last_indexed_at"],
+                            row["note_id"],
+                        )
+                        for row in note_states
+                    ],
+                )
+            except Exception:
+                logger.exception("mindgraph_note_state_restore_failed", extra={"index_version": version})
             raise
 
     # ------------------------------------------------------------------ #
