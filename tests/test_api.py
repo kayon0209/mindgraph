@@ -16,15 +16,18 @@ os.environ["OPENAI_COMPAT_BASE_URL"] = "https://test.example.com"
 
 
 @pytest.fixture(scope="module")
-def client():
+def client(tmp_path_factory):
     """FastAPI TestClient。"""
     from unittest.mock import patch
 
     import api.auth as auth
+    from infrastructure.database import ProductDatabase
 
     previous_auth_mode = auth.AUTH_MODE
     auth.AUTH_MODE = "off"
-    with patch("infrastructure.database.ProductDatabase.initialize"), \
+    test_database = ProductDatabase(tmp_path_factory.mktemp("api") / "product.sqlite3")
+    with patch("api.dependencies.ProductDatabase", return_value=test_database), \
+         patch("api.dependencies.DocumentLifecycleService.import_existing_markdown"), \
          patch("api.dependencies.ServiceContainer._register_builtin_datasets"):
         from api.main import app
         with TestClient(app) as c:
