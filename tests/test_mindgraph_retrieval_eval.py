@@ -59,6 +59,29 @@ def test_load_and_validate_jsonl_and_locate_errors(tmp_path: Path):
         validate_golden_cases([case(), other_version])
 
 
+def test_repository_v2_golden_dataset_is_valid_and_structurally_complete():
+    """The checked-in V2 set remains an independently authored, typed fixture."""
+    cases = load_golden_dataset()
+
+    assert len(cases) == 12
+    assert {item["dataset_version"] for item in cases} == {"2.1.0"}
+    assert {item["expected_behavior"] for item in cases} == {"answer", "abstain"}
+    assert {item["split"] for item in cases} == {"development", "regression"}
+    assert {item["category"] for item in cases} >= {
+        "version",
+        "supersession",
+        "exception",
+        "cross_policy",
+        "no_answer",
+        "ambiguity",
+    }
+    assert all(item["label_source"] == "human-authored-from-demo-vault" for item in cases)
+    assert all(
+        item["gold_vault_paths"] if item["expected_behavior"] == "answer" else not item["gold_vault_paths"]
+        for item in cases
+    )
+
+
 def test_metrics_and_stage_attribution():
     cases = [
         case("final", paths=["a.md", "b.md"]),
