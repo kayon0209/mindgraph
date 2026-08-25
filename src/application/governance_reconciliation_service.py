@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Collection, Mapping, Sequence
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 import hashlib
@@ -127,7 +128,8 @@ class GovernanceReconciliationService:
             except Exception:
                 connection.rollback()
                 try:
-                    with self.database.connect() as audit_connection:
+                    with closing(self.database.connect()) as audit_connection:
+                        audit_connection.execute("BEGIN IMMEDIATE")
                         self._record_run_status(audit_connection, status="failed")
                         audit_connection.commit()
                 except sqlite3.Error as audit_exc:

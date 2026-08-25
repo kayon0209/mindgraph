@@ -336,7 +336,9 @@ def test_empty_successful_reconciliation_is_reported_as_completed(tmp_path: Path
     assert body["last_reconciled_at"] is not None
 
 
-def test_later_failed_reconciliation_replaces_old_completed_status(tmp_path: Path) -> None:
+def test_later_failed_reconciliation_replaces_old_completed_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     database = ProductDatabase(tmp_path / "failed.sqlite3")
     database.initialize()
     _insert_note(database, "only-note")
@@ -351,6 +353,16 @@ def test_later_failed_reconciliation_replaces_old_completed_status(tmp_path: Pat
     )
     database.execute("UPDATE notes SET policy_status='draft' WHERE note_id='only-note'")
 
+    connections: list[sqlite3.Connection] = []
+    original_connect = database.connect
+
+    def tracked_connect() -> sqlite3.Connection:
+        connection = original_connect()
+        connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(database, "connect", tracked_connect)
+
     with pytest.raises(Exception, match="sensitive-database-detail"):
         reconciliation.reconcile(as_of=TODAY)
 
@@ -358,6 +370,10 @@ def test_later_failed_reconciliation_replaces_old_completed_status(tmp_path: Pat
     assert body["last_reconciliation_status"] == "failed"
     assert body["last_reconciled_at"] is not None
     assert "sensitive" not in json.dumps(body).lower()
+    assert len(connections) >= 2
+    for conn in connections[-2:]:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            conn.execute("SELECT 1")
 
 
 @pytest.mark.parametrize(
