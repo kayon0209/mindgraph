@@ -1,17 +1,16 @@
 """Pure, immutable governance contracts for knowledge policy evaluation."""
-# ruff: noqa: UP042
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 
-class GovernanceMode(str, Enum):
+class GovernanceMode(StrEnum):
     CURRENT = "current"
     HISTORICAL = "historical"
 
 
-class LifecycleState(str, Enum):
+class LifecycleState(StrEnum):
     NOT_YET_EFFECTIVE = "not_yet_effective"
     CURRENT = "current"
     EXPIRED = "expired"
@@ -19,7 +18,7 @@ class LifecycleState(str, Enum):
     UNRESOLVED = "unresolved"
 
 
-class GovernanceDisposition(str, Enum):
+class GovernanceDisposition(StrEnum):
     ELIGIBLE = "eligible"
     EXCLUDED = "excluded"
     UNRESOLVED = "unresolved"

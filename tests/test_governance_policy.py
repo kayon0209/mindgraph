@@ -1,4 +1,5 @@
 from datetime import date
+from itertools import permutations
 
 import pytest
 
@@ -91,11 +92,11 @@ def test_governance_errors_expose_distinct_retry_and_conflict_contracts() -> Non
 @pytest.mark.parametrize(
     ("status", "reason"),
     [
-        ("draft", "policy_status_draft"),
-        ("archived", "policy_status_archived"),
-        ("superseded", "policy_status_superseded"),
-        ("expired", "policy_status_expired"),
-        ("unspecified", "policy_status_unspecified"),
+        ("draft", "declared_draft"),
+        ("archived", "declared_archived"),
+        ("superseded", "declared_superseded"),
+        ("expired", "declared_expired"),
+        ("unspecified", "declared_unspecified"),
     ],
 )
 def test_current_mode_excludes_non_active_policy_statuses(status: str, reason: str) -> None:
@@ -152,6 +153,88 @@ def test_confirmed_duplicate_alias_is_never_eligible() -> None:
     assert result.canonical_note_id == "policy-canonical"
 
 
+def test_confirmed_conflict_block_has_order_independent_priority() -> None:
+    """Catches input ordering letting an alias or approval bypass a confirmed block."""
+    decisions = (
+        ConfirmedGovernanceDecision(
+            "policy-v1", GovernanceDisposition.ELIGIBLE, "confirmed_eligible"
+        ),
+        ConfirmedGovernanceDecision(
+            "policy-v1",
+            GovernanceDisposition.DUPLICATE_ALIAS,
+            "confirmed_duplicate_alias",
+            "canonical-policy",
+        ),
+        ConfirmedGovernanceDecision(
+            "policy-v1", GovernanceDisposition.CONFLICT_BLOCKED, "confirmed_conflict"
+        ),
+    )
+
+    for ordered in permutations(decisions):
+        result = GovernancePolicy().evaluate(
+            note(owner=None),
+            as_of=date(2026, 8, 25),
+            mode=GovernanceMode.CURRENT,
+            confirmed_decisions=ordered,
+        )
+        assert result.disposition is GovernanceDisposition.CONFLICT_BLOCKED
+        assert result.eligible is False
+        assert result.reason_codes == ("confirmed_conflict",)
+
+
+@pytest.mark.parametrize(
+    ("candidate", "reason"),
+    [
+        (note(owner=None), "missing_owner"),
+        (note(effective_from="2026-13-01"), "invalid_effective_date"),
+        (note(policy_status="draft"), "declared_draft"),
+    ],
+)
+def test_confirmed_positive_decision_does_not_bypass_source_governance(candidate, reason) -> None:
+    """Catches an approval decision making malformed, expired, or draft source evidence eligible."""
+    result = GovernancePolicy().evaluate(
+        candidate,
+        as_of=date(2026, 8, 25),
+        mode=GovernanceMode.CURRENT,
+        confirmed_decisions=(
+            ConfirmedGovernanceDecision(
+                "policy-v1", GovernanceDisposition.ELIGIBLE, "confirmed_eligible"
+            ),
+        ),
+    )
+
+    assert result.eligible is False
+    assert result.reason_codes == (reason,)
+
+
+@pytest.mark.parametrize(
+    "decision",
+    [
+        ConfirmedGovernanceDecision(
+            "policy-v1", GovernanceDisposition.DUPLICATE_ALIAS, "alias_without_canonical"
+        ),
+        ConfirmedGovernanceDecision(
+            "policy-v1", GovernanceDisposition.CONFLICT_BLOCKED, "block_with_canonical", "other"
+        ),
+        ConfirmedGovernanceDecision(
+            "policy-v1", GovernanceDisposition.ELIGIBLE, "approval_with_canonical", "other"
+        ),
+        ConfirmedGovernanceDecision("policy-v1", GovernanceDisposition.ELIGIBLE, ""),
+    ],
+)
+def test_malformed_confirmed_decision_fails_closed(decision) -> None:
+    """Catches malformed confirmed governance records being used as authority."""
+    result = GovernancePolicy().evaluate(
+        note(),
+        as_of=date(2026, 8, 25),
+        mode=GovernanceMode.CURRENT,
+        confirmed_decisions=(decision,),
+    )
+
+    assert result.disposition is GovernanceDisposition.UNRESOLVED
+    assert result.reason_codes == ("invalid_confirmed_decision",)
+
+
 def test_historical_mode_accepts_proven_superseded_interval() -> None:
     """Catches historical mode discarding a version proven effective on the query date."""
     result = GovernancePolicy().evaluate(
@@ -163,6 +246,29 @@ def test_historical_mode_accepts_proven_superseded_interval() -> None:
     assert result.lifecycle_state is LifecycleState.HISTORICAL
     assert result.eligible is True
     assert result.reason_codes == ("eligible_historical_version",)
+
+
+def test_explicit_unspecified_status_is_excluded_in_historical_mode() -> None:
+    """Catches an explicit non-operational lifecycle status becoming historical evidence."""
+    result = GovernancePolicy().evaluate(
+        note(policy_status="unspecified"),
+        as_of=date(2026, 8, 25),
+        mode=GovernanceMode.HISTORICAL,
+    )
+
+    assert result.disposition is GovernanceDisposition.EXCLUDED
+    assert result.reason_codes == ("declared_unspecified",)
+
+
+@pytest.mark.parametrize("status", [None, 17, ""])
+def test_non_string_or_empty_status_fails_closed(status: object) -> None:
+    """Catches unchecked status values raising AttributeError during governance evaluation."""
+    result = GovernancePolicy().evaluate(
+        note(policy_status=status), as_of=date(2026, 8, 25), mode=GovernanceMode.CURRENT
+    )
+
+    assert result.disposition is GovernanceDisposition.UNRESOLVED
+    assert result.reason_codes == ("invalid_policy_status",)
 
 
 @pytest.mark.parametrize("status", ["superseded", "expired", "archived"])
@@ -200,3 +306,18 @@ def test_exact_duplicate_requires_security_and_source_equivalence() -> None:
         note(note_id="a"), note(note_id="b", acl_json='{ "allow": ["workspace:other"] }')
     )
     assert not policy.exact_duplicate_equivalent(note(note_id="a"), note(note_id="b", source_id="connector-b"))
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"acl_json": "not-json"},
+        {"acl_json": '["workspace:corp"]'},
+        {"metadata_issues": ("missing_owner",)},
+        {"policy_status": "unreviewed"},
+    ],
+)
+def test_exact_duplicate_fails_closed_for_unresolved_or_malformed_governance(overrides) -> None:
+    """Catches unsafe metadata being collapsed into a trusted duplicate alias."""
+    policy = GovernancePolicy()
+    assert not policy.exact_duplicate_equivalent(note(note_id="a", **overrides), note(note_id="b", **overrides))

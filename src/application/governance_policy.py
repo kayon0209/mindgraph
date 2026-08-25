@@ -17,8 +17,13 @@ from domain.governance import (
     NormalizedPolicyMetadata,
 )
 
-POLICY_STATUSES = frozenset({"draft", "active", "expired", "superseded", "archived"})
+POLICY_STATUSES = frozenset({"draft", "active", "expired", "superseded", "archived", "unspecified"})
 TERMINAL_STATUSES = frozenset({"expired", "superseded", "archived"})
+DECISION_PRIORITIES = {
+    GovernanceDisposition.CONFLICT_BLOCKED: 0,
+    GovernanceDisposition.DUPLICATE_ALIAS: 1,
+    GovernanceDisposition.ELIGIBLE: 2,
+}
 
 
 def _metadata_text(value: Any) -> str | None:
@@ -96,17 +101,29 @@ class GovernancePolicy:
         mode: GovernanceMode,
         confirmed_decisions: Sequence[ConfirmedGovernanceDecision] = (),
     ) -> GovernanceEvaluation:
-        decision = next((item for item in confirmed_decisions if item.note_id == note.note_id), None)
-        if decision is not None:
+        decisions = tuple(item for item in confirmed_decisions if item.note_id == note.note_id)
+        if any(not self._valid_confirmed_decision(note.note_id, item) for item in decisions):
+            return self._unresolved(note.note_id, "invalid_confirmed_decision")
+        decision = min(decisions, key=lambda item: DECISION_PRIORITIES[item.disposition], default=None)
+        if decision and decision.disposition is GovernanceDisposition.CONFLICT_BLOCKED:
             return self._from_confirmed_decision(note.note_id, decision)
 
         interval = self._validated_interval(note)
         if interval.error_reasons:
             return self._unresolved(note.note_id, interval.error_reasons)
+        if decision and decision.disposition is GovernanceDisposition.DUPLICATE_ALIAS:
+            return self._from_confirmed_decision(note.note_id, decision)
         return self._evaluate_interval(note, interval, as_of=as_of, mode=mode)
 
     def exact_duplicate_equivalent(self, left: GovernanceNote, right: GovernanceNote) -> bool:
-        return self._duplicate_fingerprint(left) == self._duplicate_fingerprint(right)
+        left_acl = _canonical_acl(left.acl_json)
+        right_acl = _canonical_acl(right.acl_json)
+        if (
+            not self._valid_duplicate_note(left, left_acl)
+            or not self._valid_duplicate_note(right, right_acl)
+        ):
+            return False
+        return self._duplicate_fingerprint(left, left_acl) == self._duplicate_fingerprint(right, right_acl)
 
     @classmethod
     def _validated_interval(cls, note: GovernanceNote) -> _ValidatedInterval:
@@ -123,6 +140,9 @@ class GovernancePolicy:
             if not isinstance(value, str) or not value.strip():
                 return _ValidatedInterval(error_reasons=(f"missing_{field}",))
 
+        if _policy_status(note.policy_status) is None:
+            return _ValidatedInterval(error_reasons=("invalid_policy_status",))
+
         effective_from = _parse_date(note.effective_from)
         effective_to = _parse_date(note.effective_to)
         if effective_from is None or (note.effective_to is not None and effective_to is None):
@@ -130,6 +150,36 @@ class GovernancePolicy:
         if effective_to and effective_to < effective_from:
             return _ValidatedInterval(error_reasons=("invalid_effective_range",))
         return _ValidatedInterval(effective_from, effective_to)
+
+    @staticmethod
+    def _valid_confirmed_decision(note_id: str, decision: ConfirmedGovernanceDecision) -> bool:
+        if (
+            not isinstance(decision.disposition, GovernanceDisposition)
+            or decision.disposition not in DECISION_PRIORITIES
+            or not isinstance(decision.reason_code, str)
+            or not decision.reason_code.strip()
+        ):
+            return False
+        if decision.disposition is GovernanceDisposition.DUPLICATE_ALIAS:
+            return (
+                isinstance(decision.canonical_note_id, str)
+                and bool(decision.canonical_note_id.strip())
+                and decision.canonical_note_id != note_id
+            )
+        return decision.canonical_note_id is None
+
+    @classmethod
+    def _valid_duplicate_note(cls, note: GovernanceNote, canonical_acl: str | None) -> bool:
+        if cls._validated_interval(note).error_reasons or canonical_acl is None:
+            return False
+        return (
+            isinstance(note.source_id, str)
+            and bool(note.source_id.strip())
+            and isinstance(note.content_hash, str)
+            and bool(note.content_hash.strip())
+            and isinstance(note.acl_public, bool)
+            and all(value is None or isinstance(value, str) for value in (note.workspace, note.department))
+        )
 
     @staticmethod
     def _unresolved(note_id: str, reasons: str | tuple[str, ...]) -> GovernanceEvaluation:
@@ -181,16 +231,15 @@ class GovernancePolicy:
                 ("effective_period_ended",),
             )
 
-        status = note.policy_status.lower().strip()
-        if status not in POLICY_STATUSES and status != "unspecified":
-            return GovernancePolicy._unresolved(note.note_id, "invalid_policy_status")
+        status = _policy_status(note.policy_status)
+        assert status is not None
         if status != "active" and mode is GovernanceMode.CURRENT:
             return GovernanceEvaluation(
                 note.note_id,
                 LifecycleState.CURRENT,
                 GovernanceDisposition.EXCLUDED,
                 False,
-                (f"policy_status_{status or 'unspecified'}",),
+                (f"declared_{status}",),
             )
         if mode is GovernanceMode.HISTORICAL and status in TERMINAL_STATUSES and interval.effective_to is None:
             return GovernancePolicy._unresolved(note.note_id, "historical_status_without_effective_to")
@@ -200,7 +249,7 @@ class GovernancePolicy:
                 LifecycleState.HISTORICAL if mode is GovernanceMode.HISTORICAL else LifecycleState.CURRENT,
                 GovernanceDisposition.EXCLUDED,
                 False,
-                (f"policy_status_{status}",),
+                (f"declared_{status}",),
             )
         if mode is GovernanceMode.HISTORICAL:
             return GovernanceEvaluation(
@@ -219,7 +268,7 @@ class GovernancePolicy:
         )
 
     @staticmethod
-    def _duplicate_fingerprint(note: GovernanceNote) -> tuple[object, ...]:
+    def _duplicate_fingerprint(note: GovernanceNote, canonical_acl: str) -> tuple[object, ...]:
         return (
             note.source_id,
             note.content_hash,
@@ -232,21 +281,31 @@ class GovernancePolicy:
             note.metadata_issues,
             note.workspace,
             note.department,
-            _canonical_acl(note.acl_json),
+            canonical_acl,
             note.acl_public,
         )
 
 
-def _canonical_acl(acl_json: str) -> str:
+def _policy_status(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    status = value.lower().strip()
+    return status if status in POLICY_STATUSES else None
+
+
+def _canonical_acl(acl_json: object) -> str | None:
     """Give semantically equal ACLs one stable security fingerprint."""
     try:
         parsed = json.loads(acl_json)
     except (TypeError, json.JSONDecodeError):
-        return acl_json
+        return None
     if not isinstance(parsed, dict):
-        return acl_json
+        return None
     for key in ("allow", "deny"):
-        value = parsed.get(key)
-        if isinstance(value, list):
-            parsed[key] = sorted({str(item) for item in value})
+        if key not in parsed:
+            continue
+        value = parsed[key]
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            return None
+        parsed[key] = sorted(set(value))
     return json.dumps(parsed, ensure_ascii=False, sort_keys=True, separators=(",", ":"))

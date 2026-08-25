@@ -53,6 +53,22 @@ def test_policy_metadata_normalizer_returns_immutable_quality_issues() -> None:
     assert normalized.issues == ("invalid_policy_status",)
 
 
+def test_policy_metadata_normalizer_accepts_explicit_unspecified_status() -> None:
+    """Catches an explicit normalized lifecycle status being recorded as invalid source metadata."""
+    normalized = normalize_policy_metadata(
+        {
+            "owner": "Finance",
+            "policy_key": "expense.general",
+            "version": "2.0",
+            "effective_from": "2026-01-01",
+            "status": "unspecified",
+        }
+    )
+
+    assert normalized.policy_status == "unspecified"
+    assert normalized.issues == ()
+
+
 def test_initialize_migrates_existing_notes_without_losing_rows(tmp_path: Path) -> None:
     """Catches a migration that adds governance columns by recreating or dropping notes."""
     database_path = tmp_path / "product.sqlite3"
