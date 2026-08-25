@@ -18,6 +18,8 @@ export class ApiError extends Error {
   constructor(
     message: string,
     public readonly status: number,
+    public readonly code?: string,
+    public readonly requestId?: string,
   ) {
     super(message);
     this.name = "ApiError";
@@ -34,13 +36,21 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!response.ok) {
     let detail = response.statusText;
+    let code: string | undefined;
+    let requestId: string | undefined;
     try {
-      const body = (await response.json()) as { detail?: string; message?: string };
-      detail = body.detail || body.message || detail;
+      const body = (await response.json()) as {
+        detail?: string;
+        message?: string;
+        error?: { code?: string; message?: string; request_id?: string };
+      };
+      detail = body.error?.message || body.detail || body.message || detail;
+      code = body.error?.code;
+      requestId = body.error?.request_id;
     } catch {
       // Keep the HTTP status text when the body is not JSON.
     }
-    throw new ApiError(detail || `HTTP ${response.status}`, response.status);
+    throw new ApiError(detail || `HTTP ${response.status}`, response.status, code, requestId);
   }
   return response.json() as Promise<T>;
 }

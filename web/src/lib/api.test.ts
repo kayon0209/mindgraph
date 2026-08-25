@@ -35,6 +35,20 @@ describe("parseSseFrames", () => {
 });
 
 describe("governance mutations", () => {
+  it("parses the API error envelope without losing conflict guidance", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({
+        error: { code: "governance_conflict", message: "governance case status changed", request_id: "r1" },
+      }), { status: 409 }),
+    );
+    await expect(api.governanceCases()).rejects.toMatchObject({
+      message: "governance case status changed",
+      status: 409,
+      code: "governance_conflict",
+      requestId: "r1",
+    });
+  });
+
   it("never sends actor identity when resolving", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ status: "rejected" }), { status: 200 }),

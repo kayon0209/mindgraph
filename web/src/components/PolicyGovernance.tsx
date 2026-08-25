@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { AlertTriangle, RefreshCw, ShieldCheck } from "lucide-react";
 
 import { api } from "../lib/api";
-import { governanceCaseView } from "../lib/knowledge-governance";
+import { governanceCaseView, governanceFailureView } from "../lib/knowledge-governance";
 import { policyGovernanceView } from "../lib/metrics";
 import type { GovernanceCase, PolicyGovernance as PolicyGovernanceValue } from "../types";
 
@@ -46,14 +46,16 @@ export function GovernanceQueue({ onChanged }: { onChanged: () => Promise<void> 
   const [busyCase, setBusyCase] = useState<string | null>(null);
   const [canonicalChoices, setCanonicalChoices] = useState<Record<string, string>>({});
 
-  const load = async () => {
+  const load = async (): Promise<boolean> => {
     setLoading(true);
     setError("");
     try {
       const result = await api.governanceCases();
       setCases(result.items);
+      return true;
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "治理队列读取失败，请重试");
+      setError(governanceFailureView(loadError).message);
+      return false;
     } finally {
       setLoading(false);
     }
@@ -77,7 +79,13 @@ export function GovernanceQueue({ onChanged }: { onChanged: () => Promise<void> 
       }
       await Promise.all([load(), onChanged()]);
     } catch (decisionError) {
-      setError(decisionError instanceof Error ? decisionError.message : "治理操作失败，请重试");
+      const failure = governanceFailureView(decisionError);
+      if (failure.refresh) {
+        const refreshed = await load();
+        if (refreshed) setError(failure.message);
+      } else {
+        setError(failure.message);
+      }
     } finally {
       setBusyCase(null);
     }
@@ -89,7 +97,7 @@ export function GovernanceQueue({ onChanged }: { onChanged: () => Promise<void> 
         <span>{loading ? "正在读取可见治理事项…" : `${cases.length} 个可见事项`}</span>
         <button onClick={() => void load()} type="button"><RefreshCw size={15} />刷新</button>
       </div>
-      {error ? <p className="governance-queue-error">{error}；当前列表已保留，可重试。</p> : null}
+      {error ? <p className="governance-queue-error">{error}</p> : null}
       {!loading && cases.length === 0 ? <p className="rail-placeholder">当前没有可见治理事项。</p> : null}
       {cases.map((item) => {
         const view = governanceCaseView(item);

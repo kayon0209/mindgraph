@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 import hashlib
 import json
+import logging
 import sqlite3
 from typing import Any
 from uuid import uuid4
@@ -29,6 +30,9 @@ from domain.governance import (
     ReconciliationResult,
 )
 from infrastructure.database import ProductDatabase
+
+logger = logging.getLogger("mindgraph.governance.reconciliation")
+_RECONCILIATION_AUDIT_ACTION = "governance_reconciliation"
 
 GOVERNANCE_REASON_CODES = frozenset(
     {
@@ -105,8 +109,8 @@ class GovernanceReconciliationService:
     ) -> ReconciliationResult:
         evaluated_on = as_of if as_of is not None else date.today()
         with self.database.connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
             try:
+                connection.execute("BEGIN IMMEDIATE")
                 selected = (
                     self._all_note_ids(connection)
                     if note_ids is None
@@ -117,11 +121,43 @@ class GovernanceReconciliationService:
                     note_ids=selected,
                     as_of=evaluated_on,
                 )
+                self._record_run_status(connection, status="completed")
                 connection.commit()
                 return result
             except Exception:
                 connection.rollback()
+                try:
+                    with self.database.connect() as audit_connection:
+                        self._record_run_status(audit_connection, status="failed")
+                        audit_connection.commit()
+                except sqlite3.Error as audit_exc:
+                    logger.error(
+                        "governance_reconciliation_status_write_failed",
+                        extra={"error_type": type(audit_exc).__name__},
+                    )
                 raise
+
+    @staticmethod
+    def _record_run_status(
+        connection: sqlite3.Connection, *, status: str
+    ) -> None:
+        if status not in {"completed", "failed"}:
+            raise ValueError("reconciliation status is invalid")
+        connection.execute(
+            """
+            INSERT INTO access_audit (
+                audit_id, request_id, actor, action, resource, decision,
+                reason, metadata_json, created_at
+            ) VALUES (?, NULL, 'system', ?, 'knowledge_governance', ?, ?, '{}', ?)
+            """,
+            (
+                f"audit-{uuid4().hex}",
+                _RECONCILIATION_AUDIT_ACTION,
+                "allow" if status == "completed" else "deny",
+                status,
+                _utc_now(),
+            ),
+        )
 
     def reconcile_in_transaction(
         self,
