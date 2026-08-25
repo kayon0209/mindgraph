@@ -104,7 +104,7 @@ class RetrievalTests(unittest.TestCase):
         self.assertEqual(trace.actual_strategy, "hybrid")
         self.assertIn("unavailable", trace.degradation_reason)
 
-    def test_legacy_adapter_enforces_allowed_chunk_ids(self):
+    def test_legacy_adapter_rejects_scoped_search_before_global_retrieval(self):
         sources = [
             SimpleNamespace(
                 source="private.md",
@@ -123,18 +123,51 @@ class RetrievalTests(unittest.TestCase):
         ]
         retriever = LegacySQLiteRetriever()
 
-        with patch("retrieval.legacy.retrieve", return_value=sources):
-            filtered, _ = retriever.search(
+        with (
+            patch("retrieval.legacy.retrieve", return_value=sources) as global_search,
+            self.assertRaisesRegex(ValueError, "complete corpus metadata"),
+        ):
+            retriever.search(
                 "policy",
                 2,
                 allowed_chunk_ids={"allowed.md::0"},
             )
 
-        self.assertEqual([item.chunk.chunk_id for item in filtered], ["allowed.md::0"])
-        self.assertEqual(
-            [chunk.chunk_id for chunk in retriever.chunks],
-            ["private.md::0", "allowed.md::0"],
+        global_search.assert_not_called()
+        self.assertIsNone(retriever.chunks)
+
+    def test_pipeline_rejects_scoped_legacy_crowding_before_global_retrieval(self):
+        private_sources = [
+            SimpleNamespace(
+                source=f"private-{index}.md",
+                chunk_index=0,
+                text="private-secret-body",
+                section_path=None,
+                distance=0.01,
+            )
+            for index in range(20)
+        ]
+        allowed = SimpleNamespace(
+            source="allowed.md",
+            chunk_index=0,
+            text="allowed-low-score",
+            section_path=None,
+            distance=0.9,
         )
+        legacy = LegacySQLiteRetriever()
+        sparse = BM25Retriever([])
+        pipeline = RetrievalPipeline(legacy, sparse, ReciprocalRankFusion())
+
+        with (
+            patch(
+                "retrieval.legacy.retrieve",
+                return_value=[*private_sources, allowed],
+            ) as global_search,
+            self.assertRaisesRegex(ValueError, "complete corpus metadata"),
+        ):
+            pipeline.retrieve("policy", "hybrid", access_scope={})
+
+        global_search.assert_not_called()
 
     def test_empty_dense_adapter_accepts_scoped_search(self):
         retriever = _EmptyDenseRetriever()

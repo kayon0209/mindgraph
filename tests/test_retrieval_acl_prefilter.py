@@ -63,6 +63,15 @@ class RecordingReranker:
         return reranked
 
 
+class RecordingFusion:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def fuse(self, _rankings, _top_k):
+        self.calls += 1
+        return []
+
+
 class RecordingRetriever:
     def __init__(self, chunks: list[Chunk], score_field: str) -> None:
         self.chunks = chunks
@@ -205,13 +214,6 @@ def test_duplicate_dense_chunk_ids_fail_before_any_retrieval_stage():
     sparse = RecordingRetriever([private, public], "sparse_score")
     reranker = RecordingReranker()
 
-    class RecordingFusion:
-        calls = 0
-
-        def fuse(self, _rankings, _top_k):
-            self.calls += 1
-            return []
-
     fusion = RecordingFusion()
     pipeline = RetrievalPipeline(dense, sparse, fusion, reranker)
 
@@ -223,4 +225,45 @@ def test_duplicate_dense_chunk_ids_fail_before_any_retrieval_stage():
     assert fusion.calls == 0
     assert reranker.seen_ids == []
     assert "collision::0" not in str(raised.value)
+    assert "private-secret-body" not in str(raised.value)
+
+
+def test_duplicate_sparse_chunk_ids_fail_before_any_retrieval_stage():
+    dense_chunk = _chunk("dense::0", "public body", public=True)
+    sparse_private = _chunk("sparse-collision::0", "private-secret-body")
+    sparse_public = _chunk("sparse-collision::0", "public body", public=True)
+    dense = RecordingRetriever([dense_chunk], "dense_score")
+    sparse = RecordingRetriever([sparse_private, sparse_public], "sparse_score")
+    fusion = RecordingFusion()
+    reranker = RecordingReranker()
+    pipeline = RetrievalPipeline(dense, sparse, fusion, reranker)
+
+    with pytest.raises(ValueError, match="duplicate") as raised:
+        pipeline.retrieve("body", "hybrid_rerank", access_scope={})
+
+    assert dense.allowed_calls == []
+    assert sparse.allowed_calls == []
+    assert fusion.calls == 0
+    assert reranker.seen_ids == []
+    assert "sparse-collision::0" not in str(raised.value)
+    assert "private-secret-body" not in str(raised.value)
+
+
+def test_cross_retriever_chunk_identity_conflict_fails_before_trace_stages():
+    dense_public = _chunk("shared::0", "public body", public=True)
+    sparse_private = _chunk("shared::0", "private-secret-body")
+    dense = RecordingRetriever([dense_public], "dense_score")
+    sparse = RecordingRetriever([sparse_private], "sparse_score")
+    fusion = RecordingFusion()
+    reranker = RecordingReranker()
+    pipeline = RetrievalPipeline(dense, sparse, fusion, reranker)
+
+    with pytest.raises(ValueError, match="conflict") as raised:
+        pipeline.retrieve("body", "hybrid_rerank", access_scope={})
+
+    assert dense.allowed_calls == []
+    assert sparse.allowed_calls == []
+    assert fusion.calls == 0
+    assert reranker.seen_ids == []
+    assert "shared::0" not in str(raised.value)
     assert "private-secret-body" not in str(raised.value)

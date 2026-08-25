@@ -80,6 +80,10 @@ class RetrievalTrace:
         }
 
 
+class AccessPrefilterUnavailableError(ValueError):
+    pass
+
+
 class EmbeddingProvider(Protocol):
     @property
     def model_name(self) -> str: ...
@@ -97,7 +101,7 @@ class EmbeddingProvider(Protocol):
 
 class DenseRetriever(Protocol):
     @property
-    def chunks(self) -> Sequence[Chunk]: ...
+    def chunks(self) -> Sequence[Chunk] | None: ...
 
     def search(
         self,
@@ -109,7 +113,7 @@ class DenseRetriever(Protocol):
 
 class SparseRetriever(Protocol):
     @property
-    def chunks(self) -> Sequence[Chunk]: ...
+    def chunks(self) -> Sequence[Chunk] | None: ...
 
     def search(
         self,

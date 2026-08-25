@@ -3,7 +3,14 @@ from __future__ import annotations
 from datetime import date
 import time
 
-from .types import DenseRetriever, FusionStrategy, Reranker, RetrievalTrace, SparseRetriever
+from .types import (
+    AccessPrefilterUnavailableError,
+    DenseRetriever,
+    FusionStrategy,
+    Reranker,
+    RetrievalTrace,
+    SparseRetriever,
+)
 
 VALID_STRATEGIES = {"dense", "bm25", "hybrid", "hybrid_rerank"}
 DEFAULT_AUTHORITY_WEIGHTS = {
@@ -114,22 +121,40 @@ class RetrievalPipeline:
             "user": access_scope.get("user"),
         }
 
-    def _loaded_chunks(self) -> list:
-        dense_chunks = list(getattr(self.dense, "chunks", []) or [])
-        seen_dense_ids = set()
-        for chunk in dense_chunks:
-            if chunk.chunk_id in seen_dense_ids:
-                raise DuplicateChunkIdError("Dense retrieval corpus contains duplicate chunk IDs")
-            seen_dense_ids.add(chunk.chunk_id)
-
+    @staticmethod
+    def _chunk_map(chunks, retriever_name: str) -> dict:
         chunks_by_id = {}
-        for chunks in (dense_chunks, getattr(self.sparse, "chunks", []) or []):
-            for chunk in chunks:
-                chunks_by_id.setdefault(chunk.chunk_id, chunk)
+        for chunk in chunks:
+            if chunk.chunk_id in chunks_by_id:
+                raise DuplicateChunkIdError(
+                    f"{retriever_name} retrieval corpus contains duplicate chunk IDs"
+                )
+            chunks_by_id[chunk.chunk_id] = chunk
+        return chunks_by_id
+
+    def _loaded_chunks(self, require_complete_metadata: bool) -> list:
+        dense_source = getattr(self.dense, "chunks", None)
+        sparse_source = getattr(self.sparse, "chunks", None)
+        if require_complete_metadata and (dense_source is None or sparse_source is None):
+            raise AccessPrefilterUnavailableError(
+                "Access prefilter requires complete corpus metadata before retrieval"
+            )
+
+        dense_by_id = self._chunk_map(list(dense_source or []), "Dense")
+        sparse_by_id = self._chunk_map(list(sparse_source or []), "Sparse")
+        for chunk_id in dense_by_id.keys() & sparse_by_id.keys():
+            if dense_by_id[chunk_id] != sparse_by_id[chunk_id]:
+                raise DuplicateChunkIdError(
+                    "Cross-retriever chunk identity conflict prevents access prefilter"
+                )
+
+        chunks_by_id = dict(dense_by_id)
+        for chunk_id, chunk in sparse_by_id.items():
+            chunks_by_id.setdefault(chunk_id, chunk)
         return list(chunks_by_id.values())
 
     def _access_prefilter(self, access_scope: dict | None) -> tuple[set[str] | None, dict, dict | None]:
-        chunks = self._loaded_chunks()
+        chunks = self._loaded_chunks(require_complete_metadata=access_scope is not None)
         corpus_count = len(chunks)
         if access_scope is None:
             return None, {
