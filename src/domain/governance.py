@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from enum import StrEnum
+from typing import Any
 
 
 class GovernanceMode(StrEnum):
@@ -61,6 +63,7 @@ class ConfirmedGovernanceDecision:
     disposition: GovernanceDisposition
     reason_code: str
     canonical_note_id: str | None = None
+    decision_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,3 +74,23 @@ class GovernanceEvaluation:
     eligible: bool
     reason_codes: tuple[str, ...]
     canonical_note_id: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "note_id": self.note_id,
+            "lifecycle_state": self.lifecycle_state.value,
+            "disposition": self.disposition.value,
+            "eligible": self.eligible,
+            "reason_codes": list(self.reason_codes),
+            "canonical_note_id": self.canonical_note_id,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ReconciliationResult:
+    evaluated: int
+    changed: int
+    pending: int
+    cases_created: int
+    events_appended: int
+    evaluated_on: date

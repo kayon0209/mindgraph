@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
+import hashlib
 import json
 from typing import Any
 
@@ -74,6 +75,30 @@ def normalize_policy_metadata(fm: Mapping[str, Any]) -> NormalizedPolicyMetadata
     )
 
 
+def canonical_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def governance_metadata_dict(note: GovernanceNote) -> dict[str, Any]:
+    """Return normalized governance inputs without note content, paths, or raw ACL data."""
+    status = _metadata_text(note.policy_status)
+    return {
+        "source_id": _metadata_text(note.source_id),
+        "owner": _metadata_text(note.owner),
+        "policy_key": _metadata_text(note.policy_key),
+        "document_version": _metadata_text(note.document_version),
+        "effective_from": _metadata_text(note.effective_from),
+        "effective_to": _metadata_text(note.effective_to),
+        "policy_status": status.lower() if status is not None else None,
+        "metadata_issues": list(note.metadata_issues),
+        "workspace": _metadata_text(note.workspace),
+        "department": _metadata_text(note.department),
+        "acl_fingerprint": _acl_fingerprint(note.acl_json),
+        "acl_public": note.acl_public,
+        "content_hash": _metadata_text(note.content_hash),
+    }
+
+
 def _parse_date(value: str | None) -> date | None:
     if value is None:
         return None
@@ -126,6 +151,13 @@ class GovernancePolicy:
         ):
             return False
         return self._duplicate_fingerprint(left, left_acl) == self._duplicate_fingerprint(right, right_acl)
+
+    def governance_interval(self, note: GovernanceNote) -> tuple[date, date | None] | None:
+        """Return a parsed closed/open interval only for governance-complete notes."""
+        interval = self._validated_interval(note)
+        if interval.error_reasons or interval.effective_from is None:
+            return None
+        return interval.effective_from, interval.effective_to
 
     @classmethod
     def _validated_interval(cls, note: GovernanceNote) -> _ValidatedInterval:
@@ -288,18 +320,19 @@ class GovernancePolicy:
 
     @staticmethod
     def _duplicate_fingerprint(note: GovernanceNote, canonical_acl: str) -> tuple[object, ...]:
+        status = _metadata_text(note.policy_status)
         return (
-            note.source_id,
-            note.content_hash,
-            note.owner,
-            note.policy_key,
-            note.document_version,
-            note.effective_from,
-            note.effective_to,
-            note.policy_status,
-            note.metadata_issues,
-            note.workspace,
-            note.department,
+            _metadata_text(note.source_id),
+            _metadata_text(note.content_hash),
+            _metadata_text(note.owner),
+            _metadata_text(note.policy_key),
+            _metadata_text(note.document_version),
+            _metadata_text(note.effective_from),
+            _metadata_text(note.effective_to),
+            status.lower() if status is not None else None,
+            tuple(sorted(note.metadata_issues)),
+            _metadata_text(note.workspace),
+            _metadata_text(note.department),
             canonical_acl,
             note.acl_public,
         )
@@ -328,3 +361,10 @@ def _canonical_acl(acl_json: object) -> str | None:
             return None
         parsed[key] = sorted(set(value))
     return json.dumps(parsed, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _acl_fingerprint(acl_json: object) -> str | None:
+    canonical = _canonical_acl(acl_json)
+    if canonical is None:
+        return None
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
