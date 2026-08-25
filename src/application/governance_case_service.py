@@ -32,8 +32,15 @@ from domain.governance import (
 from infrastructure.database import ProductDatabase
 
 _CASE_STATUSES = frozenset({"proposed", "confirmed", "rejected", "revoked"})
+_CASE_TYPES = frozenset({"exact_duplicate", "version_conflict"})
+_DISPOSITIONS = frozenset(
+    {"eligible", "excluded", "unresolved", "conflict_blocked", "duplicate_alias"}
+)
 _EVENT_ACTIONS = frozenset({"state_changed", "proposed", "confirmed", "rejected", "revoked"})
 _EVENT_SOURCES = frozenset({"ingestion_rule", "lifecycle_rule", "human_review"})
+_LIFECYCLE_STATES = frozenset(
+    {"not_yet_effective", "current", "expired", "historical", "unresolved"}
+)
 _SAFE_EVENT_STATE_KEYS = frozenset(
     {
         "canonical_note_id",
@@ -192,8 +199,8 @@ class GovernanceCaseService:
     ) -> GovernanceCaseView:
         _validate_actor_and_request(actor, request_id)
         with self.database.connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
             try:
+                connection.execute("BEGIN IMMEDIATE")
                 current = self._get_visible_case(connection, case_id, access_scope)
                 if current is None:
                     raise GovernanceConflictError("governance case is unavailable")
@@ -397,6 +404,7 @@ class GovernanceCaseService:
         case_cache: dict[str, GovernanceCaseView | None],
     ) -> bool:
         case_id = _optional_str(row["case_id"])
+        note_id = _optional_str(row["note_id"])
         if case_id is not None:
             if case_id not in case_cache:
                 case_cache[case_id] = self._get_visible_case(
@@ -404,7 +412,6 @@ class GovernanceCaseService:
                 )
             if case_cache[case_id] is None:
                 return False
-        note_id = _optional_str(row["note_id"])
         if note_id is not None:
             note = connection.execute(
                 """
@@ -414,6 +421,29 @@ class GovernanceCaseService:
                 (note_id,),
             ).fetchone()
             if note is None or not note_acl_matches(dict(note), access_scope):
+                return False
+        try:
+            evidence_ids = _safe_evidence_ids(row["evidence_ids_json"])
+        except GovernancePersistenceError:
+            if case_id is None and note_id is None:
+                return False
+            raise
+        if case_id is None and note_id is None and not evidence_ids:
+            return False
+        if len(evidence_ids) != len(set(evidence_ids)):
+            return False
+        if evidence_ids:
+            placeholders = ",".join("?" for _ in evidence_ids)
+            evidence_notes = connection.execute(
+                f"""
+                SELECT note_id, workspace, department, acl_json, acl_public
+                FROM notes WHERE note_id IN ({placeholders})
+                """,
+                evidence_ids,
+            ).fetchall()
+            if len(evidence_notes) != len(set(evidence_ids)) or any(
+                not note_acl_matches(dict(note), access_scope) for note in evidence_notes
+            ):
                 return False
         return True
 
@@ -470,9 +500,36 @@ def _safe_event_state(value: Any) -> Mapping[str, str | int | float | bool | Non
     for key, item in parsed.items():
         if key not in _SAFE_EVENT_STATE_KEYS:
             continue
-        if item is None or isinstance(item, (str, bool, int)) or (isinstance(item, float) and math.isfinite(item)):
-            safe[key] = item
+        if not _event_state_value_is_safe(key, item):
+            raise GovernancePersistenceError("persisted governance event state is malformed")
+        safe[key] = item
     return MappingProxyType(safe)
+
+
+def _event_state_value_is_safe(key: str, value: Any) -> bool:
+    if key == "canonical_note_id":
+        return value is None or (isinstance(value, str) and _SAFE_ID.fullmatch(value) is not None)
+    if key == "case_type":
+        return isinstance(value, str) and value in _CASE_TYPES
+    if key in {"decision_fingerprint", "relevant_metadata_hash"}:
+        return isinstance(value, str) and len(value) == 64 and all(
+            character in "0123456789abcdef" for character in value
+        )
+    if key == "disposition":
+        return isinstance(value, str) and value in _DISPOSITIONS
+    if key == "eligible":
+        return isinstance(value, bool)
+    if key == "lifecycle_state":
+        return isinstance(value, str) and value in _LIFECYCLE_STATES
+    if key == "reason_code":
+        return isinstance(value, str) and value in GOVERNANCE_REASON_CODES
+    if key == "score":
+        return not isinstance(value, bool) and (
+            isinstance(value, int) or (isinstance(value, float) and math.isfinite(value))
+        )
+    if key == "status":
+        return isinstance(value, str) and value in _CASE_STATUSES
+    return False
 
 
 def _safe_evidence_ids(value: Any) -> tuple[str, ...]:

@@ -467,7 +467,7 @@ def test_event_views_whitelist_scalar_governance_state(
             "travel-expense",
             "reviewer",
             "proposed",
-            '{"status":"missing","secret":"sentinel-secret"}',
+            '{"status":"proposed","secret":"sentinel-secret"}',
             '{"status":"proposed","score":0.75,"body":"sentinel-body"}',
             "overlapping_effective_intervals",
             '["travel-new","travel-old"]',
@@ -482,11 +482,327 @@ def test_event_views_whitelist_scalar_governance_state(
     )
     event = next(item for item in events if item.event_id == "event-safe-view")
 
-    assert dict(event.previous_state) == {"status": "missing"}
+    assert dict(event.previous_state) == {"status": "proposed"}
     assert dict(event.new_state) == {"status": "proposed", "score": 0.75}
     serialized = repr(events)
     assert "sentinel-secret" not in serialized
     assert "sentinel-body" not in serialized
+
+
+def test_event_with_hidden_evidence_note_is_not_visible(
+    database: ProductDatabase,
+    case_service: GovernanceCaseService,
+    proposed_case: str,
+) -> None:
+    """Catches a visible case event disclosing an evidence note outside the caller ACL."""
+    _insert_note(
+        database,
+        "hr-secret-note",
+        policy_key="hr-private-policy",
+        department="hr",
+    )
+    database.execute(
+        """
+        INSERT INTO governance_events (
+            event_id, case_id, policy_key, actor, action, previous_state_json,
+            new_state_json, reason_code, evidence_ids_json, source, request_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "event-hidden-evidence",
+            proposed_case,
+            "travel-expense",
+            "reviewer",
+            "proposed",
+            '{}',
+            '{"status":"proposed"}',
+            "overlapping_effective_intervals",
+            '["hr-secret-note"]',
+            "human_review",
+            "req-hidden-evidence",
+            "2026-08-25T00:00:00Z",
+        ),
+    )
+
+    events = case_service.list_events(
+        access_scope=finance_scope(), case_id=proposed_case
+    )
+
+    assert "event-hidden-evidence" not in {event.event_id for event in events}
+
+
+def test_hidden_case_event_does_not_parse_malformed_evidence(
+    database: ProductDatabase,
+    reconciliation: GovernanceReconciliationService,
+    case_service: GovernanceCaseService,
+) -> None:
+    """Catches malformed payload errors revealing a case hidden by participant ACL."""
+    hidden_case = _create_conflict_case(
+        database,
+        reconciliation,
+        second_department="hr",
+    )
+    database.execute(
+        """
+        INSERT INTO governance_events (
+            event_id, case_id, policy_key, actor, action, previous_state_json,
+            new_state_json, reason_code, evidence_ids_json, source, request_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "event-hidden-malformed-evidence",
+            hidden_case,
+            "travel-expense",
+            "reviewer",
+            "proposed",
+            '{}',
+            '{"status":"proposed"}',
+            "overlapping_effective_intervals",
+            "not-json",
+            "human_review",
+            "req-hidden-malformed-evidence",
+            "2026-08-25T00:00:00Z",
+        ),
+    )
+
+    assert case_service.list_events(
+        access_scope=finance_scope(), case_id=hidden_case
+    ) == []
+
+
+def test_event_with_duplicate_evidence_is_not_visible(
+    database: ProductDatabase,
+    case_service: GovernanceCaseService,
+    proposed_case: str,
+) -> None:
+    """Catches non-canonical duplicate evidence being reflected in audit views."""
+    database.execute(
+        """
+        INSERT INTO governance_events (
+            event_id, case_id, policy_key, actor, action, previous_state_json,
+            new_state_json, reason_code, evidence_ids_json, source, request_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "event-duplicate-evidence",
+            proposed_case,
+            "travel-expense",
+            "reviewer",
+            "proposed",
+            '{}',
+            '{"status":"proposed"}',
+            "overlapping_effective_intervals",
+            '["travel-new","travel-new"]',
+            "human_review",
+            "req-duplicate-evidence",
+            "2026-08-25T00:00:00Z",
+        ),
+    )
+
+    events = case_service.list_events(
+        access_scope=finance_scope(), case_id=proposed_case
+    )
+
+    assert "event-duplicate-evidence" not in {event.event_id for event in events}
+
+
+def test_event_with_missing_evidence_note_is_not_visible(
+    database: ProductDatabase,
+    case_service: GovernanceCaseService,
+    proposed_case: str,
+) -> None:
+    """Catches unknown evidence identifiers bypassing note-backed ACL checks."""
+    database.execute(
+        """
+        INSERT INTO governance_events (
+            event_id, case_id, policy_key, actor, action, previous_state_json,
+            new_state_json, reason_code, evidence_ids_json, source, request_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "event-missing-evidence",
+            proposed_case,
+            "travel-expense",
+            "reviewer",
+            "proposed",
+            '{}',
+            '{"status":"proposed"}',
+            "overlapping_effective_intervals",
+            '["missing-note"]',
+            "human_review",
+            "req-missing-evidence",
+            "2026-08-25T00:00:00Z",
+        ),
+    )
+
+    events = case_service.list_events(
+        access_scope=finance_scope(), case_id=proposed_case
+    )
+
+    assert "event-missing-evidence" not in {event.event_id for event in events}
+
+
+def test_event_without_acl_anchor_is_not_visible(
+    database: ProductDatabase,
+    case_service: GovernanceCaseService,
+) -> None:
+    """Catches targetless audit rows bypassing every ACL check."""
+    database.execute(
+        """
+        INSERT INTO governance_events (
+            event_id, actor, action, previous_state_json, new_state_json,
+            reason_code, evidence_ids_json, source, request_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "event-without-anchor",
+            "private-actor",
+            "state_changed",
+            '{}',
+            '{"status":"proposed"}',
+            "governance_state_changed",
+            '[]',
+            "lifecycle_rule",
+            "req-without-anchor",
+            "2026-08-25T00:00:00Z",
+        ),
+    )
+
+    events = case_service.list_events(access_scope=finance_scope())
+
+    assert "event-without-anchor" not in {event.event_id for event in events}
+
+
+def test_targetless_event_with_malformed_evidence_is_not_visible(
+    database: ProductDatabase,
+    case_service: GovernanceCaseService,
+) -> None:
+    """Catches corrupt targetless rows leaking their existence through parse errors."""
+    database.execute(
+        """
+        INSERT INTO governance_events (
+            event_id, actor, action, previous_state_json, new_state_json,
+            reason_code, evidence_ids_json, source, request_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "event-targetless-malformed-evidence",
+            "private-actor",
+            "state_changed",
+            '{}',
+            '{"status":"proposed"}',
+            "governance_state_changed",
+            "not-json",
+            "lifecycle_rule",
+            "req-targetless-malformed-evidence",
+            "2026-08-25T00:00:00Z",
+        ),
+    )
+
+    events = case_service.list_events(access_scope=finance_scope())
+
+    assert "event-targetless-malformed-evidence" not in {
+        event.event_id for event in events
+    }
+
+
+def test_visible_event_with_malformed_evidence_fails_closed(
+    database: ProductDatabase,
+    case_service: GovernanceCaseService,
+    proposed_case: str,
+) -> None:
+    """Catches visible corrupt evidence being silently accepted or partially returned."""
+    database.execute(
+        """
+        INSERT INTO governance_events (
+            event_id, case_id, policy_key, actor, action, previous_state_json,
+            new_state_json, reason_code, evidence_ids_json, source, request_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "event-visible-malformed-evidence",
+            proposed_case,
+            "travel-expense",
+            "reviewer",
+            "proposed",
+            '{}',
+            '{"status":"proposed"}',
+            "overlapping_effective_intervals",
+            "not-json",
+            "human_review",
+            "req-visible-malformed-evidence",
+            "2026-08-25T00:00:00Z",
+        ),
+    )
+
+    with pytest.raises(GovernancePersistenceError, match="evidence ids"):
+        case_service.list_events(
+            access_scope=finance_scope(), case_id=proposed_case
+        )
+
+
+def test_event_state_rejects_invalid_value_for_safe_key(
+    database: ProductDatabase,
+    case_service: GovernanceCaseService,
+    proposed_case: str,
+) -> None:
+    """Catches sensitive text smuggled through an allowlisted event-state key."""
+    database.execute(
+        """
+        INSERT INTO governance_events (
+            event_id, case_id, policy_key, actor, action, previous_state_json,
+            new_state_json, reason_code, evidence_ids_json, source, request_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "event-invalid-safe-value",
+            proposed_case,
+            "travel-expense",
+            "reviewer",
+            "proposed",
+            '{"status":"credential-like-secret"}',
+            '{"status":"proposed"}',
+            "overlapping_effective_intervals",
+            '["travel-new","travel-old"]',
+            "human_review",
+            "req-invalid-safe-value",
+            "2026-08-25T00:00:00Z",
+        ),
+    )
+
+    with pytest.raises(GovernancePersistenceError, match="event state"):
+        case_service.list_events(
+            access_scope=finance_scope(), case_id=proposed_case
+        )
+
+
+def test_begin_lock_failure_is_wrapped_in_persistence_error(
+    database: ProductDatabase,
+    case_service: GovernanceCaseService,
+    proposed_case: str,
+) -> None:
+    """Catches BEGIN IMMEDIATE lock errors escaping the stable domain boundary."""
+    lock_connection = database.connect()
+    lock_connection.execute("PRAGMA busy_timeout=1")
+    lock_connection.execute("BEGIN IMMEDIATE")
+    try:
+        with pytest.raises(
+            GovernancePersistenceError,
+            match="governance decision could not be persisted",
+        ):
+            case_service.resolve(
+                proposed_case,
+                expected_status="proposed",
+                decision="reject",
+                canonical_note_id=None,
+                actor="reviewer",
+                roles=("governance_reviewer",),
+                access_scope=finance_scope(),
+                request_id="req-locked",
+            )
+    finally:
+        lock_connection.rollback()
+        lock_connection.close()
 
 
 def test_list_filters_status_and_enforces_limit(
