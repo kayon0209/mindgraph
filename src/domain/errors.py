@@ -94,6 +94,11 @@ class RetrievalUnavailableError(ProductError):
     status_code = 503
 
 
+class GovernanceUnavailableError(ProductError):
+    code = "governance_unavailable"
+    status_code = 503
+
+
 class IndexUnavailableError(ProductError):
     code = "index_unavailable"
     status_code = 503
@@ -124,3 +129,7 @@ class ConfigurationError(InternalError):
 class ConflictError(ProductError):
     code = "conflict"
     status_code = 409
+
+
+class GovernanceConflictError(ConflictError):
+    code = "governance_conflict"

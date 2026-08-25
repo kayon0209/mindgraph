@@ -1,3 +1,4 @@
+from datetime import date
 import json
 from pathlib import Path
 import sqlite3
@@ -8,11 +9,48 @@ from fastapi.testclient import TestClient
 from api.dependencies import override_container
 from api.main import app
 from application.chat_service import ChatService
+from application.governance_policy import normalize_policy_metadata
 from application.mindgraph_index_service import MindGraphIndexService
 from application.vault_sync_service import VaultSyncService
 from infrastructure.database import SCHEMA_VERSION, ProductDatabase
 from retrieval.mindgraph_pipeline import MindGraphRetrievalPipeline
 from retrieval.types import Chunk, RetrievalCandidate, RetrievalTrace
+
+
+def test_policy_metadata_normalizer_validates_dates_without_lexicographic_comparison() -> None:
+    """Catches malformed dates being accepted because their strings sort in range order."""
+    normalized = normalize_policy_metadata(
+        {
+            "owner": "Finance",
+            "policy_key": "expense.general",
+            "version": "2.0",
+            "effective_from": "2026-2-30",
+            "effective_to": "2026-12-31",
+            "status": "active",
+        }
+    )
+
+    assert normalized.effective_from == "2026-2-30"
+    assert normalized.issues == ("invalid_effective_date",)
+
+
+def test_policy_metadata_normalizer_returns_immutable_quality_issues() -> None:
+    """Catches source metadata errors being mutable or leaving non-string values unnormalized."""
+    normalized = normalize_policy_metadata(
+        {
+            "owner": " Finance ",
+            "policy_key": "expense.general",
+            "version": 2,
+            "effective_from": date(2026, 1, 1),
+            "status": "unknown",
+        }
+    )
+
+    assert normalized.owner == "Finance"
+    assert normalized.document_version == "2"
+    assert normalized.effective_from == "2026-01-01"
+    assert normalized.policy_status == "unspecified"
+    assert normalized.issues == ("invalid_policy_status",)
 
 
 def test_initialize_migrates_existing_notes_without_losing_rows(tmp_path: Path) -> None:

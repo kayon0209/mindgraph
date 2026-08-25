@@ -19,12 +19,13 @@ import re
 from typing import Any, NamedTuple
 import uuid
 
+from application.governance_policy import normalize_policy_metadata
+from domain.governance import NormalizedPolicyMetadata
 from infrastructure.database import ProductDatabase
 from infrastructure.markdown_frontmatter import inject_mindgraph_id, parse_frontmatter
 
 SUPPORTED_SUFFIXES = {".md", ".markdown"}
 ACCESS_LEVELS = {"excluded", "local_only", "redacted_cloud", "cloud_allowed"}
-POLICY_STATUSES = {"draft", "active", "expired", "superseded", "archived"}
 
 # 同步时默认跳过的目录：虚拟环境 / 依赖 / 缓存 / VCS / 编辑器配置 / 回收站。
 # 避免 Playwright、node_modules 等依赖文档被当成知识塞进索引。
@@ -54,16 +55,6 @@ class VaultScanResult(NamedTuple):
     skipped: list[str]
     errors: list[str]
     pruned: int
-
-
-class PolicyMetadata(NamedTuple):
-    owner: str | None
-    policy_key: str | None
-    document_version: str | None
-    effective_from: str | None
-    effective_to: str | None
-    policy_status: str
-    issues: list[str]
 
 
 class AccessMetadata(NamedTuple):
@@ -111,35 +102,8 @@ def _metadata_text(value: Any) -> str | None:
     return text or None
 
 
-def _policy_metadata(fm: dict[str, Any]) -> PolicyMetadata:
-    owner = _metadata_text(fm.get("owner"))
-    policy_key = _metadata_text(fm.get("policy_key"))
-    version = _metadata_text(fm.get("version"))
-    effective_from = _metadata_text(fm.get("effective_from"))
-    effective_to = _metadata_text(fm.get("effective_to"))
-    raw_status = (_metadata_text(fm.get("status")) or "").lower()
-    issues: list[str] = []
-
-    if not owner:
-        issues.append("missing_owner")
-    if not policy_key:
-        issues.append("missing_policy_key")
-    if not version:
-        issues.append("missing_version")
-    if not effective_from:
-        issues.append("missing_effective_from")
-    if not raw_status:
-        issues.append("missing_policy_status")
-        status = "unspecified"
-    elif raw_status not in POLICY_STATUSES:
-        issues.append("invalid_policy_status")
-        status = "unspecified"
-    else:
-        status = raw_status
-    if effective_from and effective_to and effective_to < effective_from:
-        issues.append("invalid_effective_range")
-
-    return PolicyMetadata(owner, policy_key, version, effective_from, effective_to, status, issues)
+def _policy_metadata(fm: dict[str, Any]) -> NormalizedPolicyMetadata:
+    return normalize_policy_metadata(fm)
 
 
 def _access_metadata(fm: dict[str, Any], path: Path) -> AccessMetadata:
@@ -331,7 +295,7 @@ class VaultSyncService:
         content_hash: str,
         fm: dict,
         access: str,
-        policy: PolicyMetadata,
+        policy: NormalizedPolicyMetadata,
         access_meta: AccessMetadata,
         now: str,
     ) -> None:
