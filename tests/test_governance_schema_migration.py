@@ -61,6 +61,11 @@ def _file_snapshot(path: Path) -> dict[str, bytes]:
     }
 
 
+def _checkpoint_test_database(path: Path) -> None:
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+
 def _strip_governance_schema(path: Path) -> None:
     """Turn a freshly initialized test database into a schema-8 fixture."""
     with sqlite3.connect(path) as connection:
@@ -208,10 +213,12 @@ def test_schema_9_has_required_indexes_and_append_only_triggers(
         "idx_governance_note_state_disposition",
         "governance_events_no_update",
         "governance_events_no_delete",
+        "governance_events_no_replace",
     } <= objects.keys()
 
 
 def test_dry_run_is_byte_for_byte_read_only(schema8_db: Path) -> None:
+    _checkpoint_test_database(schema8_db)
     before = _file_snapshot(schema8_db)
 
     report = GovernanceSchemaMigrationService(schema8_db).plan()
@@ -220,7 +227,7 @@ def test_dry_run_is_byte_for_byte_read_only(schema8_db: Path) -> None:
     assert report.status == "planned"
     assert report.current_version == 8
     assert report.target_version == 9
-    assert report.object_count == 14
+    assert report.object_count == 15
     assert report.run_id is None
     assert _file_snapshot(schema8_db) == before
     assert _schema_version(schema8_db) == 8
@@ -229,6 +236,7 @@ def test_dry_run_is_byte_for_byte_read_only(schema8_db: Path) -> None:
 def test_dry_run_refuses_wrong_version_without_mutation(schema8_db: Path) -> None:
     with sqlite3.connect(schema8_db) as connection:
         connection.execute("UPDATE schema_meta SET version = 7")
+    _checkpoint_test_database(schema8_db)
     before = _file_snapshot(schema8_db)
 
     with pytest.raises(GovernanceMigrationError) as captured:
@@ -247,7 +255,7 @@ def test_apply_and_exact_run_rollback(schema8_db: Path) -> None:
     assert applied.status == "completed"
     assert applied.current_version == 9
     assert applied.target_version == 9
-    assert applied.object_count == 14
+    assert applied.object_count == 15
     assert applied.run_id
     assert _schema_version(schema8_db) == 9
     assert GOVERNANCE_TABLES | {MIGRATION_TABLE} <= _table_names(schema8_db)
@@ -258,7 +266,7 @@ def test_apply_and_exact_run_rollback(schema8_db: Path) -> None:
     assert rolled_back.status == "rolled_back"
     assert rolled_back.current_version == 8
     assert rolled_back.target_version == 8
-    assert rolled_back.object_count == 14
+    assert rolled_back.object_count == 15
     assert rolled_back.run_id == applied.run_id
     assert _schema_version(schema8_db) == 8
     assert not _table_names(schema8_db) & GOVERNANCE_TABLES
@@ -378,12 +386,59 @@ def test_governance_events_are_append_only(schema9_db: Path) -> None:
     _insert_event(schema9_db)
 
     with sqlite3.connect(schema9_db) as connection:
+        original = connection.execute(
+            "SELECT * FROM governance_events WHERE event_id = 'event-1'"
+        ).fetchone()
         with pytest.raises(sqlite3.IntegrityError, match="append-only"):
             connection.execute(
                 "UPDATE governance_events SET action = 'confirmed' WHERE event_id = 'event-1'"
             )
         with pytest.raises(sqlite3.IntegrityError, match="append-only"):
             connection.execute("DELETE FROM governance_events WHERE event_id = 'event-1'")
+        unchanged = connection.execute(
+            "SELECT * FROM governance_events WHERE event_id = 'event-1'"
+        ).fetchone()
+
+    assert unchanged == original
+
+
+@pytest.mark.parametrize("statement", ["INSERT OR REPLACE", "REPLACE"])
+def test_governance_event_replace_cannot_overwrite_existing_event(
+    schema9_db: Path,
+    statement: str,
+) -> None:
+    _insert_event(schema9_db)
+
+    with sqlite3.connect(schema9_db) as connection:
+        assert connection.execute("PRAGMA recursive_triggers").fetchone() == (0,)
+        original = connection.execute(
+            "SELECT * FROM governance_events WHERE event_id = 'event-1'"
+        ).fetchone()
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            connection.execute(
+                f"""
+                {statement} INTO governance_events (
+                    event_id, actor, action, previous_state_json, new_state_json,
+                    reason_code, evidence_ids_json, source, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "event-1",
+                    "different-reviewer",
+                    "confirmed",
+                    '{"status":"proposed"}',
+                    '{"status":"confirmed"}',
+                    "replacement_attempt",
+                    "[]",
+                    "human_review",
+                    "2026-08-25T01:00:00Z",
+                ),
+            )
+        unchanged = connection.execute(
+            "SELECT * FROM governance_events WHERE event_id = 'event-1'"
+        ).fetchone()
+
+    assert unchanged == original
 
 
 @pytest.mark.parametrize(
@@ -439,6 +494,7 @@ def test_governance_enums_are_database_constrained(
 
 
 def test_cli_defaults_to_one_json_dry_run_without_mutation(schema8_db: Path) -> None:
+    _checkpoint_test_database(schema8_db)
     before = _file_snapshot(schema8_db)
 
     result = _run_cli(schema8_db)
@@ -447,7 +503,7 @@ def test_cli_defaults_to_one_json_dry_run_without_mutation(schema8_db: Path) -> 
     assert _json_stdout(result) == {
         "current_version": 8,
         "mode": "dry_run",
-        "object_count": 14,
+        "object_count": 15,
         "ok": True,
         "run_id": None,
         "status": "planned",
@@ -480,8 +536,24 @@ def test_cli_apply_and_exact_run_rollback_use_runtime_database(schema8_db: Path)
 def test_cli_rollback_error_is_one_redacted_json_object(schema8_db: Path) -> None:
     applied_result = _run_cli(schema8_db, "--apply")
     applied = _json_stdout(applied_result)
-    private_path = "private-finance-policy.sqlite3"
-    private_note_id = "employee-private-note-id"
+    sentinels = (
+        "sentinel-note-id-7a410a",
+        "sentinel-private-path-81a9d2",
+        "sentinel-body-446cee",
+        "sentinel-title-14020f",
+        "sentinel-acl-7677ce",
+        "sentinel-token-2916fc",
+        "sentinel-secret-c6594f",
+    )
+    (
+        private_note_id,
+        private_path,
+        private_body,
+        private_title,
+        private_acl,
+        private_token,
+        private_secret,
+    ) = sentinels
     with sqlite3.connect(schema8_db) as connection:
         connection.execute(
             """
@@ -495,30 +567,52 @@ def test_cli_rollback_error_is_one_redacted_json_object(schema8_db: Path) -> Non
                 private_note_id,
                 "reviewer",
                 "proposed",
-                "{}",
-                "{}",
+                json.dumps(
+                    {"path": private_path, "title": private_title, "acl": private_acl}
+                ),
+                json.dumps(
+                    {"body": private_body, "token": private_token, "secret": private_secret}
+                ),
                 "candidate_detected",
                 "[]",
                 "human_review",
                 "2026-08-25T00:00:00Z",
             ),
         )
+        stored = connection.execute(
+            """
+            SELECT note_id, previous_state_json, new_state_json
+            FROM governance_events WHERE event_id = 'event-private'
+            """
+        ).fetchone()
+
+    assert stored is not None
+    stored_text = " ".join(str(value) for value in stored)
+    for sentinel in sentinels:
+        assert sentinel in stored_text
 
     result = _run_cli(schema8_db, "--rollback", str(applied["run_id"]))
 
     assert result.returncode != 0
-    output = result.stdout
     assert _json_stdout(result) == {
         "error": "governance_tables_in_use",
         "ok": False,
     }
-    for secret in (
-        str(schema8_db),
-        private_path,
-        private_note_id,
-        "Traceback",
-    ):
-        assert secret not in output
+    for output in (result.stdout, result.stderr):
+        for sentinel in (*sentinels, str(schema8_db), "Traceback"):
+            assert sentinel not in output
+
+
+def test_cli_help_is_one_non_sensitive_json_object(schema8_db: Path) -> None:
+    result = _run_cli(schema8_db, "--help")
+
+    assert result.returncode == 0
+    assert _json_stdout(result) == {
+        "help": ["--dry-run (default)", "--apply", "--rollback RUN_ID"],
+        "ok": True,
+    }
+    assert str(schema8_db) not in result.stdout
+    assert "Traceback" not in result.stdout
 
 
 @pytest.mark.parametrize("args", [("--apply", "--dry-run"), ("--rollback", "")])

@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+HELP_ITEMS = ("--dry-run (default)", "--apply", "--rollback RUN_ID")
 
 
 class _InvalidArgumentsError(ValueError):
@@ -21,9 +22,11 @@ class _RedactedArgumentParser(argparse.ArgumentParser):
 
 def build_parser() -> argparse.ArgumentParser:
     parser = _RedactedArgumentParser(
-        description="Explicitly migrate MindGraph governance schema from version 8 to 9."
+        description="Explicitly migrate MindGraph governance schema from version 8 to 9.",
+        add_help=False,
     )
     operation = parser.add_mutually_exclusive_group()
+    operation.add_argument("--help", action="store_true")
     operation.add_argument(
         "--dry-run",
         action="store_true",
@@ -54,6 +57,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     except _InvalidArgumentsError:
         _print_error("invalid_arguments")
         return 2
+
+    if args.help:
+        print(json.dumps({"ok": True, "help": list(HELP_ITEMS)}, sort_keys=True))
+        return 0
 
     src_path = str(PROJECT_ROOT / "src")
     if src_path not in sys.path:

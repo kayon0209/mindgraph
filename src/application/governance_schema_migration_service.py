@@ -284,6 +284,7 @@ class GovernanceSchemaMigrationService:
 
 
 def _drop_governance_business_schema(connection: sqlite3.Connection) -> None:
+    connection.execute("DROP TRIGGER governance_events_no_replace")
     connection.execute("DROP TRIGGER governance_events_no_update")
     connection.execute("DROP TRIGGER governance_events_no_delete")
     connection.execute("DROP INDEX idx_governance_cases_status_policy")

@@ -23,6 +23,7 @@ GOVERNANCE_SCHEMA_OBJECTS = frozenset(
     {
         *GOVERNANCE_TABLES,
         "schema_migration_runs",
+        "governance_events_no_replace",
         "governance_events_no_update",
         "governance_events_no_delete",
         "idx_governance_cases_status_policy",
@@ -112,6 +113,15 @@ _GOVERNANCE_SCHEMA_STATEMENTS = (
       completed_at TEXT NOT NULL,
       rolled_back_at TEXT
     )
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS governance_events_no_replace
+    BEFORE INSERT ON governance_events
+    WHEN EXISTS (
+      SELECT 1 FROM governance_events WHERE event_id = NEW.event_id
+    ) BEGIN
+      SELECT RAISE(ABORT, 'governance_events are append-only');
+    END
     """,
     """
     CREATE TRIGGER IF NOT EXISTS governance_events_no_update
