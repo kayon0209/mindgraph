@@ -42,7 +42,7 @@
 - `AUTH_MODE=demo` 的匿名主体使用 public-only scope，`AUTH_MODE=off` 是唯一显式 ACL bypass。
 - `AclBackfillService` 提供可审计的 plan / apply / rollback；CLI 默认 dry-run，输出仅含聚合计数和 run ID。
 
-**运维约束**：生产历史数据回填由操作人员执行，不自动运行。流程为 dry-run → 审核 unresolved/private 聚合计数 → apply 并保存 run ID → 必要时按精确 run ID rollback。无法可靠判定的记录默认 private；trace 仅记录排除计数与原因，不记录私有正文。
+**运维约束**：生产历史数据回填由操作人员执行，不自动运行。CLI 使用运行时 `DATABASE_PATH`，要求目标数据库已完成当前 schema 初始化，且自身不执行 schema 迁移；默认 dry-run 以 SQLite 只读模式运行。流程为 dry-run → 审核 unresolved/private 聚合计数 → apply 并保存 run ID → 必要时按精确 run ID rollback。成功输出仅含聚合计数与 run ID，失败仅返回固定脱敏 JSON 和非零退出码。无法可靠判定的记录默认 private；trace 仅记录排除计数与原因，不记录私有正文。
 
 **验收**：无权限 chunk 不出现在 dense/sparse/fusion/rerank/LLM context 任一阶段；回填可重复、可审计、可回滚；最终 `_filter_by_access` 仍作为防御纵深。
 

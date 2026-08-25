@@ -29,7 +29,7 @@ def _load_backfill_cli_module():
 def test_acl_backfill_cli_defaults_to_dry_run(monkeypatch, capsys):
     cli = _load_backfill_cli_module()
     service = SimpleNamespace(plan=lambda: {"note_count": 1, "unresolved_count": 1})
-    monkeypatch.setattr(cli, "_service", lambda: service)
+    monkeypatch.setattr(cli, "_service", lambda *, read_only: service)
 
     cli.main([])
 
@@ -45,7 +45,9 @@ def test_acl_backfill_cli_accepts_explicit_dry_run(monkeypatch, capsys):
     monkeypatch.setattr(
         cli,
         "_service",
-        lambda: SimpleNamespace(plan=lambda: {"note_count": 0, "unresolved_count": 0}),
+        lambda *, read_only: SimpleNamespace(
+            plan=lambda: {"note_count": 0, "unresolved_count": 0}
+        ),
     )
 
     cli.main(["--dry-run"])
@@ -61,7 +63,7 @@ def test_acl_backfill_cli_apply_calls_service_once(monkeypatch, capsys):
         calls.append("apply")
         return {"run_id": "run-1", "changed": 2, "unresolved_count": 1}
 
-    monkeypatch.setattr(cli, "_service", lambda: SimpleNamespace(apply=apply))
+    monkeypatch.setattr(cli, "_service", lambda *, read_only: SimpleNamespace(apply=apply))
 
     cli.main(["--apply"])
 
@@ -91,7 +93,7 @@ def test_acl_backfill_cli_rollback_calls_service_once(monkeypatch, capsys):
         calls.append(run_id)
         return {"run_id": run_id, "restored": 2}
 
-    monkeypatch.setattr(cli, "_service", lambda: SimpleNamespace(rollback=rollback))
+    monkeypatch.setattr(cli, "_service", lambda *, read_only: SimpleNamespace(rollback=rollback))
 
     cli.main(["--rollback", "run-1"])
 
@@ -110,7 +112,7 @@ def test_acl_backfill_cli_output_omits_private_path_and_body(monkeypatch, capsys
     monkeypatch.setattr(
         cli,
         "_service",
-        lambda: SimpleNamespace(
+        lambda *, read_only: SimpleNamespace(
             plan=lambda: {
                 "note_count": 1,
                 "unresolved_count": 1,
@@ -125,6 +127,136 @@ def test_acl_backfill_cli_output_omits_private_path_and_body(monkeypatch, capsys
     assert private_path not in output
     assert private_body not in output
     assert "allow" not in output
+
+
+def test_acl_backfill_cli_uses_runtime_database_path(monkeypatch, tmp_path: Path):
+    cli = _load_backfill_cli_module()
+    runtime_database_path = tmp_path / "runtime" / "product.sqlite3"
+    opened_paths: list[Path] = []
+
+    class FakeDatabase:
+        def __init__(self, path: Path) -> None:
+            opened_paths.append(Path(path))
+
+    monkeypatch.setattr(
+        cli,
+        "get_settings",
+        lambda: SimpleNamespace(DATABASE_PATH=str(runtime_database_path)),
+        raising=False,
+    )
+    monkeypatch.setattr(cli, "ProductDatabase", FakeDatabase)
+    monkeypatch.setattr(
+        cli,
+        "AclBackfillService",
+        lambda database, root: SimpleNamespace(database=database, root=root),
+    )
+    monkeypatch.setattr(cli, "_validate_database", lambda path: None)
+
+    service = cli._service(read_only=False)
+
+    assert opened_paths == [runtime_database_path]
+    assert service.root == cli.PROJECT_ROOT / "knowledge"
+
+
+def test_acl_backfill_cli_failure_is_redacted_json(monkeypatch, capsys):
+    cli = _load_backfill_cli_module()
+    private_path = "private/hr/redundancy.md"
+    private_acl = "department:hr"
+    private_note_id = "employee-termination-policy"
+
+    def rollback(run_id: str):
+        raise ValueError(
+            f"rollback conflict for {private_note_id} at {private_path} with {private_acl}"
+        )
+
+    monkeypatch.setattr(cli, "_service", lambda *, read_only: SimpleNamespace(rollback=rollback))
+
+    exit_code = cli.main(["--rollback", "run-1"])
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert json.loads(captured.err) == {"error": "operation_failed", "mode": "rollback"}
+    assert private_path not in captured.err
+    assert private_acl not in captured.err
+    assert private_note_id not in captured.err
+    assert exit_code == 1
+
+
+def test_acl_backfill_cli_dry_run_does_not_migrate_schema(monkeypatch, tmp_path: Path, capsys):
+    cli = _load_backfill_cli_module()
+    database_path = tmp_path / "schema7.db"
+    _seed_schema7_database(database_path, tmp_path / "connector")
+    monkeypatch.setattr(
+        cli,
+        "get_settings",
+        lambda: SimpleNamespace(DATABASE_PATH=str(database_path)),
+    )
+
+    exit_code = cli.main([])
+
+    assert exit_code == 1
+    assert json.loads(capsys.readouterr().err) == {
+        "error": "operation_failed",
+        "mode": "dry_run",
+    }
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 7
+        columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(notes)").fetchall()
+        }
+    assert "source_id" not in columns
+
+
+def test_acl_backfill_cli_round_trip_uses_runtime_database(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+):
+    cli = _load_backfill_cli_module()
+    database_path = tmp_path / "product.sqlite3"
+    db = ProductDatabase(database_path)
+    db.initialize()
+    _insert_note(db, vault_path="missing-policy.md")
+    monkeypatch.setattr(
+        cli,
+        "get_settings",
+        lambda: SimpleNamespace(DATABASE_PATH=str(database_path)),
+    )
+
+    assert cli.main([]) == 0
+    dry_run = json.loads(capsys.readouterr().out)
+    assert dry_run == {
+        "changed_count": 1,
+        "mode": "dry_run",
+        "note_count": 1,
+        "unchanged_count": 0,
+        "unresolved_count": 1,
+    }
+    assert db.fetch_one("SELECT acl_public FROM notes WHERE note_id='n1'") == {
+        "acl_public": 1
+    }
+    assert db.fetch_one("SELECT COUNT(*) AS count FROM acl_backfill_runs") == {"count": 0}
+
+    assert cli.main(["--apply"]) == 0
+    applied = json.loads(capsys.readouterr().out)
+    assert applied["mode"] == "apply"
+    assert applied["changed"] == 1
+    assert applied["unresolved_count"] == 1
+    assert set(applied) == {"changed", "mode", "run_id", "unchanged", "unresolved_count"}
+    assert db.fetch_one("SELECT acl_public FROM notes WHERE note_id='n1'") == {
+        "acl_public": 0
+    }
+
+    assert cli.main(["--rollback", applied["run_id"]]) == 0
+    rolled_back = json.loads(capsys.readouterr().out)
+    assert rolled_back == {
+        "mode": "rollback",
+        "restored": 1,
+        "run_id": applied["run_id"],
+    }
+    assert db.fetch_one("SELECT acl_public FROM notes WHERE note_id='n1'") == {
+        "acl_public": 1
+    }
 
 
 def _insert_note(

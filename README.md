@@ -129,6 +129,8 @@ Status, effective-date, category and permission filters are shared by base retri
 
 Historical notes can be given repeatable ACL metadata through a deliberately operator-run workflow. It never runs automatically against production data.
 
+The command uses the configured `DATABASE_PATH`. The target database must already be initialized at the current application schema; this CLI never performs schema migration. Its default dry-run opens SQLite read-only and does not write audit rows or note metadata.
+
 ```bash
 # 1. Preview aggregate counts only. Review unresolved/private records before proceeding.
 python scripts/backfill_note_acl.py --dry-run
@@ -140,7 +142,7 @@ python scripts/backfill_note_acl.py --apply
 python scripts/backfill_note_acl.py --rollback RUN_ID
 ```
 
-The CLI prints aggregate counts and a run ID only; it does not print note bodies, paths or ACL contents. Unresolved source ownership is intentionally backfilled as private and must be reviewed by an operator before any live production change.
+The CLI prints aggregate counts and a run ID only; it does not print note bodies, paths or ACL contents. Operation failures return a non-zero exit code with a fixed, redacted JSON error on stderr; argument errors use standard `argparse` usage output. Unresolved source ownership is intentionally backfilled as private and must be reviewed by an operator before any live production change.
 
 ## MCP for AI agents
 
