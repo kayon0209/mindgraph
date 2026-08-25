@@ -1,12 +1,23 @@
 from __future__ import annotations
 
+from collections import Counter
+from collections.abc import Callable, Collection, Mapping
 from datetime import date
 import time
+
+from application.governance_policy import GovernancePolicy
+from domain.governance import (
+    ConfirmedGovernanceDecision,
+    GovernanceMode,
+    GovernanceNote,
+)
 
 from .types import (
     AccessPrefilterUnavailableError,
     DenseRetriever,
     FusionStrategy,
+    GovernancePrefilterResult,
+    GovernancePrefilterUnavailableError,
     Reranker,
     RetrievalTrace,
     SparseRetriever,
@@ -40,11 +51,19 @@ class RetrievalPipeline:
         candidate_count: int = 20,
         rerank_top_n: int = 10,
         final_top_k: int = 5,
+        governance_policy: GovernancePolicy | None = None,
+        confirmed_decision_loader: Callable[
+            [Collection[str]],
+            Mapping[str, tuple[ConfirmedGovernanceDecision, ...]],
+        ]
+        | None = None,
     ) -> None:
         self.dense, self.sparse, self.fusion, self.reranker = dense, sparse, fusion, reranker
         self.candidate_count = candidate_count
         self.rerank_top_n = rerank_top_n
         self.final_top_k = final_top_k
+        self.governance_policy = governance_policy
+        self.confirmed_decision_loader = confirmed_decision_loader
 
     @staticmethod
     def _base_score(candidate) -> float:
@@ -153,6 +172,151 @@ class RetrievalPipeline:
             chunks_by_id.setdefault(chunk_id, chunk)
         return list(chunks_by_id.values())
 
+    def _governance_chunks(self) -> list:
+        dense_source = getattr(self.dense, "chunks", None)
+        sparse_source = getattr(self.sparse, "chunks", None)
+        if dense_source is None or sparse_source is None:
+            raise GovernancePrefilterUnavailableError(
+                "Governance prefilter requires complete corpus metadata"
+            )
+        dense_by_id = self._chunk_map(list(dense_source), "Dense")
+        sparse_by_id = self._chunk_map(list(sparse_source), "Sparse")
+        if dense_by_id.keys() != sparse_by_id.keys():
+            raise GovernancePrefilterUnavailableError(
+                "Dense and sparse governance corpora are incomplete"
+            )
+        for chunk_id in dense_by_id:
+            if dense_by_id[chunk_id] != sparse_by_id[chunk_id]:
+                raise GovernancePrefilterUnavailableError(
+                    "Dense and sparse governance metadata disagree"
+                )
+        return list(dense_by_id.values())
+
+    @staticmethod
+    def _governance_note(chunk) -> GovernanceNote:
+        metadata = chunk.metadata
+        note_id = metadata.get("mindgraph_id") or chunk.document_id
+        required_text = {
+            "note_id": note_id,
+            "source_id": metadata.get("source_id"),
+            "owner": metadata.get("owner"),
+            "policy_key": metadata.get("policy_key"),
+            "document_version": metadata.get("document_version"),
+            "effective_from": metadata.get("effective_from"),
+            "policy_status": metadata.get("policy_status"),
+        }
+        if not all(isinstance(value, str) and value.strip() for value in required_text.values()):
+            raise GovernancePrefilterUnavailableError(
+                "Governance metadata is incomplete"
+            )
+        issues = metadata.get("metadata_issues", ())
+        if not isinstance(issues, (list, tuple)) or not all(
+            isinstance(issue, str) and issue for issue in issues
+        ):
+            raise GovernancePrefilterUnavailableError(
+                "Governance metadata issues are malformed"
+            )
+        acl_json = metadata.get("acl_json")
+        acl_public = metadata.get("acl_public")
+        if not isinstance(acl_json, str) or not isinstance(acl_public, bool):
+            raise GovernancePrefilterUnavailableError(
+                "Governance access metadata is incomplete"
+            )
+        return GovernanceNote(
+            note_id=note_id,
+            source_id=metadata["source_id"],
+            owner=metadata["owner"],
+            policy_key=metadata["policy_key"],
+            document_version=metadata["document_version"],
+            effective_from=metadata["effective_from"],
+            effective_to=metadata.get("effective_to"),
+            policy_status=metadata["policy_status"],
+            metadata_issues=tuple(issues),
+            workspace=metadata.get("workspace"),
+            department=metadata.get("department"),
+            acl_json=acl_json,
+            acl_public=acl_public,
+            content_hash=metadata.get("content_hash") or "",
+        )
+
+    def _governance_prefilter(
+        self,
+        acl_allowed_chunk_ids: set[str] | None,
+        *,
+        query_date: str | None,
+        include_historical: bool,
+    ) -> GovernancePrefilterResult | None:
+        if self.governance_policy is None and self.confirmed_decision_loader is None:
+            return None
+        if self.governance_policy is None or self.confirmed_decision_loader is None:
+            raise GovernancePrefilterUnavailableError(
+                "Governance policy and decision authority are both required"
+            )
+        if include_historical and query_date is None:
+            raise GovernancePrefilterUnavailableError(
+                "Historical governance retrieval requires an explicit query_date"
+            )
+        try:
+            as_of = date.fromisoformat(query_date) if query_date else date.today()
+        except (TypeError, ValueError) as exc:
+            raise GovernancePrefilterUnavailableError(
+                "Governance query_date is invalid"
+            ) from exc
+        mode = GovernanceMode.HISTORICAL if include_historical else GovernanceMode.CURRENT
+        corpus = self._governance_chunks()
+        visible = [
+            chunk
+            for chunk in corpus
+            if acl_allowed_chunk_ids is None or chunk.chunk_id in acl_allowed_chunk_ids
+        ]
+        notes_by_id: dict[str, GovernanceNote] = {}
+        chunks_by_note: dict[str, set[str]] = {}
+        for chunk in visible:
+            note = self._governance_note(chunk)
+            existing = notes_by_id.get(note.note_id)
+            if existing is not None and existing != note:
+                raise GovernancePrefilterUnavailableError(
+                    "Governance metadata disagrees across note chunks"
+                )
+            notes_by_id[note.note_id] = note
+            chunks_by_note.setdefault(note.note_id, set()).add(chunk.chunk_id)
+        try:
+            loaded = self.confirmed_decision_loader(tuple(sorted(notes_by_id)))
+        except Exception as exc:
+            raise GovernancePrefilterUnavailableError(
+                "Confirmed governance decisions are unavailable"
+            ) from exc
+        if not isinstance(loaded, Mapping):
+            raise GovernancePrefilterUnavailableError(
+                "Confirmed governance decisions are malformed"
+            )
+        allowed: set[str] = set()
+        excluded: Counter[str] = Counter()
+        for note_id, note in notes_by_id.items():
+            decisions = loaded.get(note_id, ())
+            if not isinstance(decisions, (list, tuple)):
+                raise GovernancePrefilterUnavailableError(
+                    "Confirmed governance decisions are malformed"
+                )
+            evaluation = self.governance_policy.evaluate(
+                note,
+                as_of=as_of,
+                mode=mode,
+                confirmed_decisions=tuple(decisions),
+            )
+            if evaluation.eligible:
+                allowed.update(chunks_by_note[note_id])
+            else:
+                excluded.update(evaluation.reason_codes or (evaluation.disposition.value,))
+        return GovernancePrefilterResult(
+            frozenset(allowed),
+            len(visible),
+            len(allowed),
+            dict(sorted(excluded.items())),
+            as_of.isoformat(),
+            mode.value,
+        )
+
     def _access_prefilter(self, access_scope: dict | None) -> tuple[set[str] | None, dict, dict | None]:
         chunks = self._loaded_chunks(require_complete_metadata=access_scope is not None)
         corpus_count = len(chunks)
@@ -198,12 +362,30 @@ class RetrievalPipeline:
         trace = RetrievalTrace(query=query, requested_strategy=strategy, actual_strategy=strategy)
         trace.index_version = getattr(self.dense, "metadata", {}).get("index_version")
         allowed_chunk_ids, access_prefilter, normalized_scope = self._access_prefilter(access_scope)
+        governance_prefilter = self._governance_prefilter(
+            allowed_chunk_ids,
+            query_date=query_date,
+            include_historical=include_historical,
+        )
+        if governance_prefilter is not None:
+            governance_ids = set(governance_prefilter.allowed_chunk_ids)
+            allowed_chunk_ids = (
+                governance_ids
+                if allowed_chunk_ids is None
+                else allowed_chunk_ids.intersection(governance_ids)
+            )
+            trace.governance_allowed_chunk_ids = governance_prefilter.allowed_chunk_ids
         trace.applied_filters = {
             "query_date": query_date,
             "knowledge_categories": categories or [],
             "include_historical": include_historical,
             "access_scope": normalized_scope,
             "access_prefilter": access_prefilter,
+            "governance_prefilter": (
+                governance_prefilter.trace_dict()
+                if governance_prefilter is not None
+                else {"reason": "not_configured"}
+            ),
         }
         dense_results, sparse_results = [], []
         empty_corpus = not access_prefilter["corpus_count"]
@@ -248,6 +430,7 @@ class RetrievalPipeline:
         else:
             start = time.perf_counter()
             fused = self.fusion.fuse([dense_results, sparse_results], self.candidate_count)
+            fused = self._prefilter_results(fused, allowed_chunk_ids)
             trace.latency_ms["fusion_ms"] = round((time.perf_counter() - start) * 1000, 3)
             trace.fused_results = fused
             filtered = self._filter_by_access(
@@ -264,6 +447,7 @@ class RetrievalPipeline:
                     start = time.perf_counter()
                     try:
                         reranked = self.reranker.rerank(query, filtered[:self.rerank_top_n], self.final_top_k)
+                        reranked = self._prefilter_results(reranked, allowed_chunk_ids)
                         trace.reranked_results = reranked
                         final = self._filter_by_access(
                             self._filter_and_adjust(reranked, query_date, categories or [], include_historical, trace),

@@ -34,6 +34,25 @@ class RetrievalCandidate:
         return asdict(self)
 
 
+@dataclass(frozen=True, slots=True)
+class GovernancePrefilterResult:
+    allowed_chunk_ids: frozenset[str]
+    corpus_count: int
+    eligible_count: int
+    excluded_reason_counts: dict[str, int]
+    as_of: str
+    mode: str
+
+    def trace_dict(self) -> dict[str, Any]:
+        return {
+            "corpus_count": self.corpus_count,
+            "eligible_count": self.eligible_count,
+            "excluded_reason_counts": dict(self.excluded_reason_counts),
+            "as_of": self.as_of,
+            "mode": self.mode,
+        }
+
+
 @dataclass
 class RetrievalTrace:
     query: str
@@ -56,6 +75,7 @@ class RetrievalTrace:
     route_decision: dict[str, Any] = field(default_factory=dict)
     query_variants: list[str] = field(default_factory=list)
     original_query: str | None = None
+    governance_allowed_chunk_ids: frozenset[str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -81,6 +101,10 @@ class RetrievalTrace:
 
 
 class AccessPrefilterUnavailableError(ValueError):
+    pass
+
+
+class GovernancePrefilterUnavailableError(ValueError):
     pass
 
 

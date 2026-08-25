@@ -47,6 +47,7 @@ class Citation(BaseModel):
     authority_adjustment: float = 0.0
     vault_path: str | None = None
     policy_key: str | None = None
+    equivalent_document_ids: list[str] = Field(default_factory=list)
 
 
 class RetrievalTraceModel(BaseModel):

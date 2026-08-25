@@ -149,8 +149,12 @@ class ChatService:
                 authority_level=metadata.get("authority_level"), knowledge_category=metadata.get("knowledge_category"),
                 authority_adjustment=candidate.authority_adjustment, vault_path=metadata.get("vault_path"),
                 policy_key=metadata.get("policy_key"),
+                equivalent_document_ids=[candidate.chunk.document_id],
             ))
         return citations
+
+    def _governed_refusal(self, trace) -> str | None:
+        return self.policy_conflict_service.governed_refusal(trace.applied_filters)
 
     def _policy_conflicts(self, citations: list[Citation], request: ChatRequest, *, access_scope: dict | None = None) -> list[dict[str, Any]]:
         return self.policy_conflict_service.find_for_policy_keys(
@@ -228,8 +232,13 @@ class ChatService:
             raise RetrievalUnavailableError("Retrieval is unavailable") from exc
         citations = self._citations(trace)
         trace_model = self._trace_model(trace) if request.include_retrieval_trace else None
-        conflicts = self._policy_conflicts(citations, request, access_scope=access_scope)
-        if conflicts:
+        governed_refusal = self._governed_refusal(trace)
+        conflicts = (
+            []
+            if governed_refusal is not None
+            else self._policy_conflicts(citations, request, access_scope=access_scope)
+        )
+        if governed_refusal == "conflicting_evidence" or conflicts:
             conflict_trace = trace_model or self._trace_model(trace)
             conflict_trace.policy_conflicts = conflicts
             result = AnswerResult(
@@ -243,7 +252,7 @@ class ChatService:
             )
             self._persist(result)
             return result
-        if not citations:
+        if governed_refusal == "insufficient_evidence" or not citations:
             result = AnswerResult(
                 request_id=request_id, question=request.question, answer=INSUFFICIENT,
                 result_state=ResultState.insufficient_evidence, citations=[], retrieval_trace=trace_model,
@@ -319,8 +328,13 @@ class ChatService:
         if trace.degraded:
             yield event("degraded", {"reason": trace.degradation_reason, "actual_strategy": trace.actual_strategy})
         citations = self._citations(trace)
-        conflicts = self._policy_conflicts(citations, request, access_scope=access_scope)
-        if conflicts:
+        governed_refusal = self._governed_refusal(trace)
+        conflicts = (
+            []
+            if governed_refusal is not None
+            else self._policy_conflicts(citations, request, access_scope=access_scope)
+        )
+        if governed_refusal == "conflicting_evidence" or conflicts:
             yield event("policy_conflict_detected", {"conflicts": conflicts})
             yield event("answer_delta", {"text": CONFLICTING, "stream_mode": "deterministic"})
             conflict_trace = self._trace_model(trace)
@@ -331,7 +345,7 @@ class ChatService:
                 actual_strategy=trace.actual_strategy, degraded=trace.degraded, degradation_reason=trace.degradation_reason,
                 model=provider.model_name, requested_provider=request.chat_provider or provider.provider_name,
                 actual_provider=provider.provider_name, index_version=trace.index_version)
-        elif not citations:
+        elif governed_refusal == "insufficient_evidence" or not citations:
             yield event("answer_delta", {"text": INSUFFICIENT, "stream_mode": "deterministic"})
             result = AnswerResult(request_id=request_id, question=request.question, answer=INSUFFICIENT,
                 result_state=ResultState.insufficient_evidence, citations=[], retrieval_trace=self._trace_model(trace),

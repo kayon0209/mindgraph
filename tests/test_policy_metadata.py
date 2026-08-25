@@ -399,6 +399,11 @@ def test_graph_expansion_does_not_reintroduce_archived_policy() -> None:
                     "include_historical": include_historical,
                     "access_scope": access_scope,
                 },
+                governance_allowed_chunk_ids=frozenset(
+                    {"active::0", "archived::0"}
+                    if include_historical
+                    else {"active::0"}
+                ),
             )
 
     graph_store = SimpleNamespace(

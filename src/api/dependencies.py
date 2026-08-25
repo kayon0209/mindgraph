@@ -113,7 +113,11 @@ class ServiceContainer:
         key = (top_k, graph_enabled)
         if key not in self._mindgraph_pipelines:
             self._mindgraph_pipelines[key] = create_mindgraph_retrieval_pipeline(
-                self.mindgraph_index_root, self.mindgraph_graph_store, top_k, graph_enabled
+                self.mindgraph_index_root,
+                self.mindgraph_graph_store,
+                self.database,
+                final_top_k=top_k,
+                graph_enabled=graph_enabled,
             )
         return self._mindgraph_pipelines[key]
 
