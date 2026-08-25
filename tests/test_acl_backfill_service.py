@@ -10,8 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from application.acl_backfill_service import AclBackfillService
-from infrastructure import database as database_module
-from infrastructure.database import ProductDatabase
+from infrastructure.database import SOURCE_OWNERSHIP_SCHEMA_VERSION, ProductDatabase
 
 
 def _load_backfill_cli_module():
@@ -389,21 +388,21 @@ def test_initialize_does_not_rewrite_source_id_after_schema8(tmp_path: Path):
     assert db.fetch_one("SELECT source_id FROM notes WHERE note_id='n1'")["source_id"] == "dir-abc"
 
 
-def test_future_schema9_upgrade_does_not_rerun_source_ownership_inference(
+def test_existing_schema8_startup_does_not_rerun_source_ownership_inference(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ):
     database_path = tmp_path / "app.db"
     _seed_schema7_database(database_path, tmp_path / "connector")
     db = ProductDatabase(database_path)
     db.initialize()
     db.execute("UPDATE connector_syncs SET status='failed' WHERE connector_id='dir-abc'")
-    monkeypatch.setattr(database_module, "SCHEMA_VERSION", 9)
 
     db.initialize()
 
     assert db.fetch_one("SELECT source_id FROM notes WHERE note_id='n1'")["source_id"] == "dir-abc"
-    assert db.fetch_one("SELECT version FROM schema_meta") == {"version": 9}
+    assert db.fetch_one("SELECT version FROM schema_meta") == {
+        "version": SOURCE_OWNERSHIP_SCHEMA_VERSION
+    }
 
 
 def test_backfill_unresolved_note_is_private_and_rollback_restores_original_acl(tmp_path: Path):

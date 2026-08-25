@@ -144,6 +144,30 @@ python scripts/backfill_note_acl.py --rollback RUN_ID
 
 The CLI prints aggregate counts and a run ID only; it does not print note bodies, paths or ACL contents. Operation failures return a non-zero exit code with a fixed, redacted JSON error on stderr; argument errors use standard `argparse` usage output. Unresolved source ownership is intentionally backfilled as private and must be reviewed by an operator before any live production change.
 
+## Governance schema migration operations
+
+Governance persistence uses schema 9, but startup never upgrades an existing schema-8 database implicitly. A brand-new database initializes directly at schema 9. An existing schema-8 runtime remains usable for its schema-8 capabilities, while governance persistence must be reported as unavailable until an operator completes the explicit migration.
+
+The migration command reads the configured `DATABASE_PATH`. Every invocation prints exactly one aggregate JSON object to stdout; failures use a fixed redacted error code and a non-zero exit status. Output never includes database paths, note IDs, note content, titles, ACL data, credentials or tracebacks.
+
+```bash
+# 1. Default mode: validate schema 8 through a read-only SQLite connection.
+python scripts/migrate_governance_schema.py
+
+# Equivalent explicit spelling.
+python scripts/migrate_governance_schema.py --dry-run
+
+# 2. After operator review, atomically migrate schema 8 to 9 and retain the run ID.
+python scripts/migrate_governance_schema.py --apply
+
+# 3. Roll back only the exact completed run, before any governance table is used.
+python scripts/migrate_governance_schema.py --rollback RUN_ID
+```
+
+Apply creates four governance business tables plus the retained `schema_migration_runs` audit ledger. `governance_events` is append-only. Rollback returns the logical schema version to 8 and retains the ledger, but refuses if any of `governance_cases`, `governance_case_notes`, `governance_note_state` or `governance_events` contains a row.
+
+During development and test work, never run `--apply` or `--rollback` against `data/product/product.sqlite3`, a real enterprise database or a user database. Migration tests must use disposable temporary SQLite databases. A production migration requires a separate operator change process, backup and review; this repository task does not authorize one.
+
 ## MCP for AI agents
 
 MindGraph exposes a read-only MCP server with five tools:

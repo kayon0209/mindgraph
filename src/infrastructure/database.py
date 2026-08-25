@@ -10,8 +10,156 @@ from typing import Any
 
 logger = logging.getLogger("mindgraph.database")
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 SOURCE_OWNERSHIP_SCHEMA_VERSION = 8
+
+GOVERNANCE_TABLES = (
+    "governance_cases",
+    "governance_case_notes",
+    "governance_note_state",
+    "governance_events",
+)
+GOVERNANCE_SCHEMA_OBJECTS = frozenset(
+    {
+        *GOVERNANCE_TABLES,
+        "schema_migration_runs",
+        "governance_events_no_update",
+        "governance_events_no_delete",
+        "idx_governance_cases_status_policy",
+        "idx_governance_case_notes_note",
+        "idx_governance_events_case",
+        "idx_governance_events_note",
+        "idx_governance_events_policy",
+        "idx_governance_events_created_at",
+        "idx_governance_note_state_disposition",
+    }
+)
+GOVERNANCE_SCHEMA_OBJECT_COUNT = len(GOVERNANCE_SCHEMA_OBJECTS)
+
+_GOVERNANCE_SCHEMA_STATEMENTS = (
+    """
+    CREATE TABLE IF NOT EXISTS governance_cases (
+      case_id TEXT PRIMARY KEY,
+      case_type TEXT NOT NULL,
+      policy_key TEXT,
+      status TEXT NOT NULL CHECK(status IN ('proposed','confirmed','rejected','revoked')),
+      canonical_note_id TEXT,
+      reason_code TEXT NOT NULL,
+      rule_key TEXT NOT NULL,
+      evidence_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      resolved_at TEXT,
+      resolved_by TEXT,
+      request_id TEXT,
+      UNIQUE(case_type, rule_key),
+      FOREIGN KEY(canonical_note_id) REFERENCES notes(note_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS governance_case_notes (
+      case_id TEXT NOT NULL,
+      note_id TEXT NOT NULL,
+      participant_role TEXT NOT NULL
+        CHECK(participant_role IN ('candidate','canonical','alias','superseded')),
+      PRIMARY KEY(case_id, note_id),
+      FOREIGN KEY(case_id) REFERENCES governance_cases(case_id),
+      FOREIGN KEY(note_id) REFERENCES notes(note_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS governance_note_state (
+      note_id TEXT PRIMARY KEY,
+      evaluated_on TEXT NOT NULL,
+      lifecycle_state TEXT NOT NULL
+        CHECK(lifecycle_state IN ('not_yet_effective','current','expired','historical','unresolved')),
+      disposition TEXT NOT NULL
+        CHECK(disposition IN ('eligible','excluded','unresolved','conflict_blocked','duplicate_alias')),
+      reason_codes_json TEXT NOT NULL,
+      decision_fingerprint TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(note_id) REFERENCES notes(note_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS governance_events (
+      event_id TEXT PRIMARY KEY,
+      case_id TEXT,
+      note_id TEXT,
+      policy_key TEXT,
+      actor TEXT NOT NULL,
+      action TEXT NOT NULL
+        CHECK(action IN ('state_changed','proposed','confirmed','rejected','revoked')),
+      previous_state_json TEXT NOT NULL,
+      new_state_json TEXT NOT NULL,
+      reason_code TEXT NOT NULL,
+      evidence_ids_json TEXT NOT NULL,
+      source TEXT NOT NULL
+        CHECK(source IN ('ingestion_rule','lifecycle_rule','human_review')),
+      request_id TEXT,
+      created_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS schema_migration_runs (
+      run_id TEXT PRIMARY KEY,
+      migration_name TEXT NOT NULL,
+      previous_version INTEGER NOT NULL,
+      target_version INTEGER NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('completed','rolled_back')),
+      object_count INTEGER NOT NULL,
+      started_at TEXT NOT NULL,
+      completed_at TEXT NOT NULL,
+      rolled_back_at TEXT
+    )
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS governance_events_no_update
+    BEFORE UPDATE ON governance_events BEGIN
+      SELECT RAISE(ABORT, 'governance_events are append-only');
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS governance_events_no_delete
+    BEFORE DELETE ON governance_events BEGIN
+      SELECT RAISE(ABORT, 'governance_events are append-only');
+    END
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_governance_cases_status_policy
+    ON governance_cases(status, policy_key)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_governance_case_notes_note
+    ON governance_case_notes(note_id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_governance_events_case
+    ON governance_events(case_id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_governance_events_note
+    ON governance_events(note_id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_governance_events_policy
+    ON governance_events(policy_key)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_governance_events_created_at
+    ON governance_events(created_at)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_governance_note_state_disposition
+    ON governance_note_state(disposition)
+    """,
+)
+
+
+def _create_governance_schema(connection: sqlite3.Connection) -> None:
+    """Create schema-9 governance objects without committing the caller's transaction."""
+    for statement in _GOVERNANCE_SCHEMA_STATEMENTS:
+        connection.execute(statement)
 
 
 class ProductDatabase:
@@ -86,6 +234,17 @@ class ProductDatabase:
 
     def initialize(self) -> None:
         with self.connect() as connection:
+            schema_meta_existed = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'"
+            ).fetchone() is not None
+            initial_schema_row = (
+                connection.execute("SELECT version FROM schema_meta LIMIT 1").fetchone()
+                if schema_meta_existed
+                else None
+            )
+            initial_schema_version = (
+                int(initial_schema_row[0]) if initial_schema_row is not None else None
+            )
             connection.executescript("""
                 CREATE TABLE IF NOT EXISTS schema_meta (version INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS query_logs (
@@ -262,12 +421,9 @@ class ProductDatabase:
                 CREATE INDEX IF NOT EXISTS idx_acl_backfill_items_note
                     ON acl_backfill_items(note_id);
             """)
-            schema_row = connection.execute(
-                "SELECT version FROM schema_meta LIMIT 1"
-            ).fetchone()
             migrate_source_ownership = (
-                schema_row is None
-                or schema_row[0] < SOURCE_OWNERSHIP_SCHEMA_VERSION
+                initial_schema_version is None
+                or initial_schema_version < SOURCE_OWNERSHIP_SCHEMA_VERSION
             )
             self._ensure_columns(connection, "query_logs", {
                 "index_version": "TEXT", "prompt_version": "TEXT",
@@ -334,10 +490,21 @@ class ProductDatabase:
                     )
                     """
                 )
-            if schema_row is None:
+            if not schema_meta_existed:
+                _create_governance_schema(connection)
                 connection.execute("INSERT INTO schema_meta(version) VALUES (?)", (SCHEMA_VERSION,))
-            elif schema_row[0] < SCHEMA_VERSION:
-                connection.execute("UPDATE schema_meta SET version=?", (SCHEMA_VERSION,))
+            elif initial_schema_version == SCHEMA_VERSION:
+                _create_governance_schema(connection)
+            elif initial_schema_row is None:
+                connection.execute(
+                    "INSERT INTO schema_meta(version) VALUES (?)",
+                    (SOURCE_OWNERSHIP_SCHEMA_VERSION,),
+                )
+            elif initial_schema_version < SOURCE_OWNERSHIP_SCHEMA_VERSION:
+                connection.execute(
+                    "UPDATE schema_meta SET version=?",
+                    (SOURCE_OWNERSHIP_SCHEMA_VERSION,),
+                )
 
     @staticmethod
     def _ensure_columns(connection: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:

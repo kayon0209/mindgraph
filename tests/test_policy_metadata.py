@@ -12,7 +12,7 @@ from application.chat_service import ChatService
 from application.governance_policy import normalize_policy_metadata
 from application.mindgraph_index_service import MindGraphIndexService
 from application.vault_sync_service import VaultSyncService
-from infrastructure.database import SCHEMA_VERSION, ProductDatabase
+from infrastructure.database import SOURCE_OWNERSHIP_SCHEMA_VERSION, ProductDatabase
 from retrieval.mindgraph_pipeline import MindGraphRetrievalPipeline
 from retrieval.types import Chunk, RetrievalCandidate, RetrievalTrace
 
@@ -116,7 +116,7 @@ def test_initialize_migrates_existing_notes_without_losing_rows(tmp_path: Path) 
         "metadata_issues_json": "[]",
     }
     assert database.fetch_one("SELECT version FROM schema_meta") == {
-        "version": SCHEMA_VERSION
+        "version": SOURCE_OWNERSHIP_SCHEMA_VERSION
     }
     with database.connect() as connection:
         indexes = {item[1] for item in connection.execute("PRAGMA index_list(notes)")}
