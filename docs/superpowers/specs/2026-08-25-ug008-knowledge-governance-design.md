@@ -375,9 +375,9 @@ Governance failure does not roll back a correct source sync, but it blocks new i
 
 ### 10.2 Reconciliation
 
-For each affected note, reconciliation calculates a canonical JSON decision fingerprint from normalized source metadata, `as_of`, and confirmed decisions.
+For each affected note, reconciliation calculates a canonical JSON decision fingerprint from normalized source metadata, confirmed decisions, and the derived evaluation result. The raw `as_of` date is stored in `evaluated_on` and the retrieval trace, but it is not itself part of the fingerprint; otherwise every calendar day would create a false state change even when lifecycle/disposition did not change.
 
-When the fingerprint is unchanged, no projection write and no event occur. When it changes, one transaction:
+When both fingerprint and evaluation output are unchanged, reconciliation may refresh `evaluated_on` without appending an event or scheduling a rebuild. When the fingerprint or evaluation output changes, one transaction:
 
 1. updates the note-state projection;
 2. creates or updates idempotent cases;
