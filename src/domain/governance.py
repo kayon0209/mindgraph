@@ -1,6 +1,7 @@
 """Pure, immutable governance contracts for knowledge policy evaluation."""
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
 from enum import StrEnum
@@ -94,3 +95,51 @@ class ReconciliationResult:
     cases_created: int
     events_appended: int
     evaluated_on: date
+
+
+@dataclass(frozen=True, slots=True)
+class GovernanceCapabilities:
+    can_resolve: bool
+    can_revoke: bool
+
+
+@dataclass(frozen=True, slots=True)
+class GovernanceParticipantView:
+    note_id: str
+    participant_role: str
+    document_version: str | None
+    effective_from: str | None
+    effective_to: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class GovernanceCaseView:
+    case_id: str
+    case_type: str
+    policy_key: str | None
+    status: str
+    canonical_note_id: str | None
+    reason_code: str
+    evidence_ids: tuple[str, ...]
+    participants: tuple[GovernanceParticipantView, ...]
+    created_at: str
+    updated_at: str
+    resolved_at: str | None
+    capabilities: GovernanceCapabilities
+
+
+@dataclass(frozen=True, slots=True)
+class GovernanceEventView:
+    event_id: str
+    case_id: str | None
+    note_id: str | None
+    policy_key: str | None
+    actor: str
+    action: str
+    previous_state: Mapping[str, str | int | float | bool | None]
+    new_state: Mapping[str, str | int | float | bool | None]
+    reason_code: str
+    evidence_ids: tuple[str, ...]
+    source: str
+    request_id: str | None
+    created_at: str
