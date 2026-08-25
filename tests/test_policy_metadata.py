@@ -1,6 +1,7 @@
+from datetime import date
 import json
-import sqlite3
 from pathlib import Path
+import sqlite3
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
@@ -8,11 +9,64 @@ from fastapi.testclient import TestClient
 from api.dependencies import override_container
 from api.main import app
 from application.chat_service import ChatService
+from application.governance_policy import normalize_policy_metadata
 from application.mindgraph_index_service import MindGraphIndexService
 from application.vault_sync_service import VaultSyncService
-from infrastructure.database import ProductDatabase
+from infrastructure.database import SOURCE_OWNERSHIP_SCHEMA_VERSION, ProductDatabase
 from retrieval.mindgraph_pipeline import MindGraphRetrievalPipeline
 from retrieval.types import Chunk, RetrievalCandidate, RetrievalTrace
+
+
+def test_policy_metadata_normalizer_validates_dates_without_lexicographic_comparison() -> None:
+    """Catches malformed dates being accepted because their strings sort in range order."""
+    normalized = normalize_policy_metadata(
+        {
+            "owner": "Finance",
+            "policy_key": "expense.general",
+            "version": "2.0",
+            "effective_from": "2026-2-30",
+            "effective_to": "2026-12-31",
+            "status": "active",
+        }
+    )
+
+    assert normalized.effective_from == "2026-2-30"
+    assert normalized.issues == ("invalid_effective_date",)
+
+
+def test_policy_metadata_normalizer_returns_immutable_quality_issues() -> None:
+    """Catches source metadata errors being mutable or leaving non-string values unnormalized."""
+    normalized = normalize_policy_metadata(
+        {
+            "owner": " Finance ",
+            "policy_key": "expense.general",
+            "version": 2,
+            "effective_from": date(2026, 1, 1),
+            "status": "unknown",
+        }
+    )
+
+    assert normalized.owner == "Finance"
+    assert normalized.document_version == "2"
+    assert normalized.effective_from == "2026-01-01"
+    assert normalized.policy_status == "unspecified"
+    assert normalized.issues == ("invalid_policy_status",)
+
+
+def test_policy_metadata_normalizer_accepts_explicit_unspecified_status() -> None:
+    """Catches an explicit normalized lifecycle status being recorded as invalid source metadata."""
+    normalized = normalize_policy_metadata(
+        {
+            "owner": "Finance",
+            "policy_key": "expense.general",
+            "version": "2.0",
+            "effective_from": "2026-01-01",
+            "status": "unspecified",
+        }
+    )
+
+    assert normalized.policy_status == "unspecified"
+    assert normalized.issues == ()
 
 
 def test_initialize_migrates_existing_notes_without_losing_rows(tmp_path: Path) -> None:
@@ -61,7 +115,9 @@ def test_initialize_migrates_existing_notes_without_losing_rows(tmp_path: Path) 
         "policy_status": "unspecified",
         "metadata_issues_json": "[]",
     }
-    assert database.fetch_one("SELECT version FROM schema_meta") == {"version": 7}
+    assert database.fetch_one("SELECT version FROM schema_meta") == {
+        "version": SOURCE_OWNERSHIP_SCHEMA_VERSION
+    }
     with database.connect() as connection:
         indexes = {item[1] for item in connection.execute("PRAGMA index_list(notes)")}
     assert "idx_notes_policy_lifecycle" in indexes
@@ -73,15 +129,9 @@ def test_initialize_migrates_existing_notes_without_losing_rows(tmp_path: Path) 
     override_container(SimpleNamespace(database=database, mindgraph_graph_store=graph_store))
     client = TestClient(app, raise_server_exceptions=False)
     try:
-        governance = client.get("/api/v1/mindgraph/notes/note-1").json()["governance"]
-        assert governance["metadata_complete"] is False
-        assert governance["issues"] == [
-            "missing_owner",
-            "missing_policy_key",
-            "missing_version",
-            "missing_effective_from",
-            "missing_policy_status",
-        ]
+        response = client.get("/api/v1/mindgraph/notes/note-1")
+        assert response.status_code == 503
+        assert response.json()["error"]["code"] == "governance_unavailable"
     finally:
         client.close()
         override_container(None)
@@ -257,6 +307,10 @@ effective_from: 2026-09-01
             "policy_status": "active",
             "metadata_complete": True,
             "issues": [],
+            "evaluated_on": date.today().isoformat(),
+            "lifecycle_state": "current",
+            "disposition": "eligible",
+            "reason_codes": ["eligible_current_version"],
         }
         detail = client.get("/api/v1/mindgraph/notes/active-note")
         assert detail.status_code == 200
@@ -343,6 +397,11 @@ def test_graph_expansion_does_not_reintroduce_archived_policy() -> None:
                     "include_historical": include_historical,
                     "access_scope": access_scope,
                 },
+                governance_allowed_chunk_ids=frozenset(
+                    {"active::0", "archived::0"}
+                    if include_historical
+                    else {"active::0"}
+                ),
             )
 
     graph_store = SimpleNamespace(

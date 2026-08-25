@@ -21,22 +21,25 @@
 from __future__ import annotations
 
 import argparse
+from datetime import date
 import json
-import sys
 from pathlib import Path
+import sys
 
 ROOT = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(ROOT))
 
-from config import ROOT as PROJECT_ROOT  # noqa: E402
-
 from application.mindgraph_index_service import MindGraphIndexService  # noqa: E402
 from application.mindgraph_sync_watcher import MindGraphSyncWatcher  # noqa: E402
-from application.vault_sync_service import VaultSyncService, DEFAULT_IGNORE_DIRS  # noqa: E402
+from application.vault_sync_service import DEFAULT_IGNORE_DIRS, VaultSyncService  # noqa: E402
+from config import ROOT as PROJECT_ROOT  # noqa: E402
 from infrastructure.database import ProductDatabase  # noqa: E402
 
 
 def main() -> None:
+    from application.governance_policy import GovernancePolicy
+    from application.governance_reconciliation_service import GovernanceReconciliationService
+
     ap = argparse.ArgumentParser(description="MindGraph 增量同步（扫描 + 索引构建）")
     ap.add_argument("--vault", required=True, help="Obsidian Vault 根目录")
     ap.add_argument("--watch", action="store_true", help="持续监听模式（Ctrl+C 退出）")
@@ -75,11 +78,18 @@ def main() -> None:
         print("[reset] 已清空 notes / note_relations，将重新扫描 Vault 并注入 mindgraph_id")
 
     scan = VaultSyncService(db, Path(args.vault), ignore_dirs=ignore_dirs)
-    index = MindGraphIndexService(db, Path(args.vault), Path(args.index_root))
-    watcher = MindGraphSyncWatcher(scan, index, poll_interval=args.poll)
+    reconciler = GovernanceReconciliationService(db, GovernancePolicy())
+    index = MindGraphIndexService(
+        db, Path(args.vault), Path(args.index_root), governance_reconciler=reconciler
+    )
+    watcher = MindGraphSyncWatcher(
+        scan, index, poll_interval=args.poll, governance_reconciler=reconciler
+    )
 
     if args.scan_only:
         result = scan.scan_vault()
+        if not result.errors:
+            reconciler.reconcile(as_of=date.today())
         print(json.dumps({
             "scanned": len(result.scanned),
             "skipped": len(result.skipped),

@@ -1,13 +1,16 @@
-import tempfile
-import unittest
 from pathlib import Path
+import tempfile
+from types import SimpleNamespace
+import unittest
+from unittest.mock import patch
 
+from infrastructure.retrieval_factory import _EmptyDenseRetriever
 from retrieval.dense import FAISSDenseRetriever, IncompatibleIndexError
 from retrieval.fusion import ReciprocalRankFusion
+from retrieval.legacy import LegacySQLiteRetriever
 from retrieval.pipeline import RetrievalPipeline
 from retrieval.sparse import BM25Retriever, tokenize_zh
 from retrieval.types import Chunk, RetrievalCandidate
-
 
 CHUNKS = [
     Chunk("policy.md::0", "差旅费报销时限为十个工作日", "policy.md", 0, "时限"),
@@ -44,6 +47,8 @@ class RetrievalTests(unittest.TestCase):
         retriever = BM25Retriever(CHUNKS)
         results, _ = retriever.search("电子发票", 1)
         self.assertEqual(results[0].chunk.chunk_id, "materials.md::0")
+        allowed, _ = retriever.search("报销", 1, allowed_chunk_ids={"policy.md::0"})
+        self.assertEqual([item.chunk.chunk_id for item in allowed], ["policy.md::0"])
         self.assertEqual(retriever.search("", 5)[0], [])
         self.assertLessEqual(len(retriever.search("报销", 2)[0]), 2)
 
@@ -69,6 +74,8 @@ class RetrievalTests(unittest.TestCase):
             results, _ = loaded.search("时限", 2)
             self.assertEqual(results[0].chunk.chunk_id, "policy.md::0")
             self.assertEqual(len(results), 2)
+            allowed, _ = loaded.search("时限", 2, allowed_chunk_ids={"policy.md::1"})
+            self.assertEqual([item.chunk.chunk_id for item in allowed], ["policy.md::1"])
             self.assertEqual(loaded.search("", 5)[0], [])
             self.assertEqual(loaded.metadata["vector_dimension"], 3)
 
@@ -96,6 +103,80 @@ class RetrievalTests(unittest.TestCase):
         self.assertTrue(trace.degraded)
         self.assertEqual(trace.actual_strategy, "hybrid")
         self.assertIn("unavailable", trace.degradation_reason)
+
+    def test_legacy_adapter_rejects_scoped_search_before_global_retrieval(self):
+        sources = [
+            SimpleNamespace(
+                source="private.md",
+                chunk_index=0,
+                text="private",
+                section_path=None,
+                distance=0.1,
+            ),
+            SimpleNamespace(
+                source="allowed.md",
+                chunk_index=0,
+                text="allowed",
+                section_path=None,
+                distance=0.2,
+            ),
+        ]
+        retriever = LegacySQLiteRetriever()
+
+        with (
+            patch("retrieval.legacy.retrieve", return_value=sources) as global_search,
+            self.assertRaisesRegex(ValueError, "complete corpus metadata"),
+        ):
+            retriever.search(
+                "policy",
+                2,
+                allowed_chunk_ids={"allowed.md::0"},
+            )
+
+        global_search.assert_not_called()
+        self.assertIsNone(retriever.chunks)
+
+    def test_pipeline_rejects_scoped_legacy_crowding_before_global_retrieval(self):
+        private_sources = [
+            SimpleNamespace(
+                source=f"private-{index}.md",
+                chunk_index=0,
+                text="private-secret-body",
+                section_path=None,
+                distance=0.01,
+            )
+            for index in range(20)
+        ]
+        allowed = SimpleNamespace(
+            source="allowed.md",
+            chunk_index=0,
+            text="allowed-low-score",
+            section_path=None,
+            distance=0.9,
+        )
+        legacy = LegacySQLiteRetriever()
+        sparse = BM25Retriever([])
+        pipeline = RetrievalPipeline(legacy, sparse, ReciprocalRankFusion())
+
+        with (
+            patch(
+                "retrieval.legacy.retrieve",
+                return_value=[*private_sources, allowed],
+            ) as global_search,
+            self.assertRaisesRegex(ValueError, "complete corpus metadata"),
+        ):
+            pipeline.retrieve("policy", "hybrid", access_scope={})
+
+        global_search.assert_not_called()
+
+    def test_empty_dense_adapter_accepts_scoped_search(self):
+        retriever = _EmptyDenseRetriever()
+
+        results, timings = retriever.search("policy", 5, allowed_chunk_ids=set())
+
+        self.assertEqual(results, [])
+        self.assertEqual(timings, {})
+        self.assertEqual(retriever.chunks, [])
 
 
 if __name__ == "__main__":

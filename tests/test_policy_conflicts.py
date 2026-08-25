@@ -153,6 +153,32 @@ def test_conflict_detection_respects_date_history_and_missing_policy_keys(tmp_pa
     assert service.find_for_policy_keys(set(), as_of="2026-08-18", include_historical=False) == []
 
 
+def test_explicit_empty_scope_does_not_expose_private_conflict_participants(
+    tmp_path: Path,
+) -> None:
+    database = ProductDatabase(tmp_path / "product.sqlite3")
+    database.initialize()
+    for note_id, version in (("private-v1", "1.0"), ("private-v2", "2.0")):
+        _insert_note(
+            database,
+            note_id,
+            policy_key="expense.private",
+            version=version,
+            status="active",
+            effective_from="2026-01-01",
+            effective_to=None,
+        )
+
+    conflicts = PolicyConflictService(database).find_for_policy_keys(
+        {"expense.private"},
+        as_of="2026-08-25",
+        include_historical=False,
+        access_scope={},
+    )
+
+    assert conflicts == []
+
+
 class _Provider:
     available = True
     model_name = "test-model"

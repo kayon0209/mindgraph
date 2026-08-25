@@ -1,4 +1,6 @@
 from pathlib import Path
+import subprocess
+import sys
 
 from application.mindgraph_index_service import MindGraphIndexService
 from application.vault_sync_service import VaultSyncService
@@ -33,3 +35,24 @@ def test_excluded_vault_note_is_not_added_to_index(tmp_path: Path) -> None:
     chunks = service._all_chunks()
 
     assert {chunk.metadata["title"] for chunk in chunks} == {"公开制度"}
+
+
+def test_offline_validator_uses_governed_production_factory() -> None:
+    root = Path(__file__).resolve().parent.parent
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(root / "scripts" / "validate_mindgraph_offline.py"),
+            "--vault",
+            str(root / "demo-vault"),
+        ],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "[PASS]" in completed.stdout

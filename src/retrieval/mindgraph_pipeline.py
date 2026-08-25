@@ -13,7 +13,6 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import date
 from typing import Any
 
 from .pipeline import RetrievalPipeline
@@ -120,7 +119,6 @@ class MindGraphRetrievalPipeline:
                 "relation_type": rel.get("relation_type"),
                 "target_note_id": target_id,
                 "target_title": titles.get(target_id, target_id),
-                "evidence_chunk_id": rel.get("evidence_chunk_id"),
                 "confidence": rel.get("confidence", 0.0),
             })
 
@@ -136,22 +134,16 @@ class MindGraphRetrievalPipeline:
     def _visible_for_trace(self, chunk, trace: RetrievalTrace) -> bool:
         filters = trace.applied_filters
         metadata = chunk.metadata
-        status = metadata.get("document_status") or metadata.get("policy_status")
-        if not filters.get("include_historical", False) and status and status != "active":
+        governed = trace.governance_allowed_chunk_ids
+        if governed is None or chunk.chunk_id not in governed:
             return False
         categories = filters.get("knowledge_categories") or []
         if categories and metadata.get("knowledge_category") not in categories:
             return False
-        target_date = date.fromisoformat(filters["query_date"]) if filters.get("query_date") else date.today()
-        effective = metadata.get("effective_date") or metadata.get("effective_from")
-        expiration = metadata.get("expiration_date") or metadata.get("effective_to")
-        if effective and date.fromisoformat(effective) > target_date:
-            return False
-        if expiration and date.fromisoformat(expiration) < target_date and not filters.get("include_historical", False):
-            return False
         access_scope = filters.get("access_scope")
-        if access_scope:
+        if access_scope is not None:
             from application.access_control import chunk_acl_matches
-            if not chunk_acl_matches(metadata, access_scope):
+            scope = self.base._normalized_access_scope(access_scope)
+            if not chunk_acl_matches(metadata, scope):
                 return False
         return True

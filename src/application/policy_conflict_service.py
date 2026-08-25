@@ -16,6 +16,29 @@ class PolicyConflictService:
     def __init__(self, database: ProductDatabase) -> None:
         self.database = database
 
+    @staticmethod
+    def governed_refusal(applied_filters: dict[str, Any]) -> str | None:
+        """Return an aggregate-only refusal without exposing governed participants."""
+        prefilter = applied_filters.get("governance_prefilter")
+        if not isinstance(prefilter, dict):
+            return None
+        reasons = prefilter.get("excluded_reason_counts")
+        if not isinstance(reasons, dict):
+            return None
+        if any(
+            reason in reasons
+            for reason in (
+                "overlapping_effective_intervals",
+                "same_version_different_checksum",
+                "conflicting_confirmed_decisions",
+                "corrupt_confirmed_governance_case",
+            )
+        ):
+            return "conflicting_evidence"
+        if prefilter.get("eligible_count") == 0:
+            return "insufficient_evidence"
+        return None
+
     def find_for_policy_keys(
         self,
         policy_keys: set[str],
@@ -43,9 +66,17 @@ class PolicyConflictService:
                 ORDER BY policy_key, effective_from, document_version, note_id""",
             (*keys, *statuses, target_date, target_date),
         )
-        if access_scope:
+        if access_scope is not None:
             from application.access_control import note_acl_matches
-            rows = [row for row in rows if note_acl_matches(row, access_scope)]
+
+            normalized_scope = {
+                **access_scope,
+                "allow": list(access_scope.get("allow") or []),
+                "deny": list(access_scope.get("deny") or []),
+                "roles": list(access_scope.get("roles") or []),
+                "_explicit_scope": True,
+            }
+            rows = [row for row in rows if note_acl_matches(row, normalized_scope)]
         grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for row in rows:
             grouped[row["policy_key"]].append(

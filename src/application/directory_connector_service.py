@@ -13,13 +13,15 @@
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 import hashlib
 import json
 import logging
 from pathlib import Path
+import re
 from typing import Any
 
+from application.governance_reconciliation_service import GovernanceReconciliationService
 from application.vault_sync_service import VaultSyncService
 from infrastructure.database import ProductDatabase
 
@@ -27,6 +29,7 @@ logger = logging.getLogger("mindgraph.connectors.directory")
 
 CONNECTOR_TYPE = "markdown_directory"
 SUPPORTED_SUFFIXES = {".md", ".markdown"}
+CONNECTOR_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 
 
 def _utc_iso() -> str:
@@ -59,15 +62,27 @@ class DirectoryConnectorService:
         database: ProductDatabase,
         vault_root: Path,
         index_service: Any | None = None,
-        vault_sync: VaultSyncService | None = None,
         allowed_roots: tuple[Path, ...] | None = None,
+        governance_reconciler: GovernanceReconciliationService | None = None,
     ) -> None:
         self.database = database
         self.vault_root = Path(vault_root)
         self.index_service = index_service
-        self._vault_sync = vault_sync
+        self.governance_reconciler = governance_reconciler
         configured_roots = allowed_roots if allowed_roots is not None else (self.vault_root,)
         self.allowed_roots = tuple(Path(root).resolve() for root in configured_roots)
+
+    @staticmethod
+    def _validate_connector_id(connector_id: str) -> str:
+        if (
+            not isinstance(connector_id, str)
+            or connector_id.casefold() == "builtin"
+            or CONNECTOR_ID_PATTERN.fullmatch(connector_id) is None
+        ):
+            raise ValueError(
+                "connector_id must be one safe ASCII path segment and cannot be 'builtin'"
+            )
+        return connector_id
 
     def _validate_source(self, source_path: Path) -> Path:
         if not source_path.exists() or not source_path.is_dir():
@@ -79,14 +94,13 @@ class DirectoryConnectorService:
 
     def _sync_service(self, source_path: Path, connector_id: str) -> VaultSyncService:
         """为指定源目录构建只读 VaultSyncService。"""
-        if self._vault_sync is not None:
-            return self._vault_sync
         return VaultSyncService(
             self.database,
             source_path,
             write_ids=False,
             path_prefix=connector_id,
             id_namespace=str(source_path),
+            source_id=connector_id,
         )
 
     def _load_root_acl_map(self, source_path: Path) -> dict[str, dict[str, Any]]:
@@ -146,7 +160,9 @@ class DirectoryConnectorService:
         """
         source = self._validate_source(Path(source_path))
 
-        connector_id = connector_id or f"dir-{hashlib.sha256(str(source).casefold().encode()).hexdigest()[:12]}"
+        if connector_id is None:
+            connector_id = f"dir-{hashlib.sha256(str(source).casefold().encode()).hexdigest()[:12]}"
+        connector_id = self._validate_connector_id(connector_id)
         started_at = _utc_iso()
         root_acl_map = self._load_root_acl_map(source)
 
@@ -165,12 +181,17 @@ class DirectoryConnectorService:
                 for row in self.database.fetch_all("SELECT note_id FROM notes")
             }
             sync = self._sync_service(source, connector_id)
-            # Generic VaultSync pruning is global because the current notes
-            # schema has no source_id.  Disable it for connectors until the
-            # source-ownership migration is explicitly performed.
-            result = sync.scan_vault(prune_missing=False)
+            result = sync.scan_vault(prune_missing=True)
             file_count = len(result.scanned)
             pruned = result.pruned
+
+            if result.errors:
+                return self._failed_result(
+                    connector_id,
+                    file_count=file_count,
+                    pruned=pruned,
+                    errors=result.errors,
+                )
 
             added = 0
             updated = 0
@@ -191,6 +212,18 @@ class DirectoryConnectorService:
                 connector_id,
             )
 
+            sync_date = date.today()
+            if self.governance_reconciler is not None:
+                try:
+                    self.governance_reconciler.reconcile(as_of=sync_date)
+                except Exception as exc:
+                    return self._failed_result(
+                        connector_id,
+                        file_count=file_count,
+                        pruned=pruned,
+                        errors=[f"governance: {exc}"],
+                    )
+
             metadata = {
                 "scanned": file_count,
                 "skipped": len(result.skipped),
@@ -205,7 +238,14 @@ class DirectoryConnectorService:
 
             index_version = None
             if trigger_index and self.index_service is not None:
-                manifest = self.index_service.build(force=pruned > 0)
+                if self.governance_reconciler is None:
+                    manifest = self.index_service.build(force=pruned > 0)
+                else:
+                    manifest = self.index_service.build(
+                        force=pruned > 0,
+                        build_date=sync_date,
+                        governance_reconciled_as_of=sync_date,
+                    )
                 index_version = manifest.get("index_version") if isinstance(manifest, dict) else None
 
             return {
@@ -225,6 +265,31 @@ class DirectoryConnectorService:
             )
             logger.exception("directory_connector_sync_failed", extra={"connector_id": connector_id, "source": str(source)})
             raise
+
+    def _failed_result(
+        self,
+        connector_id: str,
+        *,
+        file_count: int,
+        pruned: int,
+        errors: list[str],
+    ) -> dict[str, Any]:
+        error = "; ".join(errors)[:500]
+        self.database.execute(
+            "UPDATE connector_syncs SET status='failed', file_count=?, pruned=?, error=?, finished_at=? "
+            "WHERE connector_id=?",
+            (file_count, pruned, error, _utc_iso(), connector_id),
+        )
+        return {
+            "connector_id": connector_id,
+            "status": "failed",
+            "file_count": file_count,
+            "added": 0,
+            "updated": 0,
+            "pruned": pruned,
+            "errors": errors,
+            "index_version": None,
+        }
 
     def _apply_connector_acl(
         self,

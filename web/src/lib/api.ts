@@ -3,6 +3,8 @@ import type {
   ChatRequest,
   ConfirmedRelationsResponse,
   EvaluationResponse,
+  GovernanceCase,
+  GovernanceEvent,
   HealthStatus,
   NoteDetail,
   NoteItem,
@@ -16,6 +18,8 @@ export class ApiError extends Error {
   constructor(
     message: string,
     public readonly status: number,
+    public readonly code?: string,
+    public readonly requestId?: string,
   ) {
     super(message);
     this.name = "ApiError";
@@ -32,13 +36,21 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!response.ok) {
     let detail = response.statusText;
+    let code: string | undefined;
+    let requestId: string | undefined;
     try {
-      const body = (await response.json()) as { detail?: string; message?: string };
-      detail = body.detail || body.message || detail;
+      const body = (await response.json()) as {
+        detail?: string;
+        message?: string;
+        error?: { code?: string; message?: string; request_id?: string };
+      };
+      detail = body.error?.message || body.detail || body.message || detail;
+      code = body.error?.code;
+      requestId = body.error?.request_id;
     } catch {
       // Keep the HTTP status text when the body is not JSON.
     }
-    throw new ApiError(detail || `HTTP ${response.status}`, response.status);
+    throw new ApiError(detail || `HTTP ${response.status}`, response.status, code, requestId);
   }
   return response.json() as Promise<T>;
 }
@@ -104,6 +116,32 @@ export const api = {
   evaluations: () => request<EvaluationResponse>("/mindgraph/evaluation/ablation"),
   proposedRelations: () => request<ProposedRelationsResponse>("/mindgraph/relations/proposed"),
   confirmedRelations: () => request<ConfirmedRelationsResponse>("/mindgraph/relations/confirmed"),
+  governanceCases: (status?: GovernanceCase["status"]) =>
+    request<{ total: number; items: GovernanceCase[] }>(
+      `/knowledge-governance/cases${status ? `?status=${encodeURIComponent(status)}` : ""}`,
+    ),
+  governanceEvents: (caseId?: string) =>
+    request<{ total: number; items: GovernanceEvent[] }>(
+      `/knowledge-governance/events${caseId ? `?case_id=${encodeURIComponent(caseId)}` : ""}`,
+    ),
+  resolveGovernanceCase: (
+    id: string,
+    expectedStatus: "proposed",
+    decision: "confirm" | "reject",
+    canonicalNoteId?: string,
+  ) => request<GovernanceCase>(`/knowledge-governance/cases/${encodeURIComponent(id)}/resolve`, {
+    method: "POST",
+    body: JSON.stringify({
+      expected_status: expectedStatus,
+      decision,
+      ...(canonicalNoteId ? { canonical_note_id: canonicalNoteId } : {}),
+    }),
+  }),
+  revokeGovernanceCase: (id: string, expectedStatus: "confirmed" | "rejected") =>
+    request<GovernanceCase>(`/knowledge-governance/cases/${encodeURIComponent(id)}/revoke`, {
+      method: "POST",
+      body: JSON.stringify({ expected_status: expectedStatus }),
+    }),
   resolveRelation: (id: string, decision: "confirm" | "reject") =>
     request<{ ok: boolean; status: string }>(`/mindgraph/relations/${encodeURIComponent(id)}/resolve`, {
       method: "POST",

@@ -1,0 +1,371 @@
+from __future__ import annotations
+
+from pathlib import Path
+import sqlite3
+import threading
+
+import pytest
+
+from application.directory_connector_service import DirectoryConnectorService
+from application.mindgraph_index_service import MindGraphIndexService
+from application.vault_sync_service import VaultSyncService
+from infrastructure.database import ProductDatabase
+
+
+def _make_note_source(root: Path, name: str, notes: dict[str, str]) -> Path:
+    source = root / name
+    source.mkdir()
+    for filename, note_id in notes.items():
+        (source / filename).write_text(
+            f"---\nmindgraph_id: {note_id}\n---\n# {name}\n{name} policy text.\n",
+            encoding="utf-8",
+        )
+    return source
+
+
+def _note_ids(database: ProductDatabase, source_id: str) -> set[str]:
+    return {
+        row["note_id"]
+        for row in database.fetch_all(
+            "SELECT note_id FROM notes WHERE source_id=?", (source_id,)
+        )
+    }
+
+
+def _insert_note(
+    database: ProductDatabase,
+    note_id: str,
+    vault_path: str,
+    source_id: str,
+) -> None:
+    database.execute(
+        "INSERT INTO notes "
+        "(note_id, vault_path, source_id, title, content_hash, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, 'hash', '2026-08-25T00:00:00Z', '2026-08-25T00:00:00Z')",
+        (note_id, vault_path, source_id, note_id),
+    )
+
+
+def test_connector_prune_deletes_only_notes_owned_by_same_connector(
+    tmp_path: Path,
+) -> None:
+    database = ProductDatabase(tmp_path / "product.sqlite3")
+    database.initialize()
+    builtin = _make_note_source(tmp_path, "builtin", {"policy.md": "local1"})
+    source_a = _make_note_source(tmp_path, "source-a", {"policy.md": "a1"})
+    source_b = _make_note_source(tmp_path, "source-b", {"policy.md": "b1"})
+    VaultSyncService(database, builtin, write_ids=False).scan_vault()
+    connector = DirectoryConnectorService(
+        database,
+        tmp_path,
+        index_service=None,
+        allowed_roots=(tmp_path,),
+    )
+    connector.sync(source_a, connector_id="connector-a")
+    connector.sync(source_b, connector_id="connector-b")
+
+    (source_a / "policy.md").unlink()
+    result = connector.sync(source_a, connector_id="connector-a")
+
+    assert result["pruned"] == 1
+    assert _note_ids(database, "connector-a") == set()
+    assert _note_ids(database, "connector-b") == {"b1"}
+    assert _note_ids(database, "builtin") == {"local1"}
+
+
+def test_connector_partial_read_failure_prunes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = ProductDatabase(tmp_path / "product.sqlite3")
+    database.initialize()
+    source = _make_note_source(
+        tmp_path,
+        "source",
+        {"removed.md": "removed", "unreadable.md": "unreadable"},
+    )
+    connector = DirectoryConnectorService(
+        database,
+        source,
+        index_service=None,
+        allowed_roots=(source,),
+    )
+    connector.sync(source, connector_id="connector-a")
+    database.execute(
+        "INSERT INTO note_relations "
+        "(relation_id, source_note_id, target_note_id, relation_type, proposed_at) "
+        "VALUES ('rel-1', 'removed', 'unreadable', 'supports', '2026-08-25T00:00:00Z')"
+    )
+    (source / "removed.md").unlink()
+    original_process_file = VaultSyncService._process_file
+
+    def fail_for_one_file(self, path, now, seen_ids):
+        if path.name == "unreadable.md":
+            raise OSError("forced read failure")
+        return original_process_file(self, path, now, seen_ids)
+
+    monkeypatch.setattr(VaultSyncService, "_process_file", fail_for_one_file)
+
+    result = connector.sync(source, connector_id="connector-a")
+
+    assert result["errors"]
+    assert result["pruned"] == 0
+    assert _note_ids(database, "connector-a") == {"removed", "unreadable"}
+    assert database.fetch_one(
+        "SELECT 1 FROM note_relations WHERE relation_id='rel-1'"
+    )
+
+
+def test_connector_cannot_overwrite_note_owned_by_another_source(
+    tmp_path: Path,
+) -> None:
+    database = ProductDatabase(tmp_path / "product.sqlite3")
+    database.initialize()
+    source_a = _make_note_source(tmp_path, "source-a", {"policy.md": "shared"})
+    source_b = _make_note_source(tmp_path, "source-b", {"policy.md": "shared"})
+    connector = DirectoryConnectorService(
+        database,
+        tmp_path,
+        index_service=None,
+        allowed_roots=(tmp_path,),
+    )
+    connector.sync(source_a, connector_id="connector-a")
+    before = database.fetch_one("SELECT * FROM notes WHERE note_id='shared'")
+
+    with pytest.raises(ValueError, match="owned by source 'connector-a'"):
+        connector.sync(source_b, connector_id="connector-b")
+
+    assert database.fetch_one("SELECT * FROM notes WHERE note_id='shared'") == before
+
+
+def test_prune_relation_and_note_deletes_are_atomic(tmp_path: Path) -> None:
+    database = ProductDatabase(tmp_path / "product.sqlite3")
+    database.initialize()
+    source = tmp_path / "source"
+    source.mkdir()
+    _insert_note(database, "owned", "connector-a/owned.md", "connector-a")
+    _insert_note(database, "related", "connector-a/related.md", "connector-a")
+    database.execute(
+        "INSERT INTO note_relations "
+        "(relation_id, source_note_id, target_note_id, relation_type, proposed_at) "
+        "VALUES ('rel-1', 'owned', 'related', 'supports', '2026-08-25T00:00:00Z')"
+    )
+    database.execute(
+        "CREATE TRIGGER fail_owned_note_delete BEFORE DELETE ON notes "
+        "WHEN OLD.note_id='owned' BEGIN SELECT RAISE(ABORT, 'forced failure'); END"
+    )
+    sync = VaultSyncService(
+        database,
+        source,
+        write_ids=False,
+        source_id="connector-a",
+    )
+
+    with pytest.raises(sqlite3.IntegrityError):
+        sync._prune_missing(set())
+
+    assert database.fetch_one("SELECT 1 FROM notes WHERE note_id='owned'")
+    assert database.fetch_one(
+        "SELECT 1 FROM note_relations WHERE relation_id='rel-1'"
+    )
+
+
+def test_connector_owned_note_uses_its_source_root_and_exposes_source_metadata(
+    tmp_path: Path,
+) -> None:
+    database = ProductDatabase(tmp_path / "product.sqlite3")
+    database.initialize()
+    builtin = tmp_path / "builtin"
+    shadow = builtin / "connector-a"
+    shadow.mkdir(parents=True)
+    (shadow / "policy.md").write_text(
+        "# Shadow policy\nThis built-in shadow must not be indexed.\n",
+        encoding="utf-8",
+    )
+    external = _make_note_source(tmp_path, "external", {"policy.md": "external-1"})
+    connector = DirectoryConnectorService(
+        database,
+        builtin,
+        index_service=None,
+        allowed_roots=(external,),
+    )
+    connector.sync(external, connector_id="connector-a")
+    note = database.fetch_one("SELECT * FROM notes WHERE note_id='external-1'")
+    index_service = MindGraphIndexService(
+        database,
+        builtin,
+        tmp_path / "indexes",
+        provider=object(),
+    )
+
+    chunks = index_service._load_note_chunks(note)
+
+    assert chunks
+    assert "external policy text" in chunks[0].text
+    assert "built-in shadow" not in chunks[0].text
+    assert chunks[0].metadata["source_id"] == "connector-a"
+
+
+def test_pruned_connector_sync_forces_requested_index_build(tmp_path: Path) -> None:
+    class RecordingIndex:
+        def __init__(self) -> None:
+            self.force_values: list[bool] = []
+
+        def build(self, *, force: bool = False) -> dict[str, str]:
+            self.force_values.append(force)
+            return {"index_version": "test-version"}
+
+    database = ProductDatabase(tmp_path / "product.sqlite3")
+    database.initialize()
+    source = _make_note_source(tmp_path, "source", {"policy.md": "owned"})
+    index = RecordingIndex()
+    connector = DirectoryConnectorService(
+        database,
+        source,
+        index_service=index,
+        allowed_roots=(source,),
+    )
+    connector.sync(source, connector_id="connector-a")
+    (source / "policy.md").unlink()
+
+    result = connector.sync(
+        source,
+        connector_id="connector-a",
+        trigger_index=True,
+    )
+
+    assert result["pruned"] == 1
+    assert index.force_values == [True]
+
+
+@pytest.mark.parametrize(
+    "connector_id",
+    ["builtin", "BUILTIN", "", ".", "..", "nested/id", "nested\\id", "空白"],
+)
+def test_unsafe_connector_id_is_rejected_before_database_changes(
+    tmp_path: Path,
+    connector_id: str,
+) -> None:
+    database = ProductDatabase(tmp_path / "product.sqlite3")
+    database.initialize()
+    _insert_note(database, "builtin-note", "builtin.md", "builtin")
+    source = _make_note_source(tmp_path, "source", {"policy.md": "external-note"})
+    connector = DirectoryConnectorService(
+        database,
+        source,
+        index_service=None,
+        allowed_roots=(source,),
+    )
+    before = database.fetch_all("SELECT * FROM notes ORDER BY note_id")
+
+    with pytest.raises(ValueError, match="connector_id"):
+        connector.sync(source, connector_id=connector_id)
+
+    assert database.fetch_all("SELECT * FROM notes ORDER BY note_id") == before
+    assert database.fetch_one("SELECT 1 FROM connector_syncs") is None
+
+
+def test_prune_does_not_delete_note_after_concurrent_ownership_handoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = ProductDatabase(tmp_path / "product.sqlite3")
+    database.initialize()
+    source = tmp_path / "source"
+    source.mkdir()
+    _insert_note(database, "owned", "connector-a/owned.md", "connector-a")
+    _insert_note(database, "related", "builtin-related.md", "builtin")
+    database.execute(
+        "INSERT INTO note_relations "
+        "(relation_id, source_note_id, target_note_id, relation_type, proposed_at) "
+        "VALUES ('rel-handoff', 'owned', 'related', 'supports', '2026-08-25T00:00:00Z')"
+    )
+    sync = VaultSyncService(
+        database,
+        source,
+        write_ids=False,
+        source_id="connector-a",
+    )
+    real_connect = database.connect
+    handoff_connection = real_connect()
+    handoff_connection.execute("BEGIN IMMEDIATE")
+    handoff_connection.execute(
+        "UPDATE notes SET source_id='connector-b' WHERE note_id='owned'"
+    )
+    prune_connection = real_connect()
+    prune_attempted = threading.Event()
+
+    class SignalingConnection:
+        def execute(self, sql, params=()):
+            normalized = " ".join(sql.split()).upper()
+            if normalized.startswith("BEGIN IMMEDIATE"):
+                prune_attempted.set()
+            cursor = prune_connection.execute(sql, params)
+            if normalized.startswith("SELECT NOTE_ID, VAULT_PATH FROM NOTES"):
+                prune_attempted.set()
+            return cursor
+
+        def __enter__(self):
+            prune_connection.__enter__()
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return prune_connection.__exit__(exc_type, exc_value, traceback)
+
+        def close(self):
+            prune_connection.close()
+
+        def commit(self):
+            prune_connection.commit()
+
+        def rollback(self):
+            prune_connection.rollback()
+
+    monkeypatch.setattr(database, "connect", lambda: SignalingConnection())
+    results: list[int] = []
+    errors: list[Exception] = []
+
+    def run_prune() -> None:
+        try:
+            results.append(sync._prune_missing(set()))
+        except Exception as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=run_prune)
+    thread.start()
+    assert prune_attempted.wait(timeout=2)
+    handoff_connection.commit()
+    handoff_connection.close()
+    thread.join(timeout=5)
+    monkeypatch.setattr(database, "connect", real_connect)
+
+    assert not thread.is_alive()
+    assert errors == []
+    assert results == [0]
+    assert database.fetch_one(
+        "SELECT source_id FROM notes WHERE note_id='owned'"
+    ) == {"source_id": "connector-b"}
+    assert database.fetch_one(
+        "SELECT 1 FROM note_relations WHERE relation_id='rel-handoff'"
+    )
+
+
+def test_connector_rejects_injected_vault_sync_before_it_can_prune_builtin(
+    tmp_path: Path,
+) -> None:
+    database = ProductDatabase(tmp_path / "product.sqlite3")
+    database.initialize()
+    _insert_note(database, "builtin-note", "builtin.md", "builtin")
+    source = tmp_path / "empty-source"
+    source.mkdir()
+    injected = VaultSyncService(database, source, write_ids=False)
+
+    with pytest.raises(TypeError, match="vault_sync"):
+        DirectoryConnectorService(
+            database,
+            source,
+            index_service=None,
+            vault_sync=injected,
+            allowed_roots=(source,),
+        )
+
+    assert _note_ids(database, "builtin") == {"builtin-note"}

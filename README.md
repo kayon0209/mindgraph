@@ -125,6 +125,55 @@ Status, effective-date, category and permission filters are shared by base retri
   <img src="assets/architecture.svg" alt="MindGraph architecture" width="92%">
 </div>
 
+## ACL backfill operations
+
+Historical notes can be given repeatable ACL metadata through a deliberately operator-run workflow. It never runs automatically against production data.
+
+The command uses the configured `DATABASE_PATH`. The target database must already be initialized at the current application schema; this CLI never performs schema migration. Its default dry-run opens SQLite read-only and does not write audit rows or note metadata.
+
+```bash
+# 1. Preview aggregate counts only. Review unresolved/private records before proceeding.
+python scripts/backfill_note_acl.py --dry-run
+
+# 2. After an operator review, write the backfill and retain the returned run ID.
+python scripts/backfill_note_acl.py --apply
+
+# 3. Roll back only that completed run ID when needed.
+python scripts/backfill_note_acl.py --rollback RUN_ID
+```
+
+The CLI prints aggregate counts and a run ID only; it does not print note bodies, paths or ACL contents. Operation failures return a non-zero exit code with a fixed, redacted JSON error on stderr; argument errors use standard `argparse` usage output. Unresolved source ownership is intentionally backfilled as private and must be reviewed by an operator before any live production change.
+
+## Governance schema migration operations
+
+Governance persistence uses schema 9, but startup never upgrades an existing schema-8 database implicitly. A brand-new database initializes directly at schema 9. An existing schema-8 runtime remains usable for its schema-8 capabilities, while governance persistence must be reported as unavailable until an operator completes the explicit migration.
+
+The migration command reads the configured `DATABASE_PATH`. Every invocation prints exactly one aggregate JSON object to stdout; failures use a fixed redacted error code and a non-zero exit status. Output never includes database paths, note IDs, note content, titles, ACL data, credentials or tracebacks.
+
+```bash
+# 1. Default mode: validate schema 8 through a read-only SQLite connection.
+python scripts/migrate_governance_schema.py
+
+# Equivalent explicit spelling.
+python scripts/migrate_governance_schema.py --dry-run
+
+# 2. After operator review, atomically migrate schema 8 to 9 and retain the run ID.
+python scripts/migrate_governance_schema.py --apply
+
+# 3. Roll back only the exact completed run, before any governance table is used.
+python scripts/migrate_governance_schema.py --rollback RUN_ID
+```
+
+Apply creates four governance business tables plus the retained `schema_migration_runs` audit ledger. `governance_events` is append-only. Rollback returns the logical schema version to 8 and retains the ledger, but refuses if any of `governance_cases`, `governance_case_notes`, `governance_note_state` or `governance_events` contains a row.
+
+During development and test work, never run `--apply` or `--rollback` against `data/product/product.sqlite3`, a real enterprise database or a user database. Migration tests must use disposable temporary SQLite databases. A production migration requires a separate operator change process, backup and review; this repository task does not authorize one.
+
+Schema-9 runtimes expose authenticated governance operations at `/api/v1/knowledge-governance`: ACL-filtered case list/detail and event reads, plus compare-and-swap confirm, reject and revoke actions. The server derives the actor and access scope from the authenticated principal and the request ID from middleware; clients must not send `actor` or `resolved_by`. Any configured `admin` or `governance_reviewer` role may act. Hidden and absent cases both return 404, stale decisions return 409, invalid payloads return 422, and unavailable governance returns 503. The public health response contains aggregate readiness only: schema readiness, reconciliation status/time, pending count and whether the active index carries governed metadata.
+
+The Web knowledge page loads only the aggregate pending count initially. Opening the governance section lazily loads ACL-visible cases and renders actions solely from server-returned capabilities. Decision failures retain the current queue and offer a retry path.
+
+No real or user database was migrated while implementing or verifying this workflow. Only migration code and disposable temporary SQLite tests were exercised. MindGraph's graph retrieval remains controlled one-hop expansion over confirmed relations; it is not a complete knowledge-graph or multi-hop GraphRAG engine.
+
 ## MCP for AI agents
 
 MindGraph exposes a read-only MCP server with five tools:

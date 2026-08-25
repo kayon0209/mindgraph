@@ -1,9 +1,31 @@
 from __future__ import annotations
 
+from collections.abc import Collection
+from datetime import UTC
 import json
 from typing import Any
 
+from domain.errors import AuthorizationError
+
 PUBLIC_TOKENS = {"*", "all", "public"}
+GOVERNANCE_WRITE_ROLES = frozenset({"admin", "governance_reviewer"})
+
+
+class GovernanceAuthorizationError(AuthorizationError):
+    """Raised when a principal lacks a governance decision role."""
+
+    code = "governance_authorization_error"
+
+
+def require_governance_write_role(roles: Collection[str]) -> None:
+    """Require any one approved human-governance role."""
+    normalized = {
+        role.strip()
+        for role in roles
+        if isinstance(role, str) and role.strip()
+    }
+    if not normalized.intersection(GOVERNANCE_WRITE_ROLES):
+        raise GovernanceAuthorizationError("governance write role required")
 
 
 def public_access_scope() -> dict[str, Any]:
@@ -157,12 +179,10 @@ def note_acl_matches(note: dict[str, Any], access_scope: dict[str, Any] | None) 
     if allowed.intersection(note_tags):
         return True
 
-    # 没有显式 workspace/department 命中时，允许 note 端声明的 allow_* 直接命中
+    # 没有显式 workspace/department 命中时, 允许 note 端声明的 allow_* 直接命中
     if allowed.intersection(note_deny):
         return False
-    if allowed.intersection(note_tags):
-        return True
-    return False
+    return bool(allowed.intersection(note_tags))
 
 
 def chunk_acl_matches(metadata: dict[str, Any], access_scope: dict[str, Any] | None) -> bool:
@@ -214,7 +234,7 @@ def record_access_audit(
     metadata: dict[str, Any] | None = None,
     request_id: str | None = None,
 ) -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
     from uuid import uuid4
 
     from infrastructure.database import dumps
@@ -233,6 +253,6 @@ def record_access_audit(
             decision,
             reason,
             dumps(metadata or {}),
-            datetime.now(timezone.utc).isoformat(),
+            datetime.now(UTC).isoformat(),
         ),
     )

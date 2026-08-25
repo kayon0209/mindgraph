@@ -4,6 +4,13 @@ export type HealthStatus = {
   status?: string;
   service?: string;
   version?: string;
+  governance?: {
+    schema_ready: boolean;
+    last_reconciled_at: string | null;
+    last_reconciliation_status: string;
+    pending_case_count: number | null;
+    active_index_governed: boolean;
+  };
 };
 
 export type ChatRequest = {
@@ -132,6 +139,54 @@ export type PolicyGovernance = {
   policy_status: string;
   metadata_complete: boolean;
   issues: string[];
+  lifecycle_state?: string;
+  disposition?: string;
+  reason_codes?: string[];
+  evaluated_on?: string;
+};
+
+export type GovernanceCapabilities = {
+  can_resolve: boolean;
+  can_revoke: boolean;
+};
+
+export type GovernanceParticipant = {
+  note_id: string;
+  participant_role: string;
+  document_version: string | null;
+  effective_from: string | null;
+  effective_to: string | null;
+};
+
+export type GovernanceCase = {
+  case_id: string;
+  case_type: string;
+  policy_key: string | null;
+  status: "proposed" | "confirmed" | "rejected" | "revoked";
+  canonical_note_id: string | null;
+  reason_code: string;
+  evidence_ids: string[];
+  participants: GovernanceParticipant[];
+  created_at: string;
+  updated_at: string;
+  resolved_at: string | null;
+  capabilities: GovernanceCapabilities;
+};
+
+export type GovernanceEvent = {
+  event_id: string;
+  case_id: string | null;
+  note_id: string | null;
+  policy_key: string | null;
+  actor: string;
+  action: string;
+  previous_state: Record<string, string | number | boolean | null>;
+  new_state: Record<string, string | number | boolean | null>;
+  reason_code: string;
+  evidence_ids: string[];
+  source: string;
+  request_id: string | null;
+  created_at: string;
 };
 
 export type NoteDetail = NoteItem & {

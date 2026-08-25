@@ -12,12 +12,12 @@
 
 | ID | 升级项 | 优先级 | 状态 | 核心缺口 / 交付标准 |
 |----|--------|:---:|:---:|----|
-| UG-003 | 多租户 / 权限前置过滤 | **P1** | **Partial** | ACL 历史数据回填；未授权 chunk 不得进入融合、重排或模型上下文 |
-| UG-004 | 企业连接器 source ownership | **P1** | **Partial** | 建立正式来源归属、完成迁移和 source-aware prune，外部源仍不可改写 |
-| UG-007 | 检索质量评测与证据可观测性 | **P1** | Planned | 真实问题集、期望证据、Recall@k / 引用正确率 / 拒答正确率和 CI 回归门禁 |
+| UG-003 | 多租户 / 权限前置过滤 | **P1** | **Done** | 可审计、可回滚 ACL 回填；未授权 chunk 不得进入融合、重排或模型上下文 |
+| UG-004 | 企业连接器 source ownership | **P1** | **Done** | 正式来源归属、完成迁移和 source-aware prune；外部源仍不可改写 |
+| UG-007 | 检索质量评测与证据可观测性 | **P1** | **Partial** | 仍缺 50–200 独立样本、期望证据标注和 CI 回归门禁 |
 | UG-001 | 鲁棒文档 ingestion（layout-aware） | P2 | **Partial** | 执行 OCR；按语义结构、表头、单位、页码和来源构建可独立回答的 chunk |
 | UG-002 | Query 理解与多查询召回 | P2 | **Partial** | 各 query variant 分别检索，合并去重并以元数据/ACL 预过滤后排序 |
-| UG-008 | 知识治理与生命周期过滤 | P2 | Planned | 过期、草稿、冲突、重复资料在入库和召回两端均可识别、过滤和审计 |
+| UG-008 | 知识治理与生命周期过滤 | P2 | **Implemented** | 策略、显式迁移、协调、索引/检索过滤、受控 API 与 Web 人工复核已实现；仍待独立最终审查和生产迁移流程 |
 | UG-005 | MCP 只读工具 + 隐私审计 | P2 | **Partial** | async handler 不阻塞事件循环；问题文本审计服从统一隐私策略 |
 | UG-006 | SSO / OIDC 企业验收 | P2 | **Partial** | 已完成 discovery/JWK client 缓存；仍需真实非生产 IdP 的端到端验收 |
 
@@ -31,7 +31,7 @@
 4. **上下文最小且可追溯**：只向模型提供经过过滤和排序的必要证据；证据缺失时拒答，证据冲突时说明冲突而非擅自裁决。
 5. **每项先测后改**：先加入正常、异常、边界测试，再改生产代码；修改分片、检索、embedding、reranker 或 prompt 时必须运行检索回归集。
 
-### UG-003：多租户 / 权限前置过滤（P1，Partial）
+### UG-003：多租户 / 权限前置过滤（P1，Done）
 
 **实现**：
 - `notes` 表新增 `workspace` / `department` / `acl_json` / `acl_public` 列；
@@ -40,12 +40,13 @@
 - `access_audit` 表记录每次访问的 actor / action / resource / decision / reason。
 - 企业认证模式下缺失、无效或失败的凭据返回 401，不再降级为匿名；
 - `AUTH_MODE=demo` 的匿名主体使用 public-only scope，`AUTH_MODE=off` 是唯一显式 ACL bypass。
+- `AclBackfillService` 提供可审计的 plan / apply / rollback；CLI 默认 dry-run，输出仅含聚合计数和 run ID。
 
-**剩余工作**：按“frontmatter 显式 ACL > 受控目录默认 ACL > 显式 public 标记”回填历史 notes；无法可靠判定的记录默认 private 并输出待治理清单。在 dense、BM25 和 MindGraph 适配层按 workspace、department、allow/deny、状态和有效期预过滤，再融合和重排；trace 仅记录排除计数与原因，不记录私有正文。
+**运维约束**：生产历史数据回填由操作人员执行，不自动运行。CLI 使用运行时 `DATABASE_PATH`，要求目标数据库已完成当前 schema 初始化，且自身不执行 schema 迁移；默认 dry-run 以 SQLite 只读模式运行。流程为 dry-run → 审核 unresolved/private 聚合计数 → apply 并保存 run ID → 必要时按精确 run ID rollback。成功输出仅含聚合计数与 run ID，失败仅返回固定脱敏 JSON 和非零退出码。无法可靠判定的记录默认 private；trace 仅记录排除计数与原因，不记录私有正文。
 
 **验收**：无权限 chunk 不出现在 dense/sparse/fusion/rerank/LLM context 任一阶段；回填可重复、可审计、可回滚；最终 `_filter_by_access` 仍作为防御纵深。
 
-### UG-004：企业连接器 source ownership（P1，Partial）
+### UG-004：企业连接器 source ownership（P1，Done）
 
 **实现**：
 - `DirectoryConnectorService` 支持本地 Markdown 目录增量同步；
@@ -55,9 +56,8 @@
 - API：`POST /api/v1/connectors/directories`。
 - 同步只允许 `CONNECTOR_ALLOWED_ROOTS` 或项目 `knowledge/` 下的 canonical path；
 - 连接器不再向源 Markdown 注入 ID，不同 source 通过稳定 connector 前缀临时隔离同名相对路径。
-- 外部 source 文件已通过 `connector_syncs` 的受控路径解析进入索引；该项不再是路线图缺口。
-
-**剩余工作**：为 notes 建立正式 source ownership 并迁移既有笔记；以“当前 connector 上次成功快照”和“本次完整成功扫描”为前提实现 source-aware prune。扫描失败、部分读取失败或 source 不可达时绝不删除，外部内容也绝不写回源文件。
+- 外部 source 文件已通过 `connector_syncs` 的受控路径解析进入索引；该项不再是路线图缺口；
+- `notes.source_id` 已持久化并迁移历史记录；只有上次快照和本次扫描完整成功时才会执行 source-aware prune。扫描失败、部分读取失败或 source 不可达时绝不删除，外部内容也绝不写回源文件。
 
 **验收**：connector A 的删除永不影响 connector B 或内置 Vault；失败扫描零删除；删除后索引原子切换且缓存失效；迁移前后 note ID、ACL 与检索结果一致。
 
@@ -88,11 +88,11 @@
 
 ---
 
-## UG-007：检索质量评测与证据可观测性（P1，Planned）
+## UG-007：检索质量评测与证据可观测性（P1，Partial）
 
 **实施范围**：建立 50–200 条脱敏的真实高频问题集；每题记录期望文档、章节/chunk、版本/有效期、权限主体，以及应拒答或应标记冲突的情形。报告 Recall@k、MRR、引用正确率、版本正确率、拒答正确率、ACL 泄露数、重复候选率、延迟与 token 使用量；`RetrievalTrace` 输出 variants、候选数、预过滤原因、融合/重排变化和最终引用 ID。
 
-**验收**：正确证据未进 Top-k、进入但排序靠后、证据第一但生成错误三类问题可被区分；任何 ACL 泄露为零容忍失败；确定性离线回归作为 CI 门禁，外部模型评测单独标记为非阻塞。
+**剩余工作与验收**：仍需建立 50–200 条独立脱敏样本并完成期望证据标注；正确证据未进 Top-k、进入但排序靠后、证据第一但生成错误三类问题可被区分；任何 ACL 泄露为零容忍失败；确定性离线回归作为 CI 门禁，外部模型评测单独标记为非阻塞。
 
 ## UG-001：鲁棒文档 ingestion（layout-aware）（P2，Partial）
 
@@ -106,9 +106,21 @@
 
 **剩余工作与验收**：对每个有效 variant 分别执行 dense + BM25 检索；在 metadata/ACL 预过滤后按 canonical chunk ID 去重、保留最佳分数和命中 variant，再融合与可选 rerank。信息不足或高风险问题先澄清；不得用改写虚构用户未提供的版本、权限或事实条件。用 UG-007 问题集校准候选预算和上下文长度，确保复合问题的期望证据覆盖率提升且重复候选受控。
 
-## UG-008：知识治理与生命周期过滤（P2，Planned）
+## UG-008：知识治理与生命周期过滤（P2，Implemented / 待独立最终审查）
 
 **实施范围与验收**：入库阶段识别草稿、过期、重复、冲突和权限不明资料；默认不把不可判定资料作为可回答的正式知识。索引和检索阶段一致执行 `policy_status`、有效期、版本和来源权威级别规则；同一逻辑文档多版本并存时默认优先当前有效版本，并显式暴露冲突。过期/草稿资料不得成为默认证据，治理动作必须有审计记录。
+
+**当前实现**：统一治理策略已接入 reconciliation、同步后索引构建、ACL 后且检索前的治理过滤、冲突/无证据拒答、case/event API、隐私安全 health 和 Web 人工复核队列。索引只接收当前有效且 canonical 的 eligible note；alias、冲突、过期、草稿和 unresolved note 不得进入。检索仍以数据库权威决策为准，索引 metadata 只作防御性校验；ACL 始终先于治理、dense、BM25、融合、rerank、关系扩展和模型上下文。
+
+全新数据库直接初始化为 schema 9；既有 schema-8 数据库在正常服务启动时必须继续保持 schema 8，不允许隐式升级。此时 health 可启动并报告治理 unavailable，治理 API 与 governed MindGraph 路径返回受控 503，不得回退到未治理检索，直到操作员显式执行 `scripts/migrate_governance_schema.py --apply`。
+
+迁移 CLI 使用运行时 `DATABASE_PATH`，默认（或 `--dry-run`）通过 SQLite 只读连接验证 `8 -> 9` 计划；`--apply` 在一个 `BEGIN IMMEDIATE` 事务中创建四张治理业务表、append-only 事件触发器和保留的 `schema_migration_runs` 审计表，并返回 run ID。`--rollback RUN_ID` 只接受该精确 completed run；四张治理业务表中任一存在记录即拒绝回滚。成功回滚删除治理业务对象、把逻辑版本恢复到 8，但保留并更新迁移账本。
+
+CLI 的 stdout 始终只有一个聚合 JSON，错误返回固定脱敏 code 和非零退出码，不输出数据库路径、note ID、正文、标题、ACL、凭据或 traceback。`governance_events` 的 schema 及写入契约不得承载正文、标题、路径、ACL 或任何 token/secret。
+
+**开发与验收边界**：开发与自动化测试只在 pytest 创建的临时 SQLite 数据库中执行 apply/rollback；未对 `data/product/product.sqlite3`、真实企业数据库或用户数据库执行 schema 9 apply/rollback。生产迁移仍需独立备份、审批与操作员变更流程。本分支实现仍需 Task 7 独立审查和 branch-wide 最终审查，审查完成前不宣称最终验收 Done。
+
+Graph 能力的准确边界是 confirmed 关系的一跳受控扩展，不是完整知识图谱引擎，也未证明多跳 GraphRAG 增益。UG-007 仍只有 12 条人工冻结样本，扩样与 CI 阈值未完成；OIDC 也仍缺少真实非生产 IdP 的外部验收。
 
 ---
 

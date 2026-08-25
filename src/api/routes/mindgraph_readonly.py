@@ -6,17 +6,21 @@ Human-in-the-loop：POST /relations/{id}/resolve 把 proposed 关系确认为 co
 """
 from __future__ import annotations
 
+from datetime import date, datetime, timezone
 import json
 import logging
-from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
-from api.auth import resolve_access_scope, current_actor
+from api.auth import current_actor, resolve_access_scope
 from api.dependencies import get_container
 from application.access_control import note_acl_matches, record_access_audit
+from application.governance_policy import GovernancePolicy
+from application.governance_reconciliation_service import GovernanceReconciliationService
+from domain.errors import GovernanceUnavailableError
+from domain.governance import GovernanceEvaluation, GovernanceMode
 
 logger = logging.getLogger("mindgraph.api.readonly")
 router = APIRouter(prefix="/mindgraph", tags=["mindgraph-readonly"])
@@ -43,7 +47,9 @@ def _excerpt_from_fm(frontmatter_json: str | None) -> str:
     return (fm.get("summary") or fm.get("description") or fm.get("excerpt") or "").strip()
 
 
-def _governance_from_row(row: dict) -> dict:
+def _governance_from_row(
+    row: dict, evaluation: GovernanceEvaluation, response_date: date
+) -> dict:
     try:
         issues = json.loads(row.get("metadata_issues_json") or "[]")
     except (TypeError, json.JSONDecodeError):
@@ -81,10 +87,35 @@ def _governance_from_row(row: dict) -> dict:
         "policy_status": row.get("policy_status") or "unspecified",
         "metadata_complete": complete,
         "issues": issues,
+        "evaluated_on": response_date.isoformat(),
+        "lifecycle_state": evaluation.lifecycle_state.value,
+        "disposition": evaluation.disposition.value,
+        "reason_codes": list(evaluation.reason_codes),
     }
 
 
-def _note_item(row: dict) -> dict:
+def _governance_evaluations(
+    rows: list[dict], response_date: date
+) -> dict[str, GovernanceEvaluation]:
+    container = get_container()
+    reconciler = getattr(container, "governance_reconciler", None)
+    if reconciler is None:
+        reconciler = GovernanceReconciliationService(
+            container.database, GovernancePolicy()
+        )
+    try:
+        return reconciler.evaluate_notes(
+            rows,
+            as_of=response_date,
+            mode=GovernanceMode.CURRENT,
+        )
+    except Exception as exc:
+        raise GovernanceUnavailableError("knowledge governance is unavailable") from exc
+
+
+def _note_item(
+    row: dict, evaluation: GovernanceEvaluation, response_date: date
+) -> dict:
     return {
         "id": row["note_id"],
         "title": row["title"],
@@ -97,7 +128,7 @@ def _note_item(row: dict) -> dict:
         "chunk_count": row["chunk_count"],
         "updated": (row["updated_at"] or "")[:10],
         "excerpt": _excerpt_from_fm(row.get("frontmatter_json")),
-        "governance": _governance_from_row(row),
+        "governance": _governance_from_row(row, evaluation, response_date),
     }
 
 
@@ -148,7 +179,7 @@ def list_notes(
         f"""SELECT note_id, vault_path, title, ai_access_level, chunk_count,
                    index_status, updated_at, frontmatter_json, owner, document_version,
                    policy_key, effective_from, effective_to, policy_status, metadata_issues_json,
-                   workspace, department, acl_json, acl_public
+                   workspace, department, acl_json, acl_public, source_id, content_hash
             FROM notes {where_sql}
             ORDER BY updated_at DESC""",
         tuple(params),
@@ -156,6 +187,8 @@ def list_notes(
     visible = [r for r in rows if note_acl_matches(r, access_scope)]
     total = len(visible)
     page = visible[offset : offset + limit]
+    response_date = date.today()
+    evaluations = _governance_evaluations(page, response_date)
     record_access_audit(
         db,
         actor=actor,
@@ -169,7 +202,13 @@ def list_notes(
             "scope_user": (access_scope or {}).get("user"),
         },
     )
-    return {"total": total, "items": [_note_item(r) for r in page]}
+    return {
+        "total": total,
+        "items": [
+            _note_item(row, evaluations[row["note_id"]], response_date)
+            for row in page
+        ],
+    }
 
 
 @router.get("/notes/{note_id}")
@@ -182,7 +221,8 @@ def get_note(note_id: str, request: Request):
         """SELECT note_id, vault_path, title, ai_access_level, chunk_count,
                   index_status, updated_at, frontmatter_json, created_at, owner,
                   document_version, policy_key, effective_from, effective_to, policy_status,
-                  metadata_issues_json, workspace, department, acl_json, acl_public
+                  metadata_issues_json, workspace, department, acl_json, acl_public,
+                  source_id, content_hash
            FROM notes WHERE note_id = ?""",
         (note_id,),
     )
@@ -207,6 +247,8 @@ def get_note(note_id: str, request: Request):
         decision="allow",
         metadata={"scope_user": (access_scope or {}).get("user")},
     )
+    response_date = date.today()
+    evaluation = _governance_evaluations([row], response_date)[row["note_id"]]
     store = get_container().mindgraph_graph_store
     outgoing = store.related_note_ids([note_id], status="confirmed")
     incoming_rows = db.fetch_all(
@@ -229,7 +271,7 @@ def get_note(note_id: str, request: Request):
         "updated": (row["updated_at"] or "")[:10],
         "created": (row["created_at"] or "")[:10],
         "excerpt": _excerpt_from_fm(row["frontmatter_json"]),
-        "governance": _governance_from_row(row),
+        "governance": _governance_from_row(row, evaluation, response_date),
         "outgoing_relations": [
             {
                 "target_id": o["target_note_id"],

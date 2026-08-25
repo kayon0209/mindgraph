@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 import hashlib
 import json
 import logging
@@ -24,7 +24,10 @@ import uuid
 import faiss
 import numpy as np
 
+from application.governance_reconciliation_service import GovernanceReconciliationService
 from document_loader import _chunk_text, _split_by_markdown_headers
+from domain.errors import GovernanceUnavailableError, IndexUnavailableError
+from domain.governance import GovernanceDisposition, GovernanceEvaluation, GovernanceMode
 from infrastructure.database import ProductDatabase, dumps, loads
 from infrastructure.markdown_frontmatter import parse_frontmatter
 from retrieval.embeddings import BGEEmbeddingProvider
@@ -52,6 +55,8 @@ class MindGraphIndexService:
         index_root: Path,
         provider: Any | None = None,
         on_activated: Callable[[], None] | None = None,
+        governance_reconciler: GovernanceReconciliationService | None = None,
+        today: Callable[[], date] = date.today,
     ) -> None:
         self.db = db
         self.vault_root = Path(vault_root)
@@ -59,6 +64,10 @@ class MindGraphIndexService:
         self.index_root.mkdir(parents=True, exist_ok=True)
         self.provider = provider or BGEEmbeddingProvider()  # 尊重 BGE_LOCAL_FILES_ONLY 环境变量（默认 true=离线安全；设 false 即首次自动下载）
         self.on_activated = on_activated
+        # ``None`` remains only for isolated legacy callers. Production composition
+        # always supplies the governance authority.
+        self.governance_reconciler = governance_reconciler
+        self._today = today
 
     # ------------------------------------------------------------------ #
     # 查询待索引笔记
@@ -79,45 +88,59 @@ class MindGraphIndexService:
     # ------------------------------------------------------------------ #
     # 分块（带 mindgraph_id，正文剥离 Frontmatter）
     # ------------------------------------------------------------------ #
-    def _resolve_note_path(self, vault_path: str) -> Path:
+    def _resolve_note_path(self, note: dict[str, Any]) -> Path | None:
         """Resolve built-in and connector-backed note paths safely.
 
         Connector notes use ``connector_id/relative/path.md`` as their stable,
-        globally unique database path.  The real source root is stored in the
-        connector audit record, whereas built-in vault notes remain relative to
-        ``self.vault_root``.
+        globally unique database path. The note's source ownership selects the
+        root; the path prefix must agree with that owner.
         """
-        stored_path = Path(vault_path)
-        built_in_path = self.vault_root / stored_path
-        if built_in_path.is_file():
-            return built_in_path
-
-        parts = stored_path.parts
-        if len(parts) < 2:
-            return built_in_path
-        connector = self.db.fetch_one(
-            "SELECT source_path FROM connector_syncs "
-            "WHERE connector_id=? AND status='completed' "
-            "ORDER BY finished_at DESC LIMIT 1",
-            (parts[0],),
-        )
-        if not connector:
-            return built_in_path
+        stored_path = Path(note["vault_path"])
+        source_id = note.get("source_id") or "builtin"
+        if source_id == "builtin":
+            source_root = self.vault_root
+            relative_path = stored_path
+        else:
+            parts = stored_path.parts
+            if len(parts) < 2 or parts[0] != source_id:
+                return None
+            connector = self.db.fetch_one(
+                "SELECT source_path FROM connector_syncs "
+                "WHERE connector_id=? AND status='completed' "
+                "ORDER BY finished_at DESC LIMIT 1",
+                (source_id,),
+            )
+            if not connector:
+                return None
+            source_root = Path(connector["source_path"])
+            relative_path = Path(*parts[1:])
         try:
-            source_root = Path(connector["source_path"]).resolve(strict=True)
-            candidate = source_root.joinpath(*parts[1:]).resolve(strict=True)
+            canonical_root = source_root.resolve(strict=True)
+            candidate = (canonical_root / relative_path).resolve(strict=True)
         except OSError:
-            return built_in_path
-        if source_root in candidate.parents and candidate.is_file():
+            return None
+        if canonical_root in candidate.parents and candidate.is_file():
             return candidate
-        return built_in_path
+        return None
 
-    def _load_note_chunks(self, note: dict[str, Any]) -> list[Chunk]:
-        path = self._resolve_note_path(note["vault_path"])
+    def _load_note_chunks(
+        self,
+        note: dict[str, Any],
+        evaluation: GovernanceEvaluation | None = None,
+        equivalent_note_ids: list[str] | None = None,
+        governance_as_of: date | None = None,
+    ) -> list[Chunk]:
+        path = self._resolve_note_path(note)
         category = Path(note["vault_path"]).parent.name or "根目录"
+        if path is None:
+            if evaluation is not None and evaluation.disposition is GovernanceDisposition.ELIGIBLE:
+                raise IndexUnavailableError("eligible note could not be read for index construction")
+            return []
         try:
             raw = path.read_text(encoding="utf-8")
-        except OSError:
+        except OSError as exc:
+            if evaluation is not None and evaluation.disposition is GovernanceDisposition.ELIGIBLE:
+                raise IndexUnavailableError("eligible note could not be read for index construction") from exc
             return []
         _, body, _ = parse_frontmatter(raw)
         if not body.strip():
@@ -134,6 +157,7 @@ class MindGraphIndexService:
                     section_path=section_path,
                     metadata={
                         "mindgraph_id": note["note_id"],
+                        "source_id": note.get("source_id", "builtin"),
                         "vault_path": note["vault_path"],
                         "title": note["title"],
                         "doc_name": Path(note["vault_path"]).name,
@@ -150,22 +174,90 @@ class MindGraphIndexService:
                         "effective_from": note.get("effective_from"),
                         "effective_to": note.get("effective_to"),
                         "policy_status": note.get("policy_status", "unspecified"),
+                        "metadata_issues": loads(note.get("metadata_issues_json"), []),
+                        "content_hash": note.get("content_hash"),
                         "effective_date": note.get("effective_from"),
                         "expiration_date": note.get("effective_to"),
                         "document_status": note.get("policy_status", "unspecified"),
                         "knowledge_category": category,
                         "origin": "mindgraph",
+                        # Defensive metadata for artifact inspection. Retrieval
+                        # eligibility is decided from the fresh database evaluation
+                        # immediately before index construction, never from this copy.
+                        "governance_disposition": (
+                            evaluation.disposition.value if evaluation is not None else None
+                        ),
+                        "governance_lifecycle_state": (
+                            evaluation.lifecycle_state.value if evaluation is not None else None
+                        ),
+                        "governance_reason_codes": (
+                            list(evaluation.reason_codes) if evaluation is not None else []
+                        ),
+                        "governance_as_of": (
+                            governance_as_of.isoformat() if governance_as_of is not None else None
+                        ),
+                        "equivalent_note_ids": equivalent_note_ids or [note["note_id"]],
                     },
                 ))
                 idx += 1
         return chunks
 
-    def _all_chunks(self) -> list[Chunk]:
-        notes = self.db.fetch_all("SELECT * FROM notes WHERE ai_access_level <> 'excluded'")
+    def _all_chunks(
+        self,
+        notes: list[dict[str, Any]] | None = None,
+        evaluations: dict[str, GovernanceEvaluation] | None = None,
+        equivalent_ids: dict[str, list[str]] | None = None,
+        governance_as_of: date | None = None,
+    ) -> list[Chunk]:
+        notes = notes if notes is not None else self.db.fetch_all(
+            "SELECT * FROM notes WHERE ai_access_level <> 'excluded'"
+        )
         chunks: list[Chunk] = []
         for note in notes:
-            chunks.extend(self._load_note_chunks(note))
+            chunks.extend(
+                self._load_note_chunks(
+                    note,
+                    evaluations.get(note["note_id"]) if evaluations is not None else None,
+                    equivalent_ids.get(note["note_id"]) if equivalent_ids is not None else None,
+                    governance_as_of,
+                )
+            )
         return chunks
+
+    def _governed_notes(
+        self, build_date: date
+    ) -> tuple[list[dict[str, Any]], dict[str, GovernanceEvaluation], dict[str, list[str]], dict[str, int]]:
+        notes = self.db.fetch_all("SELECT * FROM notes WHERE ai_access_level <> 'excluded'")
+        if self.governance_reconciler is None:
+            return notes, {}, {}, {}
+        try:
+            evaluations = self.governance_reconciler.evaluate_notes(
+                notes, as_of=build_date, mode=GovernanceMode.CURRENT
+            )
+        except Exception as exc:
+            raise GovernanceUnavailableError("knowledge governance evaluation is unavailable") from exc
+
+        equivalent_ids: dict[str, list[str]] = {}
+        excluded_counts: dict[str, int] = {}
+        eligible: list[dict[str, Any]] = []
+        for note in notes:
+            evaluation = evaluations[note["note_id"]]
+            if evaluation.disposition is GovernanceDisposition.ELIGIBLE:
+                eligible.append(note)
+                equivalent_ids.setdefault(note["note_id"], [note["note_id"]])
+                continue
+            if (
+                evaluation.disposition is GovernanceDisposition.DUPLICATE_ALIAS
+                and evaluation.canonical_note_id is not None
+            ):
+                equivalent_ids.setdefault(evaluation.canonical_note_id, [evaluation.canonical_note_id]).append(
+                    note["note_id"]
+                )
+            for reason in evaluation.reason_codes:
+                excluded_counts[reason] = excluded_counts.get(reason, 0) + 1
+        for note_id, note_ids in equivalent_ids.items():
+            equivalent_ids[note_id] = sorted(set(note_ids))
+        return eligible, evaluations, equivalent_ids, dict(sorted(excluded_counts.items()))
 
     # ------------------------------------------------------------------ #
     # embedding 缓存（按 chunk 正文 checksum）
@@ -190,7 +282,13 @@ class MindGraphIndexService:
     # ------------------------------------------------------------------ #
     # 构建（增量 + 原子切换）
     # ------------------------------------------------------------------ #
-    def build(self, operator: str = "local", force: bool = False) -> dict[str, Any]:
+    def build(
+        self,
+        operator: str = "local",
+        force: bool = False,
+        build_date: date | None = None,
+        governance_reconciled_as_of: date | None = None,
+    ) -> dict[str, Any]:
         """构建索引。
 
         - 默认仅在有待索引笔记（pending/failed）时构建；
@@ -198,6 +296,22 @@ class MindGraphIndexService:
           可触发，但旧 FAISS 索引仍含其 chunk，需强制全量重建以排除。
           embedding 仍按 checksum 命中缓存，重建成本仅为 FAISS.add（毫秒级）。
         """
+        evaluated_on = build_date if build_date is not None else self._today()
+        if not isinstance(evaluated_on, date):
+            raise TypeError("build_date must be a date")
+        if governance_reconciled_as_of is not None and not isinstance(
+            governance_reconciled_as_of, date
+        ):
+            raise TypeError("governance_reconciled_as_of must be a date")
+        if (
+            self.governance_reconciler is not None
+            and governance_reconciled_as_of != evaluated_on
+        ):
+            try:
+                self.governance_reconciler.reconcile(as_of=evaluated_on)
+            except Exception as exc:
+                raise GovernanceUnavailableError("knowledge governance reconciliation is unavailable") from exc
+
         pending = self.pending_notes()
         if not pending and not force:
             return {"status": "noop", "reason": "no pending notes"}
@@ -218,7 +332,15 @@ class MindGraphIndexService:
         reused = 0
         new_count = 0
         try:
-            chunks = self._all_chunks()
+            eligible_notes, evaluations, equivalent_ids, excluded_reason_counts = self._governed_notes(
+                evaluated_on
+            )
+            chunks = self._all_chunks(
+                eligible_notes,
+                evaluations,
+                equivalent_ids,
+                evaluated_on,
+            )
 
             vectors: list[list[float] | None] = [None] * len(chunks)
             to_embed: list[tuple[int, str]] = []
@@ -261,6 +383,12 @@ class MindGraphIndexService:
                 "vector_dimension": self.provider.dimension,
                 "chunk_count": len(chunks),
                 "note_count": len(all_ids),
+                "governance_as_of": evaluated_on.isoformat() if self.governance_reconciler else None,
+                "governance_policy_version": (
+                    "v1" if self.governance_reconciler is not None else None
+                ),
+                "eligible_note_count": len(eligible_notes),
+                "excluded_reason_counts": excluded_reason_counts,
                 "reused_embeddings": reused,
                 "new_embeddings": new_count,
                 "created_at": _utc_iso(),
