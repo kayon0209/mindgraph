@@ -104,7 +104,9 @@ class GovernancePolicy:
         decisions = tuple(item for item in confirmed_decisions if item.note_id == note.note_id)
         if any(not self._valid_confirmed_decision(note.note_id, item) for item in decisions):
             return self._unresolved(note.note_id, "invalid_confirmed_decision")
-        decision = min(decisions, key=lambda item: DECISION_PRIORITIES[item.disposition], default=None)
+        decision = self._highest_priority_decision(decisions)
+        if decision is None and decisions:
+            return self._unresolved(note.note_id, "conflicting_confirmed_decisions")
         if decision and decision.disposition is GovernanceDisposition.CONFLICT_BLOCKED:
             return self._from_confirmed_decision(note.note_id, decision)
 
@@ -167,6 +169,23 @@ class GovernancePolicy:
                 and decision.canonical_note_id != note_id
             )
         return decision.canonical_note_id is None
+
+    @staticmethod
+    def _highest_priority_decision(
+        decisions: Sequence[ConfirmedGovernanceDecision],
+    ) -> ConfirmedGovernanceDecision | None:
+        if not decisions:
+            return None
+        priority = min(DECISION_PRIORITIES[item.disposition] for item in decisions)
+        highest_priority = tuple(
+            item for item in decisions if DECISION_PRIORITIES[item.disposition] == priority
+        )
+        payloads = {
+            (item.disposition, item.reason_code, item.canonical_note_id) for item in highest_priority
+        }
+        if len(payloads) != 1:
+            return None
+        return highest_priority[0]
 
     @classmethod
     def _valid_duplicate_note(cls, note: GovernanceNote, canonical_acl: str | None) -> bool:

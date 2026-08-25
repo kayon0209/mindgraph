@@ -183,6 +183,135 @@ def test_confirmed_conflict_block_has_order_independent_priority() -> None:
 
 
 @pytest.mark.parametrize(
+    ("decisions", "disposition", "reason", "canonical_note_id"),
+    [
+        (
+            (
+                ConfirmedGovernanceDecision(
+                    "policy-v1",
+                    GovernanceDisposition.CONFLICT_BLOCKED,
+                    "confirmed_conflict",
+                ),
+                ConfirmedGovernanceDecision(
+                    "policy-v1",
+                    GovernanceDisposition.CONFLICT_BLOCKED,
+                    "confirmed_conflict",
+                ),
+                ConfirmedGovernanceDecision(
+                    "policy-v1",
+                    GovernanceDisposition.DUPLICATE_ALIAS,
+                    "confirmed_duplicate_alias",
+                    "canonical-policy",
+                ),
+            ),
+            GovernanceDisposition.CONFLICT_BLOCKED,
+            "confirmed_conflict",
+            None,
+        ),
+        (
+            (
+                ConfirmedGovernanceDecision(
+                    "policy-v1",
+                    GovernanceDisposition.DUPLICATE_ALIAS,
+                    "confirmed_duplicate_alias",
+                    "canonical-policy",
+                ),
+                ConfirmedGovernanceDecision(
+                    "policy-v1",
+                    GovernanceDisposition.DUPLICATE_ALIAS,
+                    "confirmed_duplicate_alias",
+                    "canonical-policy",
+                ),
+                ConfirmedGovernanceDecision(
+                    "policy-v1", GovernanceDisposition.ELIGIBLE, "confirmed_eligible"
+                ),
+            ),
+            GovernanceDisposition.DUPLICATE_ALIAS,
+            "confirmed_duplicate_alias",
+            "canonical-policy",
+        ),
+    ],
+)
+def test_identical_highest_priority_confirmed_decisions_fold_deterministically(
+    decisions, disposition, reason, canonical_note_id
+) -> None:
+    """Catches repeated confirmed records changing the selected result by tuple order."""
+    for ordered in permutations(decisions):
+        result = GovernancePolicy().evaluate(
+            note(),
+            as_of=date(2026, 8, 25),
+            mode=GovernanceMode.CURRENT,
+            confirmed_decisions=ordered,
+        )
+        assert result.disposition is disposition
+        assert result.reason_codes == (reason,)
+        assert result.canonical_note_id == canonical_note_id
+
+
+@pytest.mark.parametrize(
+    "decisions",
+    [
+        (
+            ConfirmedGovernanceDecision(
+                "policy-v1",
+                GovernanceDisposition.CONFLICT_BLOCKED,
+                "confirmed_conflict_a",
+            ),
+            ConfirmedGovernanceDecision(
+                "policy-v1",
+                GovernanceDisposition.CONFLICT_BLOCKED,
+                "confirmed_conflict_b",
+            ),
+            ConfirmedGovernanceDecision(
+                "policy-v1",
+                GovernanceDisposition.DUPLICATE_ALIAS,
+                "confirmed_duplicate_alias",
+                "canonical-policy",
+            ),
+        ),
+        (
+            ConfirmedGovernanceDecision(
+                "policy-v1",
+                GovernanceDisposition.DUPLICATE_ALIAS,
+                "confirmed_duplicate_alias_a",
+                "canonical-policy-a",
+            ),
+            ConfirmedGovernanceDecision(
+                "policy-v1",
+                GovernanceDisposition.DUPLICATE_ALIAS,
+                "confirmed_duplicate_alias_b",
+                "canonical-policy-b",
+            ),
+            ConfirmedGovernanceDecision(
+                "policy-v1", GovernanceDisposition.ELIGIBLE, "confirmed_eligible"
+            ),
+        ),
+        (
+            ConfirmedGovernanceDecision(
+                "policy-v1", GovernanceDisposition.ELIGIBLE, "confirmed_eligible_a"
+            ),
+            ConfirmedGovernanceDecision(
+                "policy-v1", GovernanceDisposition.ELIGIBLE, "confirmed_eligible_b"
+            ),
+        ),
+    ],
+)
+def test_conflicting_highest_priority_confirmed_decisions_fail_closed_in_every_order(decisions) -> None:
+    """Catches arbitrary selection between legally shaped but contradictory governance records."""
+    for ordered in permutations(decisions):
+        result = GovernancePolicy().evaluate(
+            note(),
+            as_of=date(2026, 8, 25),
+            mode=GovernanceMode.CURRENT,
+            confirmed_decisions=ordered,
+        )
+        assert result.disposition is GovernanceDisposition.UNRESOLVED
+        assert result.eligible is False
+        assert result.reason_codes == ("conflicting_confirmed_decisions",)
+        assert result.canonical_note_id is None
+
+
+@pytest.mark.parametrize(
     ("candidate", "reason"),
     [
         (note(owner=None), "missing_owner"),
