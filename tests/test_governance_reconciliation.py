@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import date
 import json
 from pathlib import Path
+import sqlite3
 
 import pytest
 
@@ -147,6 +148,14 @@ def _only_case(database: ProductDatabase) -> dict[str, object]:
     return rows[0]
 
 
+def _case_by_type(database: ProductDatabase, case_type: str) -> dict[str, object]:
+    rows = database.fetch_all(
+        "SELECT * FROM governance_cases WHERE case_type = ?", (case_type,)
+    )
+    assert len(rows) == 1
+    return rows[0]
+
+
 def test_reconcile_is_idempotent(
     schema9_database: ProductDatabase, governed_note: StoredNote
 ) -> None:
@@ -273,9 +282,62 @@ def test_same_checksum_with_different_acl_is_only_proposed(
         as_of=date(2026, 8, 25)
     )
 
-    case = _only_case(schema9_database)
+    case = _case_by_type(schema9_database, "exact_duplicate")
     assert case["status"] == "proposed"
     assert case["canonical_note_id"] is None
+
+
+def test_same_normalized_version_conflicts_even_when_intervals_do_not_overlap(
+    schema9_database: ProductDatabase,
+) -> None:
+    """Catches duplicate version identity being missed when its effective dates are disjoint."""
+    first = _insert_note(
+        schema9_database,
+        "same-version-old",
+        version="  2026-A  ",
+        effective_from="2026-01-01",
+        effective_to="2026-03-31",
+        content_hash="old-version-content",
+    )
+    second = _insert_note(
+        schema9_database,
+        "same-version-new",
+        version="2026-A",
+        effective_from="2026-04-01",
+        content_hash="new-version-content",
+    )
+
+    GovernanceReconciliationService(schema9_database, GovernancePolicy()).reconcile(
+        as_of=date(2026, 8, 25)
+    )
+
+    case = _case_by_type(schema9_database, "version_conflict")
+    participants = schema9_database.fetch_all(
+        "SELECT note_id FROM governance_case_notes WHERE case_id = ? ORDER BY note_id",
+        (case["case_id"],),
+    )
+    assert participants == [
+        {"note_id": min(first.note_id, second.note_id)},
+        {"note_id": max(first.note_id, second.note_id)},
+    ]
+
+
+def test_overlapping_same_checksum_with_divergent_acl_also_creates_conflict(
+    schema9_database: ProductDatabase,
+    acl_divergent_notes: tuple[StoredNote, StoredNote],
+) -> None:
+    """Catches checksum equality suppressing an interval conflict without security equivalence."""
+    GovernanceReconciliationService(schema9_database, GovernancePolicy()).reconcile(
+        as_of=date(2026, 8, 25)
+    )
+
+    cases = schema9_database.fetch_all(
+        "SELECT case_type, status FROM governance_cases ORDER BY case_type"
+    )
+    assert cases == [
+        {"case_type": "exact_duplicate", "status": "proposed"},
+        {"case_type": "version_conflict", "status": "proposed"},
+    ]
 
 
 def test_event_payload_does_not_contain_sensitive_fields(
@@ -313,13 +375,34 @@ def test_untrusted_metadata_issue_cannot_smuggle_a_secret_into_events(
     ) == ["malformed_metadata_issues_json"]
 
 
+def test_credential_shaped_unknown_reason_is_generalized_before_event_append(
+    schema9_database: ProductDatabase,
+) -> None:
+    """Catches credential-like values without obvious keywords entering immutable audit rows."""
+    note = _insert_note(schema9_database, "credential-shaped-marker")
+    schema9_database.execute(
+        "UPDATE notes SET metadata_issues_json = ? WHERE note_id = ?",
+        ('["sk_live_abc123"]', note.note_id),
+    )
+
+    GovernanceReconciliationService(schema9_database, GovernancePolicy()).reconcile(
+        as_of=date(2026, 8, 25)
+    )
+
+    serialized = json.dumps(schema9_database.fetch_all("SELECT * FROM governance_events"))
+    assert "sk_live_abc123" not in serialized
+    assert json.loads(
+        str(_projection_for(schema9_database, note.note_id)["reason_codes_json"])
+    ) == ["malformed_metadata_issues_json"]
+
+
 def test_acl_divergent_duplicate_cannot_be_promoted_to_confirmed_alias(
     schema9_database: ProductDatabase, acl_divergent_notes: tuple[StoredNote, StoredNote]
 ) -> None:
     """Catches a persisted status edit bypassing mandatory duplicate security equivalence."""
     service = GovernanceReconciliationService(schema9_database, GovernancePolicy())
     service.reconcile(as_of=date(2026, 8, 25))
-    case = _only_case(schema9_database)
+    case = _case_by_type(schema9_database, "exact_duplicate")
     canonical_id = min(note.note_id for note in acl_divergent_notes)
     alias_id = max(note.note_id for note in acl_divergent_notes)
     schema9_database.execute(
@@ -546,6 +629,40 @@ def test_corrupt_projection_aborts_without_partial_writes(
     assert _projection_for(schema9_database, governed_note.note_id)["reason_codes_json"] == "not-json"
 
 
+def test_semantically_contradictory_projection_with_matching_fingerprint_aborts(
+    schema9_database: ProductDatabase, governed_note: StoredNote
+) -> None:
+    """Catches valid-shaped projection fields bypassing evaluation through a retained fingerprint."""
+    service = GovernanceReconciliationService(schema9_database, GovernancePolicy())
+    service.reconcile(as_of=date(2026, 8, 25))
+    before_events = _event_count_for_note(schema9_database, governed_note.note_id)
+    schema9_database.execute(
+        """
+        UPDATE governance_note_state
+        SET lifecycle_state = 'expired',
+            disposition = 'excluded',
+            reason_codes_json = '["effective_period_ended"]'
+        WHERE note_id = ?
+        """,
+        (governed_note.note_id,),
+    )
+    schema9_database.execute(
+        "UPDATE notes SET index_status = 'indexed' WHERE note_id = ?",
+        (governed_note.note_id,),
+    )
+
+    with pytest.raises(GovernancePersistenceError, match="projection semantics"):
+        service.reconcile(as_of=date(2026, 8, 25))
+
+    projection = _projection_for(schema9_database, governed_note.note_id)
+    assert projection["lifecycle_state"] == "expired"
+    assert projection["disposition"] == "excluded"
+    assert _event_count_for_note(schema9_database, governed_note.note_id) == before_events
+    assert schema9_database.fetch_one(
+        "SELECT index_status FROM notes WHERE note_id = ?", (governed_note.note_id,)
+    ) == {"index_status": "indexed"}
+
+
 def test_corrupt_confirmed_rule_key_fails_closed(
     schema9_database: ProductDatabase, equivalent_notes: tuple[StoredNote, StoredNote]
 ) -> None:
@@ -588,3 +705,75 @@ def test_corrupt_proposed_case_participants_fail_closed(
         (case["case_id"],),
     )
     assert participants == [{"note_id": overlapping_notes[1].note_id}]
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    ["case_id", "rule_key", "case_id_and_rule_key", "evidence_json", "participant_link"],
+)
+def test_confirmed_decisions_rejects_corrupt_authority_before_candidate_lookup(
+    schema9_database: ProductDatabase,
+    equivalent_notes: tuple[StoredNote, StoredNote],
+    corruption: str,
+) -> None:
+    """Catches malformed confirmed authority being discarded as merely stale evidence."""
+    service = GovernanceReconciliationService(schema9_database, GovernancePolicy())
+    service.reconcile(as_of=date(2026, 8, 25))
+    case = _only_case(schema9_database)
+    alias_id = max(note.note_id for note in equivalent_notes)
+    if corruption == "case_id":
+        with sqlite3.connect(schema9_database.path) as connection:
+            connection.execute(
+                "UPDATE governance_cases SET case_id = 'corrupt-case-id' WHERE case_id = ?",
+                (case["case_id"],),
+            )
+    elif corruption == "rule_key":
+        schema9_database.execute(
+            "UPDATE governance_cases SET rule_key = ? WHERE case_id = ?",
+            ("0" * 64, case["case_id"]),
+        )
+    elif corruption == "case_id_and_rule_key":
+        with sqlite3.connect(schema9_database.path) as connection:
+            corrupted_case_id = f"case-{'0' * 64}"
+            connection.execute(
+                "UPDATE governance_case_notes SET case_id = ? WHERE case_id = ?",
+                (corrupted_case_id, case["case_id"]),
+            )
+            connection.execute(
+                "UPDATE governance_cases SET case_id = ?, rule_key = ? WHERE case_id = ?",
+                (corrupted_case_id, "0" * 64, case["case_id"]),
+            )
+    elif corruption == "evidence_json":
+        schema9_database.execute(
+            "UPDATE governance_cases SET evidence_json = '{}' WHERE case_id = ?",
+            (case["case_id"],),
+        )
+    else:
+        schema9_database.execute(
+            "DELETE FROM governance_case_notes WHERE case_id = ? AND note_id = ?",
+            (case["case_id"], alias_id),
+        )
+
+    with pytest.raises(GovernancePersistenceError, match="confirmed governance authority"):
+        service.confirmed_decisions([alias_id])
+
+
+def test_evaluate_notes_rejects_corrupt_confirmed_case_identity(
+    schema9_database: ProductDatabase, equivalent_notes: tuple[StoredNote, StoredNote]
+) -> None:
+    """Catches direct evaluation becoming eligible after a confirmed case type is damaged."""
+    service = GovernanceReconciliationService(schema9_database, GovernancePolicy())
+    service.reconcile(as_of=date(2026, 8, 25))
+    case = _only_case(schema9_database)
+    alias_id = max(note.note_id for note in equivalent_notes)
+    schema9_database.execute(
+        "UPDATE governance_cases SET case_type = 'damaged_authority' WHERE case_id = ?",
+        (case["case_id"],),
+    )
+    row = schema9_database.fetch_one("SELECT * FROM notes WHERE note_id = ?", (alias_id,))
+    assert row is not None
+
+    with pytest.raises(GovernancePersistenceError, match="confirmed governance authority"):
+        service.evaluate_notes(
+            [row], as_of=date(2026, 8, 25), mode=GovernanceMode.CURRENT
+        )

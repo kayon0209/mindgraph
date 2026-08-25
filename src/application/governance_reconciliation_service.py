@@ -27,6 +27,42 @@ from domain.governance import (
 )
 from infrastructure.database import ProductDatabase
 
+GOVERNANCE_REASON_CODES = frozenset(
+    {
+        "checksum_match_requires_review",
+        "conflicting_confirmed_decisions",
+        "corrupt_confirmed_governance_case",
+        "declared_archived",
+        "declared_draft",
+        "declared_expired",
+        "declared_superseded",
+        "declared_unspecified",
+        "effective_period_ended",
+        "eligible_current_version",
+        "eligible_historical_version",
+        "exact_duplicate_equivalent",
+        "governance_state_changed",
+        "historical_status_without_effective_to",
+        "invalid_acl_public",
+        "invalid_confirmed_decision",
+        "invalid_effective_date",
+        "invalid_effective_range",
+        "invalid_policy_status",
+        "malformed_acl_json",
+        "malformed_metadata_issues_json",
+        "missing_content_hash",
+        "missing_document_version",
+        "missing_effective_from",
+        "missing_owner",
+        "missing_policy_key",
+        "missing_policy_status",
+        "missing_source_id",
+        "missing_version",
+        "not_yet_effective",
+        "overlapping_effective_intervals",
+    }
+)
+
 
 class GovernancePersistenceError(RuntimeError):
     """Raised when persisted governance authority cannot be trusted."""
@@ -351,9 +387,13 @@ class GovernanceReconciliationService:
             left, left_interval = by_id[left_id]
             for right_id in ids[index + 1 :]:
                 right, right_interval = by_id[right_id]
-                if left.content_hash == right.content_hash:
+                if self.policy.exact_duplicate_equivalent(left, right):
                     continue
-                if _intervals_overlap(left_interval, right_interval):
+                left_version = governance_metadata_dict(left)["document_version"]
+                right_version = governance_metadata_dict(right)["document_version"]
+                if left_version == right_version or _intervals_overlap(
+                    left_interval, right_interval
+                ):
                     edges[left_id].add(right_id)
                     edges[right_id].add(left_id)
 
@@ -382,7 +422,13 @@ class GovernanceReconciliationService:
                         ),
                     }
                     for note_id in participant_ids
-                }
+                },
+                "document_versions": {
+                    note_id: governance_metadata_dict(by_id[note_id][0])[
+                        "document_version"
+                    ]
+                    for note_id in participant_ids
+                },
             }
             result.append(
                 self._case_candidate(
@@ -612,31 +658,40 @@ class GovernanceReconciliationService:
                 (case_id,),
             ).fetchall()
             linked = {str(item["note_id"]): str(item["participant_role"]) for item in linked_rows}
-            evidence_ids = _evidence_participant_ids(row["evidence_json"])
-            participants = evidence_ids if evidence_ids is not None else tuple(sorted(linked))
-            applicable_ids = set(participants).intersection(note_ids)
-            if not applicable_ids:
-                continue
-
+            evidence_ids = self._validate_confirmed_authority(
+                dict(row),
+                linked,
+                notes_by_id=notes_by_id,
+            )
             candidate = current_candidates.get((str(row["case_type"]), str(row["rule_key"])))
             if candidate is None:
-                continue
-            valid = (
-                case_id == f"case-{row['rule_key']}"
-                and evidence_ids == candidate.participant_note_ids
-                and set(linked) == set(candidate.participant_note_ids)
-                and _evidence_metadata_hash(row["evidence_json"])
-                == candidate.relevant_metadata_hash
-                and all(note_id in notes_by_id for note_id in candidate.participant_note_ids)
-                and _safe_reason_code(row["reason_code"])
-                and (
-                    str(row["case_type"]) != "exact_duplicate"
-                    or (
-                        candidate.status == "confirmed"
-                        and row["canonical_note_id"] == candidate.canonical_note_id
-                    )
+                evidence_hash = _evidence_metadata_hash(row["evidence_json"])
+                same_current_identity = any(
+                    current.case_type == str(row["case_type"])
+                    and current.participant_note_ids == evidence_ids
+                    and current.relevant_metadata_hash == evidence_hash
+                    for current in current_candidates.values()
                 )
-            )
+                if same_current_identity:
+                    raise GovernancePersistenceError(
+                        "confirmed governance authority is malformed"
+                    )
+                continue
+            applicable_ids = set(evidence_ids).intersection(note_ids)
+            if not applicable_ids:
+                continue
+            if (
+                evidence_ids != candidate.participant_note_ids
+                or _evidence_metadata_hash(row["evidence_json"])
+                != candidate.relevant_metadata_hash
+            ):
+                raise GovernancePersistenceError(
+                    "confirmed governance authority is malformed"
+                )
+            valid = str(row["case_type"]) != "exact_duplicate" or (
+                candidate.status == "confirmed"
+                and row["canonical_note_id"] == candidate.canonical_note_id
+                )
             if not valid:
                 for note_id in applicable_ids:
                     decisions[note_id].append(
@@ -714,6 +769,45 @@ class GovernanceReconciliationService:
             for note_id, values in decisions.items()
         }
 
+    @staticmethod
+    def _validate_confirmed_authority(
+        row: Mapping[str, Any],
+        linked: Mapping[str, str],
+        *,
+        notes_by_id: Mapping[str, GovernanceNote],
+    ) -> tuple[str, ...]:
+        case_id = row.get("case_id")
+        case_type = row.get("case_type")
+        rule_key = row.get("rule_key")
+        canonical_note_id = row.get("canonical_note_id")
+        evidence_ids = _evidence_participant_ids(row.get("evidence_json"))
+        structurally_valid = (
+            isinstance(case_id, str)
+            and _is_sha256(rule_key)
+            and case_id == f"case-{rule_key}"
+            and case_type in {"exact_duplicate", "version_conflict"}
+            and _safe_reason_code(row.get("reason_code"))
+            and evidence_ids is not None
+            and _evidence_metadata_hash(row.get("evidence_json")) is not None
+            and set(linked) == set(evidence_ids or ())
+            and all(note_id in notes_by_id for note_id in evidence_ids or ())
+        )
+        if case_type == "exact_duplicate":
+            structurally_valid = structurally_valid and (
+                isinstance(canonical_note_id, str)
+                and canonical_note_id in linked
+                and linked.get(canonical_note_id) == "canonical"
+                and all(
+                    role == ("canonical" if note_id == canonical_note_id else "alias")
+                    for note_id, role in linked.items()
+                )
+            )
+        elif case_type == "version_conflict":
+            structurally_valid = structurally_valid and canonical_note_id is None
+        if not structurally_valid or evidence_ids is None:
+            raise GovernancePersistenceError("confirmed governance authority is malformed")
+        return evidence_ids
+
     def _project_note(
         self,
         connection: sqlite3.Connection,
@@ -730,6 +824,14 @@ class GovernanceReconciliationService:
         previous = _stored_state(dict(row)) if row is not None else None
         fingerprint = _decision_fingerprint(note, evaluation, decisions)
         if previous is not None and previous.decision_fingerprint == fingerprint:
+            if (
+                previous.lifecycle_state != evaluation.lifecycle_state.value
+                or previous.disposition != evaluation.disposition.value
+                or previous.reason_codes != evaluation.reason_codes
+            ):
+                raise GovernancePersistenceError(
+                    "persisted governance projection semantics contradict its fingerprint"
+                )
             if previous.evaluated_on != as_of.isoformat():
                 connection.execute(
                     "UPDATE governance_note_state SET evaluated_on = ? WHERE note_id = ?",
@@ -827,11 +929,7 @@ def _metadata_issues(value: Any) -> tuple[str, ...]:
 
 
 def _safe_reason_code(value: Any) -> bool:
-    if not isinstance(value, str) or not value or len(value) > 80:
-        return False
-    if any(term in value.lower() for term in ("credential", "password", "secret", "token")):
-        return False
-    return all(character.isascii() and (character.islower() or character.isdigit() or character == "_") for character in value)
+    return isinstance(value, str) and value in GOVERNANCE_REASON_CODES
 
 
 def _add_issue(issues: tuple[str, ...], issue: str) -> tuple[str, ...]:
