@@ -67,7 +67,11 @@ MindGraph 是**本地优先的企业制度与决策依据知识服务**。首个
 
 当前进度：已用公开 `demo-vault/` 建立 12 条人工冻结 V2.1 回归集，并禁止从运行数据库或 confirmed 关系反向生成 Golden 标签。检索消融与答案评测已拆分：答案层可直接运行当前服务或复用冻结预测，确定性量化 citation F1、拒答正确性、版本有效性、必需事实覆盖与禁用事实规避；P95 总延迟、平均 Token、平均估算成本和数据覆盖率进入同一 `evaluation_runs` 账本，缺失用量不会被当作零成本。样本量、权限场景和人工/LLM judge 校准仍未达到本阶段最终验收。
 
-元数据治理第二批已落地：Vault 中的 policy_key、owner、version、effective_from/to、status 会规范化进入 schema v5，缺失或非法值形成显式质量问题；API、Web 制度台账、检索 chunk 和 citation 均保留制度族、版本、稳定 Vault 路径与有效期语境。同一 policy_key 在查询日期存在多个有效版本时，问答服务会在调用模型前返回 `conflicting_evidence`，SSE 与 Web 完整展示待人工裁决版本。该机制解决“检测并安全拒答”，不自动决定哪个冲突版本有效；权限场景评测、人工复核校准，以及回答质量与 token/P95/单问成本的正式发布门槛仍未完成。
+知识治理实现已贯通声明元数据、schema 9 持久化、确定性 reconciliation、索引准入、检索/引用过滤、拒答、审计 API 和 Web 人工复核。当前模式只允许 canonical、eligible 且在响应日期有效的 note 成为证据；alias、冲突、过期、草稿和 unresolved note 均 fail-closed。ACL 在治理判断和所有检索阶段之前执行，隐藏 participant 不进入 case/event 响应。人工 confirm/reject/revoke 采用 compare-and-swap，并在同一事务内写 case、append-only event、projection 和 index pending。
+
+既有 schema-8 数据库不会在启动时自动迁移：health 继续可用并报告 governance unavailable，治理 API 和 governed MindGraph 路径返回受控 503，不回退到未治理检索。本次实现与测试没有对 `data/product/product.sqlite3`、真实企业数据库或用户数据库执行 schema 9 apply/rollback，只使用了临时 SQLite。生产迁移仍需单独的备份、审批和操作员流程；独立最终代码审查完成前也不把 UG-008 标为最终验收 Done。
+
+证据图能力仍是 confirmed 关系的一跳受控扩展，不是完整知识图谱或已验证的多跳 GraphRAG。UG-007 的样本扩充、权限评测与正式 CI 阈值仍未完成；OIDC 仍需真实非生产 IdP 的外部验收。
 
 ### Phase 3：自适应检索路由
 

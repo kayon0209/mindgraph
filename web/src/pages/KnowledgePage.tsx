@@ -2,7 +2,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { BookMarked, ChevronRight, FileText, Search, X } from "lucide-react";
 
 import { EmptyState, ErrorState, LoadingState, MetricCard, PageHeader, StatusPill } from "../components/Primitives";
-import { PolicyGovernance } from "../components/PolicyGovernance";
+import { GovernanceQueue, PolicyGovernance } from "../components/PolicyGovernance";
 import { api } from "../lib/api";
 import type { EvaluationResponse, NoteDetail, NoteItem } from "../types";
 
@@ -16,13 +16,17 @@ export function KnowledgePage() {
   const [statsUnavailable, setStatsUnavailable] = useState(false);
   const [selected, setSelected] = useState<NoteDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [pendingGovernance, setPendingGovernance] = useState<number | null>(null);
+  const [governanceExpanded, setGovernanceExpanded] = useState(false);
 
   const load = async (search = "") => {
     setLoading(true);
     setError("");
     setStatsUnavailable(false);
     try {
-      const [noteResult, evaluationResult] = await Promise.allSettled([api.notes(search), api.evaluations()]);
+      const [noteResult, evaluationResult, healthResult] = await Promise.allSettled([
+        api.notes(search), api.evaluations(), api.health(),
+      ]);
 
       if (noteResult.status === "fulfilled") {
         setNotes(noteResult.value.items);
@@ -38,6 +42,9 @@ export function KnowledgePage() {
         if (noteResult.status === "fulfilled") {
           setStatsUnavailable(true);
         }
+      }
+      if (healthResult.status === "fulfilled") {
+        setPendingGovernance(healthResult.value.governance?.pending_case_count ?? null);
       }
     } finally {
       setLoading(false);
@@ -85,6 +92,19 @@ export function KnowledgePage() {
         <MetricCard label="有效分块" note={statsUnavailable ? "评测看板暂不可用，展示台账主数据" : "当前索引版本"} value={stats?.chunks_total ?? "—"} />
         <MetricCard label="已确认关系" note="可参与一跳扩展" value={stats?.relations_confirmed ?? "—"} />
       </div>
+
+      <section className="governance-review-section reveal reveal-2">
+        <button
+          aria-expanded={governanceExpanded}
+          className="governance-summary-button"
+          onClick={() => setGovernanceExpanded((value) => !value)}
+          type="button"
+        >
+          <span><strong>知识治理待审</strong><small>仅展示当前主体有权查看的事项</small></span>
+          <b>{pendingGovernance ?? "—"}</b>
+        </button>
+        {governanceExpanded ? <GovernanceQueue onChanged={() => load(query.trim())} /> : null}
+      </section>
 
       <section className="ledger-section reveal reveal-3">
         <div className="section-heading">

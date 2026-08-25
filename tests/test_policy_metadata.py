@@ -129,15 +129,9 @@ def test_initialize_migrates_existing_notes_without_losing_rows(tmp_path: Path) 
     override_container(SimpleNamespace(database=database, mindgraph_graph_store=graph_store))
     client = TestClient(app, raise_server_exceptions=False)
     try:
-        governance = client.get("/api/v1/mindgraph/notes/note-1").json()["governance"]
-        assert governance["metadata_complete"] is False
-        assert governance["issues"] == [
-            "missing_owner",
-            "missing_policy_key",
-            "missing_version",
-            "missing_effective_from",
-            "missing_policy_status",
-        ]
+        response = client.get("/api/v1/mindgraph/notes/note-1")
+        assert response.status_code == 503
+        assert response.json()["error"]["code"] == "governance_unavailable"
     finally:
         client.close()
         override_container(None)
@@ -313,6 +307,10 @@ effective_from: 2026-09-01
             "policy_status": "active",
             "metadata_complete": True,
             "issues": [],
+            "evaluated_on": date.today().isoformat(),
+            "lifecycle_state": "current",
+            "disposition": "eligible",
+            "reason_codes": ["eligible_current_version"],
         }
         detail = client.get("/api/v1/mindgraph/notes/active-note")
         assert detail.status_code == 200

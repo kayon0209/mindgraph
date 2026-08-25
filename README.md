@@ -168,6 +168,12 @@ Apply creates four governance business tables plus the retained `schema_migratio
 
 During development and test work, never run `--apply` or `--rollback` against `data/product/product.sqlite3`, a real enterprise database or a user database. Migration tests must use disposable temporary SQLite databases. A production migration requires a separate operator change process, backup and review; this repository task does not authorize one.
 
+Schema-9 runtimes expose authenticated governance operations at `/api/v1/knowledge-governance`: ACL-filtered case list/detail and event reads, plus compare-and-swap confirm, reject and revoke actions. The server derives the actor and access scope from the authenticated principal and the request ID from middleware; clients must not send `actor` or `resolved_by`. Any configured `admin` or `governance_reviewer` role may act. Hidden and absent cases both return 404, stale decisions return 409, invalid payloads return 422, and unavailable governance returns 503. The public health response contains aggregate readiness only: schema readiness, reconciliation status/time, pending count and whether the active index carries governed metadata.
+
+The Web knowledge page loads only the aggregate pending count initially. Opening the governance section lazily loads ACL-visible cases and renders actions solely from server-returned capabilities. Decision failures retain the current queue and offer a retry path.
+
+No real or user database was migrated while implementing or verifying this workflow. Only migration code and disposable temporary SQLite tests were exercised. MindGraph's graph retrieval remains controlled one-hop expansion over confirmed relations; it is not a complete knowledge-graph or multi-hop GraphRAG engine.
+
 ## MCP for AI agents
 
 MindGraph exposes a read-only MCP server with five tools:

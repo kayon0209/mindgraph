@@ -1,6 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { parseSseFrames } from "./api";
+import { api, parseSseFrames } from "./api";
+
+afterEach(() => vi.restoreAllMocks());
 
 describe("parseSseFrames", () => {
   it("parses complete events and preserves an incomplete tail", () => {
@@ -29,5 +31,27 @@ describe("parseSseFrames", () => {
 
     expect(result.events[0].event).toBe("completed");
     expect(result.events[0].data.request_id).toBe("r1");
+  });
+});
+
+describe("governance mutations", () => {
+  it("never sends actor identity when resolving", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ status: "rejected" }), { status: 200 }),
+    );
+    await api.resolveGovernanceCase("case-1", "proposed", "reject");
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(JSON.parse(String(init.body))).toEqual({ expected_status: "proposed", decision: "reject" });
+    expect(String(init.body)).not.toContain("actor");
+    expect(String(init.body)).not.toContain("resolved_by");
+  });
+
+  it("sends only expected state when revoking", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ status: "revoked" }), { status: 200 }),
+    );
+    await api.revokeGovernanceCase("case-1", "confirmed");
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(JSON.parse(String(init.body))).toEqual({ expected_status: "confirmed" });
   });
 });

@@ -94,6 +94,10 @@ class ServiceContainer:
         self.governance_reconciler = GovernanceReconciliationService(
             self.database, GovernancePolicy()
         )
+        from application.governance_case_service import GovernanceCaseService
+        self.governance_cases = GovernanceCaseService(
+            self.database, self.governance_reconciler
+        )
         self.mindgraph_index_service = MindGraphIndexService(
             self.database,
             self.root / "knowledge",

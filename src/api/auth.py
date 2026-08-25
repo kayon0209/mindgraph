@@ -224,6 +224,20 @@ def require_role(role: str) -> Callable:
     return role_checker
 
 
+def require_any_role(*roles: str) -> Callable:
+    """FastAPI dependency requiring any one of the supplied roles."""
+    allowed = frozenset(role for role in roles if isinstance(role, str) and role)
+    if not allowed:
+        raise ValueError("at least one role is required")
+
+    def role_checker(principal: dict = Depends(get_required_principal)) -> dict:
+        if allowed.isdisjoint(principal.get("roles", [])):
+            raise AuthorizationError("Missing required role")
+        return principal
+
+    return role_checker
+
+
 # ── Demo 模式会话管理 ──
 
 

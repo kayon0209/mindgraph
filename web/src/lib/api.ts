@@ -3,6 +3,8 @@ import type {
   ChatRequest,
   ConfirmedRelationsResponse,
   EvaluationResponse,
+  GovernanceCase,
+  GovernanceEvent,
   HealthStatus,
   NoteDetail,
   NoteItem,
@@ -104,6 +106,32 @@ export const api = {
   evaluations: () => request<EvaluationResponse>("/mindgraph/evaluation/ablation"),
   proposedRelations: () => request<ProposedRelationsResponse>("/mindgraph/relations/proposed"),
   confirmedRelations: () => request<ConfirmedRelationsResponse>("/mindgraph/relations/confirmed"),
+  governanceCases: (status?: GovernanceCase["status"]) =>
+    request<{ total: number; items: GovernanceCase[] }>(
+      `/knowledge-governance/cases${status ? `?status=${encodeURIComponent(status)}` : ""}`,
+    ),
+  governanceEvents: (caseId?: string) =>
+    request<{ total: number; items: GovernanceEvent[] }>(
+      `/knowledge-governance/events${caseId ? `?case_id=${encodeURIComponent(caseId)}` : ""}`,
+    ),
+  resolveGovernanceCase: (
+    id: string,
+    expectedStatus: "proposed",
+    decision: "confirm" | "reject",
+    canonicalNoteId?: string,
+  ) => request<GovernanceCase>(`/knowledge-governance/cases/${encodeURIComponent(id)}/resolve`, {
+    method: "POST",
+    body: JSON.stringify({
+      expected_status: expectedStatus,
+      decision,
+      ...(canonicalNoteId ? { canonical_note_id: canonicalNoteId } : {}),
+    }),
+  }),
+  revokeGovernanceCase: (id: string, expectedStatus: "confirmed" | "rejected") =>
+    request<GovernanceCase>(`/knowledge-governance/cases/${encodeURIComponent(id)}/revoke`, {
+      method: "POST",
+      body: JSON.stringify({ expected_status: expectedStatus }),
+    }),
   resolveRelation: (id: string, decision: "confirm" | "reject") =>
     request<{ ok: boolean; status: string }>(`/mindgraph/relations/${encodeURIComponent(id)}/resolve`, {
       method: "POST",

@@ -17,7 +17,7 @@
 | UG-007 | 检索质量评测与证据可观测性 | **P1** | **Partial** | 仍缺 50–200 独立样本、期望证据标注和 CI 回归门禁 |
 | UG-001 | 鲁棒文档 ingestion（layout-aware） | P2 | **Partial** | 执行 OCR；按语义结构、表头、单位、页码和来源构建可独立回答的 chunk |
 | UG-002 | Query 理解与多查询召回 | P2 | **Partial** | 各 query variant 分别检索，合并去重并以元数据/ACL 预过滤后排序 |
-| UG-008 | 知识治理与生命周期过滤 | P2 | **Partial** | 已有纯治理策略与显式 schema 9 迁移边界；持久化协调、入库和检索接入尚未完成 |
+| UG-008 | 知识治理与生命周期过滤 | P2 | **Implemented** | 策略、显式迁移、协调、索引/检索过滤、受控 API 与 Web 人工复核已实现；仍待独立最终审查和生产迁移流程 |
 | UG-005 | MCP 只读工具 + 隐私审计 | P2 | **Partial** | async handler 不阻塞事件循环；问题文本审计服从统一隐私策略 |
 | UG-006 | SSO / OIDC 企业验收 | P2 | **Partial** | 已完成 discovery/JWK client 缓存；仍需真实非生产 IdP 的端到端验收 |
 
@@ -106,17 +106,21 @@
 
 **剩余工作与验收**：对每个有效 variant 分别执行 dense + BM25 检索；在 metadata/ACL 预过滤后按 canonical chunk ID 去重、保留最佳分数和命中 variant，再融合与可选 rerank。信息不足或高风险问题先澄清；不得用改写虚构用户未提供的版本、权限或事实条件。用 UG-007 问题集校准候选预算和上下文长度，确保复合问题的期望证据覆盖率提升且重复候选受控。
 
-## UG-008：知识治理与生命周期过滤（P2，Partial）
+## UG-008：知识治理与生命周期过滤（P2，Implemented / 待独立最终审查）
 
 **实施范围与验收**：入库阶段识别草稿、过期、重复、冲突和权限不明资料；默认不把不可判定资料作为可回答的正式知识。索引和检索阶段一致执行 `policy_status`、有效期、版本和来源权威级别规则；同一逻辑文档多版本并存时默认优先当前有效版本，并显式暴露冲突。过期/草稿资料不得成为默认证据，治理动作必须有审计记录。
 
-**当前迁移边界**：全新数据库直接初始化为 schema 9；既有 schema-8 数据库在正常服务启动时必须继续保持 schema 8，不允许隐式升级。此时 schema-8 服务仍可运行既有能力，但治理持久化必须报告不可用，直到操作员显式执行 `scripts/migrate_governance_schema.py --apply`。这只建立治理存储边界，不代表 reconciliation、入库规则或检索过滤已经接入。
+**当前实现**：统一治理策略已接入 reconciliation、同步后索引构建、ACL 后且检索前的治理过滤、冲突/无证据拒答、case/event API、隐私安全 health 和 Web 人工复核队列。索引只接收当前有效且 canonical 的 eligible note；alias、冲突、过期、草稿和 unresolved note 不得进入。检索仍以数据库权威决策为准，索引 metadata 只作防御性校验；ACL 始终先于治理、dense、BM25、融合、rerank、关系扩展和模型上下文。
+
+全新数据库直接初始化为 schema 9；既有 schema-8 数据库在正常服务启动时必须继续保持 schema 8，不允许隐式升级。此时 health 可启动并报告治理 unavailable，治理 API 与 governed MindGraph 路径返回受控 503，不得回退到未治理检索，直到操作员显式执行 `scripts/migrate_governance_schema.py --apply`。
 
 迁移 CLI 使用运行时 `DATABASE_PATH`，默认（或 `--dry-run`）通过 SQLite 只读连接验证 `8 -> 9` 计划；`--apply` 在一个 `BEGIN IMMEDIATE` 事务中创建四张治理业务表、append-only 事件触发器和保留的 `schema_migration_runs` 审计表，并返回 run ID。`--rollback RUN_ID` 只接受该精确 completed run；四张治理业务表中任一存在记录即拒绝回滚。成功回滚删除治理业务对象、把逻辑版本恢复到 8，但保留并更新迁移账本。
 
 CLI 的 stdout 始终只有一个聚合 JSON，错误返回固定脱敏 code 和非零退出码，不输出数据库路径、note ID、正文、标题、ACL、凭据或 traceback。`governance_events` 的 schema 及写入契约不得承载正文、标题、路径、ACL 或任何 token/secret。
 
-**开发禁令**：开发与自动化测试只允许在 pytest 创建的临时 SQLite 数据库中执行 apply/rollback；禁止对 `data/product/product.sqlite3`、真实企业数据库或用户数据库执行。本条目的生产迁移仍需独立的备份、审批与操作员变更流程。UG-008 尚未完成。
+**开发与验收边界**：开发与自动化测试只在 pytest 创建的临时 SQLite 数据库中执行 apply/rollback；未对 `data/product/product.sqlite3`、真实企业数据库或用户数据库执行 schema 9 apply/rollback。生产迁移仍需独立备份、审批与操作员变更流程。本分支实现仍需 Task 7 独立审查和 branch-wide 最终审查，审查完成前不宣称最终验收 Done。
+
+Graph 能力的准确边界是 confirmed 关系的一跳受控扩展，不是完整知识图谱引擎，也未证明多跳 GraphRAG 增益。UG-007 仍只有 12 条人工冻结样本，扩样与 CI 阈值未完成；OIDC 也仍缺少真实非生产 IdP 的外部验收。
 
 ---
 

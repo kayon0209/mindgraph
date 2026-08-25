@@ -19,6 +19,7 @@ def auth_enabled(monkeypatch):
     ("method", "path", "payload"),
     [
         ("get", "/api/v1/mindgraph/notes", None),
+        ("get", "/api/v1/knowledge-governance/cases", None),
         ("post", "/api/v1/evaluations/runs", {}),
         ("post", "/api/v1/governance/datasets", {}),
         ("post", "/api/v1/feedback", {}),
