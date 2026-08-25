@@ -4,10 +4,16 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Collection, Mapping
 from datetime import date
+import hashlib
 import json
 import sqlite3
 from typing import Any
 
+from application.governance_policy import (
+    GovernancePolicy,
+    canonical_json,
+    governance_metadata_dict,
+)
 from application.governance_reconciliation_service import (
     GOVERNANCE_REASON_CODES,
     GovernancePersistenceError,
@@ -27,6 +33,7 @@ class GovernanceRetrievalAuthority:
 
     def __init__(self, database: ProductDatabase) -> None:
         self.database = database
+        self.policy = GovernancePolicy()
 
     def load(
         self,
@@ -222,9 +229,15 @@ class GovernanceRetrievalAuthority:
                 (case_id,),
             ).fetchall()
             roles = {str(link["note_id"]): str(link["participant_role"]) for link in links}
-            self._validate_case(dict(case_row), roles)
+            self._validate_case_linkage(dict(case_row), roles)
+            linked_notes = self._load_notes(connection, tuple(sorted(roles)))
+            expected_reason = self._validate_case_semantics(
+                dict(case_row),
+                roles,
+                linked_notes,
+            )
             applicable = selected_set.intersection(roles)
-            reason = str(case_row["reason_code"])
+            reason = expected_reason
             case_type = str(case_row["case_type"])
             status = str(case_row["status"])
             if case_type == "version_conflict":
@@ -239,6 +252,9 @@ class GovernanceRetrievalAuthority:
                                 decision_id=case_id,
                             )
                         )
+            elif status == "proposed":
+                for note_id in applicable:
+                    blocked[note_id].add(reason)
             elif status == "confirmed":
                 canonical = str(case_row["canonical_note_id"])
                 for note_id in applicable:
@@ -261,7 +277,7 @@ class GovernanceRetrievalAuthority:
         )
 
     @staticmethod
-    def _validate_case(row: Mapping[str, Any], roles: Mapping[str, str]) -> None:
+    def _validate_case_linkage(row: Mapping[str, Any], roles: Mapping[str, str]) -> None:
         case_type = row.get("case_type")
         status = row.get("status")
         reason = row.get("reason_code")
@@ -272,7 +288,6 @@ class GovernanceRetrievalAuthority:
         except (TypeError, json.JSONDecodeError) as exc:
             raise GovernancePersistenceError("retrieval governance case is malformed") from exc
         participant_ids = evidence.get("participant_note_ids") if isinstance(evidence, dict) else None
-        metadata_hash = evidence.get("relevant_metadata_hash") if isinstance(evidence, dict) else None
         structurally_valid = (
             isinstance(case_id, str)
             and _is_sha256(rule_key)
@@ -284,7 +299,9 @@ class GovernanceRetrievalAuthority:
             and isinstance(participant_ids, list)
             and participant_ids == sorted(set(participant_ids))
             and set(participant_ids) == set(roles)
-            and _is_sha256(metadata_hash)
+            and _is_sha256(
+                evidence.get("relevant_metadata_hash") if isinstance(evidence, dict) else None
+            )
         )
         if case_type == "version_conflict":
             structurally_valid = structurally_valid and all(
@@ -308,6 +325,163 @@ class GovernanceRetrievalAuthority:
         if not structurally_valid:
             raise GovernancePersistenceError("retrieval governance case is malformed")
 
+    def _validate_case_semantics(
+        self,
+        row: Mapping[str, Any],
+        roles: Mapping[str, str],
+        notes: Mapping[str, GovernanceNote],
+    ) -> str:
+        case_type = str(row["case_type"])
+        status = str(row["status"])
+        participant_ids = tuple(sorted(notes))
+        if set(notes) != set(roles) or len(participant_ids) < 2:
+            raise GovernancePersistenceError("retrieval governance case is stale")
+        if case_type == "exact_duplicate":
+            relevant, reason, equivalent = self._exact_duplicate_identity(
+                participant_ids, notes
+            )
+            canonical = row.get("canonical_note_id")
+            if status == "confirmed":
+                expected_canonical = participant_ids[0]
+                valid_semantics = (
+                    equivalent
+                    and canonical == expected_canonical
+                    and roles.get(expected_canonical) == "canonical"
+                    and all(
+                        role == (
+                            "canonical" if note_id == expected_canonical else "alias"
+                        )
+                        for note_id, role in roles.items()
+                    )
+                )
+            else:
+                valid_semantics = (
+                    not equivalent
+                    and canonical is None
+                    and all(role == "candidate" for role in roles.values())
+                )
+        else:
+            relevant, reason = self._version_conflict_identity(participant_ids, notes)
+            valid_semantics = (
+                row.get("canonical_note_id") is None
+                and all(role == "candidate" for role in roles.values())
+            )
+        relevant_json = canonical_json(relevant)
+        metadata_hash = hashlib.sha256(relevant_json.encode("utf-8")).hexdigest()
+        rule_payload = {
+            "case_type": case_type,
+            "participant_note_ids": list(participant_ids),
+            "relevant_metadata": relevant,
+        }
+        rule_key = hashlib.sha256(
+            canonical_json(rule_payload).encode("utf-8")
+        ).hexdigest()
+        evidence = json.loads(str(row["evidence_json"]))
+        if (
+            not valid_semantics
+            or row.get("reason_code") != reason
+            or row.get("rule_key") != rule_key
+            or row.get("case_id") != f"case-{rule_key}"
+            or evidence.get("relevant_metadata_hash") != metadata_hash
+        ):
+            raise GovernancePersistenceError("retrieval governance case is stale")
+        return reason
+
+    def _exact_duplicate_identity(
+        self,
+        participant_ids: tuple[str, ...],
+        notes: Mapping[str, GovernanceNote],
+    ) -> tuple[dict[str, Any], str, bool]:
+        checksums = {notes[note_id].content_hash for note_id in participant_ids}
+        if len(checksums) != 1 or not next(iter(checksums), ""):
+            raise GovernancePersistenceError("retrieval governance case is stale")
+        canonical = notes[participant_ids[0]]
+        equivalent = all(
+            self.policy.exact_duplicate_equivalent(canonical, notes[note_id])
+            for note_id in participant_ids[1:]
+        )
+        relevant = {
+            "checksum": canonical.content_hash,
+            "notes": {
+                note_id: governance_metadata_dict(notes[note_id])
+                for note_id in participant_ids
+            },
+        }
+        return (
+            relevant,
+            "exact_duplicate_equivalent"
+            if equivalent
+            else "checksum_match_requires_review",
+            equivalent,
+        )
+
+    def _version_conflict_identity(
+        self,
+        participant_ids: tuple[str, ...],
+        notes: Mapping[str, GovernanceNote],
+    ) -> tuple[dict[str, Any], str]:
+        intervals = {
+            note_id: self.policy.governance_interval(notes[note_id])
+            for note_id in participant_ids
+        }
+        if any(interval is None for interval in intervals.values()):
+            raise GovernancePersistenceError("retrieval governance case is stale")
+        edges: dict[str, set[str]] = defaultdict(set)
+        has_overlap = False
+        for index, left_id in enumerate(participant_ids):
+            left_interval = intervals[left_id]
+            assert left_interval is not None
+            for right_id in participant_ids[index + 1 :]:
+                right_interval = intervals[right_id]
+                assert right_interval is not None
+                overlaps = _intervals_overlap(left_interval, right_interval)
+                same_version_different_checksum = (
+                    notes[left_id].document_version == notes[right_id].document_version
+                    and notes[left_id].content_hash != notes[right_id].content_hash
+                )
+                if not overlaps and not same_version_different_checksum:
+                    continue
+                edges[left_id].add(right_id)
+                edges[right_id].add(left_id)
+                has_overlap = has_overlap or overlaps
+        if not edges:
+            raise GovernancePersistenceError("retrieval governance case is stale")
+        reached: set[str] = set()
+        pending = [participant_ids[0]]
+        while pending:
+            note_id = pending.pop()
+            if note_id in reached:
+                continue
+            reached.add(note_id)
+            pending.extend(edges[note_id] - reached)
+        if reached != set(participant_ids):
+            raise GovernancePersistenceError("retrieval governance case is stale")
+        relevant = {
+            "intervals": {
+                note_id: {
+                    "effective_from": intervals[note_id][0].isoformat(),
+                    "effective_to": (
+                        intervals[note_id][1].isoformat()
+                        if intervals[note_id][1] is not None
+                        else None
+                    ),
+                }
+                for note_id in participant_ids
+            },
+            "document_versions": {
+                note_id: notes[note_id].document_version for note_id in participant_ids
+            },
+            "checksums": {
+                note_id: notes[note_id].content_hash for note_id in participant_ids
+            },
+        }
+        return (
+            relevant,
+            "overlapping_effective_intervals"
+            if has_overlap
+            else "same_version_different_checksum",
+        )
+
 
 def _optional_text(value: Any) -> str | None:
     if value is None:
@@ -322,3 +496,12 @@ def _is_sha256(value: Any) -> bool:
     return isinstance(value, str) and len(value) == 64 and all(
         char in "0123456789abcdef" for char in value
     )
+
+
+def _intervals_overlap(
+    left: tuple[date, date | None],
+    right: tuple[date, date | None],
+) -> bool:
+    left_end = left[1] or date.max
+    right_end = right[1] or date.max
+    return left[0] <= right_end and right[0] <= left_end

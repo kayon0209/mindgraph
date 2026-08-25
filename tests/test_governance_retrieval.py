@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 import json
+import sqlite3
 
 import pytest
 
@@ -438,6 +439,7 @@ def _insert_authoritative_note(
     acl_json: str = "{}",
     acl_public: bool = True,
     content_hash: str | None = None,
+    source_id: str = "builtin",
 ) -> None:
     database.execute(
         """
@@ -451,7 +453,7 @@ def _insert_authoritative_note(
         (
             note_id,
             f"policies/{note_id}.md",
-            "builtin",
+            source_id,
             f"Policy {note_id}",
             content_hash or f"hash-{note_id}",
             "{}",
@@ -593,3 +595,201 @@ def test_proposed_overlap_blocks_top_one_retrieval_and_both_chat_paths(tmp_path)
     assert events[-1]["data"]["result_state"] == "conflicting_evidence"
     assert "PROVIDER_WAS_CALLED" not in answer.answer
     assert all("PROVIDER_WAS_CALLED" not in str(event) for event in events)
+
+
+def test_proposed_exact_duplicate_blocks_retrieval_and_provider(tmp_path) -> None:
+    database = ProductDatabase(tmp_path / "product.sqlite3")
+    database.initialize()
+    _insert_authoritative_note(
+        database,
+        "old-copy",
+        policy_key="expense.copy",
+        version="1.0",
+        effective_from="2025-01-01",
+        effective_to="2025-12-31",
+        content_hash="same-checksum",
+    )
+    _insert_authoritative_note(
+        database,
+        "new-copy",
+        policy_key="expense.copy",
+        version="2.0",
+        effective_from="2026-01-01",
+        content_hash="same-checksum",
+    )
+    GovernanceReconciliationService(database, GovernancePolicy()).reconcile(
+        as_of=date(2026, 8, 25)
+    )
+    old = _chunk(
+        "old-copy",
+        status="active",
+        effective_from="2025-01-01",
+        effective_to="2025-12-31",
+    )
+    new = _chunk("new-copy", effective_from="2026-01-01")
+    for chunk, version in ((old, "1.0"), (new, "2.0")):
+        chunk.metadata.update(
+            {
+                "policy_key": "expense.copy",
+                "document_version": version,
+                "content_hash": "same-checksum",
+            }
+        )
+    pipeline = _authoritative_pipeline(
+        database,
+        [old, new],
+        forbidden={old.chunk_id, new.chunk_id},
+        final_top_k=1,
+    )
+
+    trace = pipeline.retrieve(
+        "copy",
+        "hybrid",
+        query_date="2026-08-25",
+        access_scope={"allow": ["*"]},
+    )
+    service = ChatService(database, lambda _top_k: FixedPipeline(trace), SentinelProvider())
+    request = ChatRequest(question="哪份制度有效？", final_top_k=1, graph_enabled=False)
+    answer = service.answer(request)
+    events = list(service.stream(request))
+
+    assert trace.final_selected_chunks == []
+    assert trace.applied_filters["governance_prefilter"]["excluded_reason_counts"] == {
+        "checksum_match_requires_review": 2
+    }
+    assert "old-copy" not in str(trace.to_dict())
+    assert "new-copy" not in str(trace.to_dict())
+    assert answer.result_state.value == "insufficient_evidence"
+    assert events[-1]["data"]["result_state"] == "insufficient_evidence"
+    assert "PROVIDER_WAS_CALLED" not in answer.answer
+    assert all("PROVIDER_WAS_CALLED" not in str(event) for event in events)
+
+
+def _confirmed_duplicate_database(tmp_path) -> tuple[ProductDatabase, Chunk]:
+    database = ProductDatabase(tmp_path / "product.sqlite3")
+    database.initialize()
+    for note_id in ("canonical", "z-alias"):
+        _insert_authoritative_note(
+            database,
+            note_id,
+            policy_key="expense.duplicate",
+            version="1.0",
+            content_hash="same-checksum",
+            source_id="connector-main",
+        )
+    GovernanceReconciliationService(database, GovernancePolicy()).reconcile(
+        as_of=date(2026, 8, 25)
+    )
+    canonical = _chunk("canonical")
+    canonical.metadata.update(
+        {
+            "policy_key": "expense.duplicate",
+            "content_hash": "same-checksum",
+            "source_id": "connector-main",
+        }
+    )
+    return database, canonical
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("content_hash", "changed-checksum"),
+        ("acl_json", json.dumps({"allow": ["department:legal"]})),
+        ("source_id", "connector-other"),
+        ("document_version", "2.0"),
+    ],
+)
+def test_confirmed_alias_case_fails_closed_after_linked_participant_drift(
+    tmp_path,
+    column: str,
+    value: str,
+) -> None:
+    database, canonical = _confirmed_duplicate_database(tmp_path)
+    database.execute(f"UPDATE notes SET {column} = ? WHERE note_id = ?", (value, "z-alias"))
+    pipeline = _authoritative_pipeline(database, [canonical])
+
+    with pytest.raises(ValueError, match="authority is unavailable"):
+        pipeline.retrieve(
+            "policy",
+            "hybrid",
+            query_date="2026-08-25",
+            access_scope={"allow": ["*"]},
+        )
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [("effective_from", "2027-01-01"), ("document_version", "3.0")],
+)
+def test_confirmed_conflict_fails_closed_after_semantic_drift(
+    tmp_path,
+    column: str,
+    value: str,
+) -> None:
+    database = ProductDatabase(tmp_path / "product.sqlite3")
+    database.initialize()
+    _insert_authoritative_note(
+        database,
+        "left",
+        policy_key="expense.conflict",
+        version="1.0",
+        effective_to="2026-12-31",
+    )
+    _insert_authoritative_note(
+        database,
+        "right",
+        policy_key="expense.conflict",
+        version="2.0",
+        effective_from="2026-08-01",
+    )
+    GovernanceReconciliationService(database, GovernancePolicy()).reconcile(
+        as_of=date(2026, 8, 25)
+    )
+    database.execute(
+        "UPDATE governance_cases SET status = 'confirmed' WHERE case_type = 'version_conflict'"
+    )
+    database.execute(f"UPDATE notes SET {column} = ? WHERE note_id = ?", (value, "right"))
+    left = _chunk("left", effective_to="2026-12-31")
+    left.metadata.update({"policy_key": "expense.conflict", "document_version": "1.0"})
+    pipeline = _authoritative_pipeline(database, [left])
+
+    with pytest.raises(ValueError, match="authority is unavailable"):
+        pipeline.retrieve(
+            "policy",
+            "hybrid",
+            query_date="2026-08-25",
+            access_scope={"allow": ["*"]},
+        )
+
+
+@pytest.mark.parametrize("corruption", ["rule_key", "metadata_hash", "missing_linked_note"])
+def test_case_semantic_identity_corruption_fails_closed(tmp_path, corruption: str) -> None:
+    database, canonical = _confirmed_duplicate_database(tmp_path)
+    case = database.fetch_one("SELECT case_id, evidence_json FROM governance_cases")
+    assert case is not None
+    if corruption == "rule_key":
+        database.execute(
+            "UPDATE governance_cases SET rule_key = ? WHERE case_id = ?",
+            ("a" * 64, case["case_id"]),
+        )
+    elif corruption == "metadata_hash":
+        evidence = json.loads(case["evidence_json"])
+        evidence["relevant_metadata_hash"] = "b" * 64
+        database.execute(
+            "UPDATE governance_cases SET evidence_json = ? WHERE case_id = ?",
+            (json.dumps(evidence, sort_keys=True, separators=(",", ":")), case["case_id"]),
+        )
+    else:
+        with sqlite3.connect(database.path) as connection:
+            connection.execute("PRAGMA foreign_keys = OFF")
+            connection.execute("DELETE FROM notes WHERE note_id = ?", ("z-alias",))
+    pipeline = _authoritative_pipeline(database, [canonical])
+
+    with pytest.raises(ValueError, match="authority is unavailable"):
+        pipeline.retrieve(
+            "policy",
+            "hybrid",
+            query_date="2026-08-25",
+            access_scope={"allow": ["*"]},
+        )
