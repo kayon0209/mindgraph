@@ -88,6 +88,13 @@ class GovernanceEvaluation:
 
 
 @dataclass(frozen=True, slots=True)
+class GovernanceAuthoritySnapshot:
+    notes: Mapping[str, GovernanceNote]
+    decisions: Mapping[str, tuple[ConfirmedGovernanceDecision, ...]]
+    blocking_reason_codes: Mapping[str, tuple[str, ...]]
+
+
+@dataclass(frozen=True, slots=True)
 class ReconciliationResult:
     evaluated: int
     changed: int

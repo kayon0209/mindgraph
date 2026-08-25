@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from datetime import date
+import json
 
 import pytest
 
 from application.chat_service import ChatService
 from application.governance_policy import GovernancePolicy
+from application.governance_reconciliation_service import GovernanceReconciliationService
 from domain.governance import (
     ConfirmedGovernanceDecision,
+    GovernanceAuthoritySnapshot,
     GovernanceDisposition,
 )
 from domain.models import ChatRequest
@@ -76,12 +79,21 @@ def _pipeline(
     forbidden: set[str] | None = None,
 ) -> RetrievalPipeline:
     blocked = forbidden or set()
+
+    def load(note_ids, **_kwargs):
+        notes = {
+            note.note_id: note
+            for note in (RetrievalPipeline._governance_note(chunk) for chunk in chunks)
+            if note.note_id in note_ids
+        }
+        return GovernanceAuthoritySnapshot(notes, decisions or {}, {})
+
     return RetrievalPipeline(
         GuardedRetriever(chunks, blocked, "dense_score"),
         GuardedRetriever(chunks, blocked, "sparse_score"),
         ReciprocalRankFusion(),
         governance_policy=GovernancePolicy(),
-        confirmed_decision_loader=lambda _ids: decisions or {},
+        governance_authority_loader=load,
     )
 
 
@@ -149,7 +161,11 @@ def test_governance_requires_complete_matching_dense_sparse_corpora() -> None:
         GuardedRetriever([sparse_chunk], set(), "sparse_score"),
         ReciprocalRankFusion(),
         governance_policy=GovernancePolicy(),
-        confirmed_decision_loader=lambda _ids: {},
+        governance_authority_loader=lambda _note_ids, **_kwargs: GovernanceAuthoritySnapshot(
+            {"shared": RetrievalPipeline._governance_note(dense_chunk)},
+            {},
+            {},
+        ),
     )
 
     with pytest.raises(ValueError, match=r"(?i)(governance|prefilter)"):
@@ -172,7 +188,7 @@ def test_missing_governance_authority_fails_closed() -> None:
 def test_governance_storage_failure_fails_closed() -> None:
     chunk = _chunk("current")
 
-    def unavailable(_ids):
+    def unavailable(_ids, **_kwargs):
         raise RuntimeError("storage unavailable")
 
     pipeline = RetrievalPipeline(
@@ -180,10 +196,10 @@ def test_governance_storage_failure_fails_closed() -> None:
         GuardedRetriever([chunk], set(), "sparse_score"),
         ReciprocalRankFusion(),
         governance_policy=GovernancePolicy(),
-        confirmed_decision_loader=unavailable,
+        governance_authority_loader=unavailable,
     )
 
-    with pytest.raises(ValueError, match="decisions are unavailable"):
+    with pytest.raises(ValueError, match="authority is unavailable"):
         pipeline.retrieve("policy", "hybrid", access_scope={"allow": ["*"]})
 
 
@@ -226,7 +242,18 @@ def test_fusion_and_reranker_outputs_are_defensively_intersected() -> None:
         InjectingFusion(),
         InjectingReranker(),
         governance_policy=GovernancePolicy(),
-        confirmed_decision_loader=lambda _ids: {},
+        governance_authority_loader=lambda note_ids, **_kwargs: GovernanceAuthoritySnapshot(
+            {
+                note.note_id: note
+                for note in (
+                    RetrievalPipeline._governance_note(chunk)
+                    for chunk in (allowed, excluded)
+                )
+                if note.note_id in note_ids
+            },
+            {},
+            {},
+        ),
     )
 
     trace = pipeline.retrieve(
@@ -243,16 +270,20 @@ def test_acl_denied_metadata_is_not_passed_to_governance_loader() -> None:
     hidden = _chunk("hidden", public=False)
     loaded: list[tuple[str, ...]] = []
 
-    def load(note_ids):
+    def load(note_ids, **_kwargs):
         loaded.append(tuple(sorted(note_ids)))
-        return {}
+        return GovernanceAuthoritySnapshot(
+            {"visible": RetrievalPipeline._governance_note(visible)},
+            {},
+            {},
+        )
 
     pipeline = RetrievalPipeline(
         GuardedRetriever([visible, hidden], {hidden.chunk_id}, "dense_score"),
         GuardedRetriever([visible, hidden], {hidden.chunk_id}, "sparse_score"),
         ReciprocalRankFusion(),
         governance_policy=GovernancePolicy(),
-        confirmed_decision_loader=load,
+        governance_authority_loader=load,
     )
 
     pipeline.retrieve("policy", "hybrid", access_scope={})
@@ -393,3 +424,172 @@ def test_citation_exposes_only_canonical_safe_equivalent_id() -> None:
     assert citation.document_id == "canonical"
     assert citation.equivalent_document_ids == ["canonical"]
     assert "hidden-alias" not in citation.model_dump_json()
+
+
+def _insert_authoritative_note(
+    database: ProductDatabase,
+    note_id: str,
+    *,
+    policy_key: str | None = None,
+    version: str = "1.0",
+    status: str = "active",
+    effective_from: str = "2026-01-01",
+    effective_to: str | None = None,
+    acl_json: str = "{}",
+    acl_public: bool = True,
+    content_hash: str | None = None,
+) -> None:
+    database.execute(
+        """
+        INSERT INTO notes (
+            note_id, vault_path, source_id, title, content_hash, frontmatter_json,
+            ai_access_level, index_status, workspace, department, acl_json, acl_public,
+            policy_key, owner, document_version, effective_from, effective_to,
+            policy_status, metadata_issues_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            note_id,
+            f"policies/{note_id}.md",
+            "builtin",
+            f"Policy {note_id}",
+            content_hash or f"hash-{note_id}",
+            "{}",
+            "local_only",
+            "indexed",
+            "corp",
+            "finance",
+            acl_json,
+            int(acl_public),
+            policy_key or f"policy.{note_id}",
+            "Finance",
+            version,
+            effective_from,
+            effective_to,
+            status,
+            "[]",
+            "2026-08-25T00:00:00Z",
+            "2026-08-25T00:00:00Z",
+        ),
+    )
+
+
+def _authoritative_pipeline(
+    database: ProductDatabase,
+    chunks: list[Chunk],
+    *,
+    forbidden: set[str] | None = None,
+    final_top_k: int = 5,
+) -> RetrievalPipeline:
+    from application.governance_retrieval_authority import GovernanceRetrievalAuthority
+
+    blocked = forbidden or set()
+    return RetrievalPipeline(
+        GuardedRetriever(chunks, blocked, "dense_score"),
+        GuardedRetriever(chunks, blocked, "sparse_score"),
+        ReciprocalRankFusion(),
+        final_top_k=final_top_k,
+        governance_policy=GovernancePolicy(),
+        governance_authority_loader=GovernanceRetrievalAuthority(database).load,
+    )
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("policy_status", "draft"),
+        ("effective_to", "2026-08-24"),
+        ("acl_json", json.dumps({"allow": ["department:legal"]})),
+    ],
+)
+def test_authoritative_database_drift_fails_before_retrieval(
+    tmp_path,
+    column: str,
+    value: str,
+) -> None:
+    database = ProductDatabase(tmp_path / "product.sqlite3")
+    database.initialize()
+    _insert_authoritative_note(database, "policy")
+    GovernanceReconciliationService(database, GovernancePolicy()).reconcile(
+        as_of=date(2026, 8, 25)
+    )
+    chunk = _chunk("policy")
+    database.execute(f"UPDATE notes SET {column} = ? WHERE note_id = ?", (value, "policy"))
+    pipeline = _authoritative_pipeline(database, [chunk])
+
+    with pytest.raises(ValueError, match=r"(?i)(authority|governance|metadata)"):
+        pipeline.retrieve(
+            "policy",
+            "hybrid",
+            query_date="2026-08-25",
+            access_scope={"allow": ["*"]},
+        )
+
+
+def test_index_note_missing_from_database_fails_before_retrieval(tmp_path) -> None:
+    database = ProductDatabase(tmp_path / "product.sqlite3")
+    database.initialize()
+    chunk = _chunk("orphan")
+    pipeline = _authoritative_pipeline(database, [chunk])
+
+    with pytest.raises(ValueError, match=r"(?i)(authority|governance|missing)"):
+        pipeline.retrieve(
+            "policy",
+            "hybrid",
+            query_date="2026-08-25",
+            access_scope={"allow": ["*"]},
+        )
+
+
+def test_proposed_overlap_blocks_top_one_retrieval_and_both_chat_paths(tmp_path) -> None:
+    database = ProductDatabase(tmp_path / "product.sqlite3")
+    database.initialize()
+    _insert_authoritative_note(
+        database,
+        "old",
+        policy_key="expense.shared",
+        version="1.0",
+        effective_to="2026-12-31",
+    )
+    _insert_authoritative_note(
+        database,
+        "new",
+        policy_key="expense.shared",
+        version="2.0",
+        effective_from="2026-08-01",
+    )
+    GovernanceReconciliationService(database, GovernancePolicy()).reconcile(
+        as_of=date(2026, 8, 25)
+    )
+    old = _chunk("old", effective_to="2026-12-31")
+    new = _chunk("new", effective_from="2026-08-01")
+    old.metadata.update({"policy_key": "expense.shared", "document_version": "1.0"})
+    new.metadata.update({"policy_key": "expense.shared", "document_version": "2.0"})
+    pipeline = _authoritative_pipeline(
+        database,
+        [old, new],
+        forbidden={old.chunk_id, new.chunk_id},
+        final_top_k=1,
+    )
+
+    trace = pipeline.retrieve(
+        "policy",
+        "hybrid",
+        query_date="2026-08-25",
+        access_scope={"allow": ["*"]},
+    )
+    service = ChatService(database, lambda _top_k: FixedPipeline(trace), SentinelProvider())
+    request = ChatRequest(question="报销规则？", final_top_k=1, graph_enabled=False)
+    answer = service.answer(request)
+    events = list(service.stream(request))
+
+    assert trace.final_selected_chunks == []
+    assert trace.applied_filters["governance_prefilter"]["excluded_reason_counts"] == {
+        "overlapping_effective_intervals": 2
+    }
+    assert "old" not in str(trace.to_dict())
+    assert "new" not in str(trace.to_dict())
+    assert answer.result_state.value == "conflicting_evidence"
+    assert events[-1]["data"]["result_state"] == "conflicting_evidence"
+    assert "PROVIDER_WAS_CALLED" not in answer.answer
+    assert all("PROVIDER_WAS_CALLED" not in str(event) for event in events)

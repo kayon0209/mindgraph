@@ -174,6 +174,8 @@ class MindGraphIndexService:
                         "effective_from": note.get("effective_from"),
                         "effective_to": note.get("effective_to"),
                         "policy_status": note.get("policy_status", "unspecified"),
+                        "metadata_issues": loads(note.get("metadata_issues_json"), []),
+                        "content_hash": note.get("content_hash"),
                         "effective_date": note.get("effective_from"),
                         "expiration_date": note.get("effective_to"),
                         "document_status": note.get("policy_status", "unspecified"),

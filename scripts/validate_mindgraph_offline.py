@@ -162,7 +162,13 @@ def main(argv: list[str] | None = None) -> int:
     graph_store = MindGraphGraphStore(db)
 
     def pipeline_factory(top_k):
-        return create_mindgraph_retrieval_pipeline(index_root, graph_store, final_top_k=top_k, graph_enabled=True)
+        return create_mindgraph_retrieval_pipeline(
+            index_root,
+            graph_store,
+            db,
+            final_top_k=top_k,
+            graph_enabled=True,
+        )
 
     chat = ChatService(
         db, pipeline_factory, FakeProviderRegistry(), privacy_log_questions=False,

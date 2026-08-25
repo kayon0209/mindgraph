@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Callable
 from datetime import date
 import time
 
-from application.governance_policy import GovernancePolicy
+from application.governance_policy import GovernancePolicy, governance_metadata_dict
 from domain.governance import (
-    ConfirmedGovernanceDecision,
+    GovernanceAuthoritySnapshot,
     GovernanceMode,
     GovernanceNote,
 )
@@ -52,10 +52,7 @@ class RetrievalPipeline:
         rerank_top_n: int = 10,
         final_top_k: int = 5,
         governance_policy: GovernancePolicy | None = None,
-        confirmed_decision_loader: Callable[
-            [Collection[str]],
-            Mapping[str, tuple[ConfirmedGovernanceDecision, ...]],
-        ]
+        governance_authority_loader: Callable[..., GovernanceAuthoritySnapshot]
         | None = None,
     ) -> None:
         self.dense, self.sparse, self.fusion, self.reranker = dense, sparse, fusion, reranker
@@ -63,7 +60,7 @@ class RetrievalPipeline:
         self.rerank_top_n = rerank_top_n
         self.final_top_k = final_top_k
         self.governance_policy = governance_policy
-        self.confirmed_decision_loader = confirmed_decision_loader
+        self.governance_authority_loader = governance_authority_loader
 
     @staticmethod
     def _base_score(candidate) -> float:
@@ -246,9 +243,9 @@ class RetrievalPipeline:
         query_date: str | None,
         include_historical: bool,
     ) -> GovernancePrefilterResult | None:
-        if self.governance_policy is None and self.confirmed_decision_loader is None:
+        if self.governance_policy is None and self.governance_authority_loader is None:
             return None
-        if self.governance_policy is None or self.confirmed_decision_loader is None:
+        if self.governance_policy is None or self.governance_authority_loader is None:
             raise GovernancePrefilterUnavailableError(
                 "Governance policy and decision authority are both required"
             )
@@ -281,25 +278,57 @@ class RetrievalPipeline:
             notes_by_id[note.note_id] = note
             chunks_by_note.setdefault(note.note_id, set()).add(chunk.chunk_id)
         try:
-            loaded = self.confirmed_decision_loader(tuple(sorted(notes_by_id)))
+            authority = self.governance_authority_loader(
+                tuple(sorted(notes_by_id)),
+                as_of=as_of,
+                mode=mode,
+            )
         except Exception as exc:
             raise GovernancePrefilterUnavailableError(
-                "Confirmed governance decisions are unavailable"
+                "Governance authority is unavailable"
             ) from exc
-        if not isinstance(loaded, Mapping):
+        if not isinstance(authority, GovernanceAuthoritySnapshot):
             raise GovernancePrefilterUnavailableError(
-                "Confirmed governance decisions are malformed"
+                "Governance authority snapshot is malformed"
+            )
+        requested_note_ids = set(notes_by_id)
+        if (
+            set(authority.notes) != requested_note_ids
+            or not set(authority.decisions).issubset(requested_note_ids)
+            or not set(authority.blocking_reason_codes).issubset(requested_note_ids)
+        ):
+            raise GovernancePrefilterUnavailableError(
+                "Governance authority snapshot is incomplete"
             )
         allowed: set[str] = set()
         excluded: Counter[str] = Counter()
-        for note_id, note in notes_by_id.items():
-            decisions = loaded.get(note_id, ())
+        for note_id, indexed_note in notes_by_id.items():
+            authoritative_note = authority.notes[note_id]
+            if (
+                authoritative_note.note_id != indexed_note.note_id
+                or governance_metadata_dict(authoritative_note)
+                != governance_metadata_dict(indexed_note)
+            ):
+                raise GovernancePrefilterUnavailableError(
+                    "Index and governance authority metadata disagree"
+                )
+            blocking_reasons = authority.blocking_reason_codes.get(note_id, ())
+            if not isinstance(blocking_reasons, (list, tuple)) or not all(
+                isinstance(reason, str) and reason for reason in blocking_reasons
+            ):
+                raise GovernancePrefilterUnavailableError(
+                    "Governance authority blocking reasons are malformed"
+                )
+            if blocking_reasons:
+                excluded.update(blocking_reasons)
+                continue
+            decisions = authority.decisions.get(note_id, ())
             if not isinstance(decisions, (list, tuple)):
                 raise GovernancePrefilterUnavailableError(
                     "Confirmed governance decisions are malformed"
                 )
             evaluation = self.governance_policy.evaluate(
-                note,
+                authoritative_note,
                 as_of=as_of,
                 mode=mode,
                 confirmed_decisions=tuple(decisions),

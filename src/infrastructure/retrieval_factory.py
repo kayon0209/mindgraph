@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from application.governance_policy import GovernancePolicy
-from application.governance_reconciliation_service import GovernanceReconciliationService
+from application.governance_retrieval_authority import GovernanceRetrievalAuthority
 from config import ROOT
 from infrastructure.database import ProductDatabase
 from retrieval.embeddings import BGEEmbeddingProvider
@@ -58,9 +58,7 @@ def create_mindgraph_retrieval_pipeline(
     rerank_top_n = int(os.getenv("RETRANK_TOP_N", "10"))
     reranker = CrossEncoderReranker() if os.getenv("RERANKER_ENABLED", "false").lower() == "true" else None
     governance_policy = GovernancePolicy()
-    decision_loader = GovernanceReconciliationService(
-        database, governance_policy
-    ).confirmed_decisions
+    authority_loader = GovernanceRetrievalAuthority(database).load
 
     current = index_root / "CURRENT"
     if not current.exists():
@@ -73,7 +71,7 @@ def create_mindgraph_retrieval_pipeline(
             rerank_top_n=rerank_top_n,
             final_top_k=final_top_k,
             governance_policy=governance_policy,
-            confirmed_decision_loader=decision_loader,
+            governance_authority_loader=authority_loader,
         )
         return MindGraphRetrievalPipeline(base, graph_store, graph_enabled=graph_enabled)
 
@@ -85,6 +83,6 @@ def create_mindgraph_retrieval_pipeline(
         candidate_count=candidate_count,
         rerank_top_n=rerank_top_n, final_top_k=final_top_k,
         governance_policy=governance_policy,
-        confirmed_decision_loader=decision_loader,
+        governance_authority_loader=authority_loader,
     )
     return MindGraphRetrievalPipeline(base, graph_store, graph_enabled=graph_enabled)
