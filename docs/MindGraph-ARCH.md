@@ -97,7 +97,7 @@ Obsidian Vault 是当前已实现的数据源和客户端之一，不是产品�
 - 评测为小样本 Golden Set，代表工程可复现，非生产效果结论
 - 当前独立 Golden Set 只有 12 个问题，可验证回归与三组消融，但不足以证明生产场景的普遍效果
 - `demo-vault/` 是合成制度样例，用于零配置体验和回归；企业落地仍需接入自身文档与权限体系
-- 当前未实现企业 ACL 继承、SSO 与完整审计，不应宣称企业生产就绪
+- 企业 ACL 继承（目录 `acl.json`）、SSO/OIDC（Bearer JWT + JWKS）与审计日志（`access_audit`）已实现；剩余边界是 SSO/OIDC 企业验收（UG-006 Partial）与审计完整覆盖，不应宣称已覆盖全部企业审计场景
 - 根目录 `.streamlit-run*.log` 为旧报销 RAG 残留日志，被历史进程占用无法删除，不影响 MindGraph 运行
 
 ## 8. 复现命令

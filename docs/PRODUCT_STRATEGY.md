@@ -26,9 +26,10 @@ MindGraph 是**本地优先的企业制度与决策依据知识服务**。首个
 
 当前尚未具备：
 
-- 企业连接器、ACL 继承、SSO 和完整审计；
-- 受领域 schema 约束的实体/条款关系图；
-- 经独立人工 Golden Set 证明的多跳 GraphRAG 增益。
+- 受领域 schema 约束的实体/条款关系图（Phase 4 待实施）；
+- 经独立人工 Golden Set 证明的多跳 GraphRAG 增益（当前公开 Golden Set 12 条，不足以证明生产效果，计划扩到 100 条以上）。
+
+企业接入能力（目录连接器、ACL 继承、SSO/OIDC、审计日志、HTTP MCP）已在 Phase 5 完成，详见 `docs/DEPLOYMENT.md`；剩余边界是 SSO/OIDC 企业验收、审计完整覆盖与 Golden Set 扩样（见 `docs/UPGRADE_PLAN.md` UG-006、UG-007）。
 
 因此，当前准确描述是“带人工确认关系扩展的 Hybrid RAG”，不能宣称已经具备完整知识图谱推理。
 
