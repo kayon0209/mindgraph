@@ -763,6 +763,108 @@ def test_confirmed_conflict_fails_closed_after_semantic_drift(
         )
 
 
+def test_confirmed_conflict_fails_closed_after_participant_policy_key_drift(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    database = ProductDatabase(tmp_path / "product.sqlite3")
+    database.initialize()
+    _insert_authoritative_note(
+        database,
+        "left",
+        policy_key="expense.conflict",
+        version="1.0",
+        effective_to="2026-12-31",
+    )
+    _insert_authoritative_note(
+        database,
+        "right",
+        policy_key="expense.conflict",
+        version="2.0",
+        effective_from="2026-08-01",
+    )
+    GovernanceReconciliationService(database, GovernancePolicy()).reconcile(
+        as_of=date(2026, 8, 25)
+    )
+    database.execute(
+        "UPDATE governance_cases SET status = 'confirmed' WHERE case_type = 'version_conflict'"
+    )
+    database.execute(
+        "UPDATE notes SET policy_key = ? WHERE note_id = ?",
+        ("expense.other", "right"),
+    )
+    left = _chunk("left", effective_to="2026-12-31")
+    left.metadata.update({"policy_key": "expense.conflict", "document_version": "1.0"})
+    connections: list[sqlite3.Connection] = []
+    original_connect = database.connect
+
+    def tracked_connect() -> sqlite3.Connection:
+        connection = original_connect()
+        connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(database, "connect", tracked_connect)
+    pipeline = _authoritative_pipeline(database, [left])
+
+    with pytest.raises(ValueError, match="authority is unavailable"):
+        pipeline.retrieve(
+            "policy",
+            "hybrid",
+            query_date="2026-08-25",
+            access_scope={"allow": ["*"]},
+        )
+    assert len(connections) == 1
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        connections[0].execute("SELECT 1")
+
+
+def test_confirmed_conflict_fails_closed_when_participants_become_exact_duplicates(
+    tmp_path,
+) -> None:
+    database = ProductDatabase(tmp_path / "product.sqlite3")
+    database.initialize()
+    for note_id, acl_json in (
+        ("left", "{}"),
+        ("right", json.dumps({"allow": ["department:legal"]})),
+    ):
+        _insert_authoritative_note(
+            database,
+            note_id,
+            policy_key="expense.conflict",
+            version="1.0",
+            effective_from="2026-01-01",
+            content_hash="same-checksum",
+            acl_json=acl_json,
+        )
+    GovernanceReconciliationService(database, GovernancePolicy()).reconcile(
+        as_of=date(2026, 8, 25)
+    )
+    database.execute(
+        "UPDATE governance_cases SET status = 'confirmed' WHERE case_type = 'version_conflict'"
+    )
+    database.execute(
+        "UPDATE governance_cases SET status = 'rejected' WHERE case_type = 'exact_duplicate'"
+    )
+    database.execute("UPDATE notes SET acl_json = '{}' WHERE note_id = 'right'")
+    left = _chunk("left")
+    left.metadata.update(
+        {
+            "policy_key": "expense.conflict",
+            "document_version": "1.0",
+            "content_hash": "same-checksum",
+        }
+    )
+    pipeline = _authoritative_pipeline(database, [left])
+
+    with pytest.raises(ValueError, match="authority is unavailable"):
+        pipeline.retrieve(
+            "policy",
+            "hybrid",
+            query_date="2026-08-25",
+            access_scope={"allow": ["*"]},
+        )
+
+
 @pytest.mark.parametrize("corruption", ["rule_key", "metadata_hash", "missing_linked_note"])
 def test_case_semantic_identity_corruption_fails_closed(tmp_path, corruption: str) -> None:
     database, canonical = _confirmed_duplicate_database(tmp_path)
