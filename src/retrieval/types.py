@@ -96,6 +96,9 @@ class EmbeddingProvider(Protocol):
 
 
 class DenseRetriever(Protocol):
+    @property
+    def chunks(self) -> Sequence[Chunk]: ...
+
     def search(
         self,
         query: str,
@@ -105,6 +108,9 @@ class DenseRetriever(Protocol):
 
 
 class SparseRetriever(Protocol):
+    @property
+    def chunks(self) -> Sequence[Chunk]: ...
+
     def search(
         self,
         query: str,

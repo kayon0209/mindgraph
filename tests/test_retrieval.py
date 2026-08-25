@@ -1,9 +1,13 @@
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
+from infrastructure.retrieval_factory import _EmptyDenseRetriever
 from retrieval.dense import FAISSDenseRetriever, IncompatibleIndexError
 from retrieval.fusion import ReciprocalRankFusion
+from retrieval.legacy import LegacySQLiteRetriever
 from retrieval.pipeline import RetrievalPipeline
 from retrieval.sparse import BM25Retriever, tokenize_zh
 from retrieval.types import Chunk, RetrievalCandidate
@@ -99,6 +103,47 @@ class RetrievalTests(unittest.TestCase):
         self.assertTrue(trace.degraded)
         self.assertEqual(trace.actual_strategy, "hybrid")
         self.assertIn("unavailable", trace.degradation_reason)
+
+    def test_legacy_adapter_enforces_allowed_chunk_ids(self):
+        sources = [
+            SimpleNamespace(
+                source="private.md",
+                chunk_index=0,
+                text="private",
+                section_path=None,
+                distance=0.1,
+            ),
+            SimpleNamespace(
+                source="allowed.md",
+                chunk_index=0,
+                text="allowed",
+                section_path=None,
+                distance=0.2,
+            ),
+        ]
+        retriever = LegacySQLiteRetriever()
+
+        with patch("retrieval.legacy.retrieve", return_value=sources):
+            filtered, _ = retriever.search(
+                "policy",
+                2,
+                allowed_chunk_ids={"allowed.md::0"},
+            )
+
+        self.assertEqual([item.chunk.chunk_id for item in filtered], ["allowed.md::0"])
+        self.assertEqual(
+            [chunk.chunk_id for chunk in retriever.chunks],
+            ["private.md::0", "allowed.md::0"],
+        )
+
+    def test_empty_dense_adapter_accepts_scoped_search(self):
+        retriever = _EmptyDenseRetriever()
+
+        results, timings = retriever.search("policy", 5, allowed_chunk_ids=set())
+
+        self.assertEqual(results, [])
+        self.assertEqual(timings, {})
+        self.assertEqual(retriever.chunks, [])
 
 
 if __name__ == "__main__":

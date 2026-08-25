@@ -19,6 +19,10 @@ class PermissionDeniedError(ValueError):
     pass
 
 
+class DuplicateChunkIdError(ValueError):
+    pass
+
+
 class RetrievalPipeline:
     def __init__(
         self,
@@ -111,9 +115,16 @@ class RetrievalPipeline:
         }
 
     def _loaded_chunks(self) -> list:
+        dense_chunks = list(getattr(self.dense, "chunks", []) or [])
+        seen_dense_ids = set()
+        for chunk in dense_chunks:
+            if chunk.chunk_id in seen_dense_ids:
+                raise DuplicateChunkIdError("Dense retrieval corpus contains duplicate chunk IDs")
+            seen_dense_ids.add(chunk.chunk_id)
+
         chunks_by_id = {}
-        for retriever in (self.dense, self.sparse):
-            for chunk in getattr(retriever, "chunks", []) or []:
+        for chunks in (dense_chunks, getattr(self.sparse, "chunks", []) or []):
+            for chunk in chunks:
                 chunks_by_id.setdefault(chunk.chunk_id, chunk)
         return list(chunks_by_id.values())
 

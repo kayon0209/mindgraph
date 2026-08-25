@@ -69,7 +69,7 @@ class ChatService:
         pipeline = self.pipeline_factory(request.final_top_k)
         parameters = inspect.signature(pipeline.retrieve).parameters
         kwargs: dict[str, Any] = {}
-        if access_scope and "access_scope" in parameters:
+        if access_scope is not None and "access_scope" in parameters:
             kwargs["access_scope"] = access_scope
         mode, variants, reason = self._merge_query_variants(decision, request)
         query_text = variants[0]

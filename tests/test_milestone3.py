@@ -20,6 +20,14 @@ from ui.api_client import APIClientError, ProductAPIClient
 
 
 CHUNK = Chunk("policy.md::1", "差旅费应在十个工作日内报销。", "policy.md", 1, "报销时限")
+PUBLIC_CHUNK = Chunk(
+    "public.md::0",
+    "公开报销说明。",
+    "public.md",
+    0,
+    "公开说明",
+    {"acl_public": True},
+)
 
 
 class FakeProvider:
@@ -45,9 +53,12 @@ class FakeProvider:
 class FakePipeline:
     def __init__(self, empty=False, degraded=False):
         self.empty, self.degraded = empty, degraded
+        self.access_scopes = []
 
-    def retrieve(self, query, strategy):
-        candidate = RetrievalCandidate(CHUNK, dense_score=0.8, dense_rank=1, sparse_score=4.2, sparse_rank=1, rrf_score=0.03, fused_rank=1, final_rank=1)
+    def retrieve(self, query, strategy, access_scope=None):
+        self.access_scopes.append(access_scope)
+        selected_chunk = PUBLIC_CHUNK if access_scope is not None else CHUNK
+        candidate = RetrievalCandidate(selected_chunk, dense_score=0.8, dense_rank=1, sparse_score=4.2, sparse_rank=1, rrf_score=0.03, fused_rank=1, final_rank=1)
         return RetrievalTrace(query=query, requested_strategy=strategy, actual_strategy="hybrid" if self.degraded else strategy,
             degraded=self.degraded, degradation_reason="reranker_error" if self.degraded else None,
             candidate_counts={"dense": 1, "sparse": 1, "fused": 1, "reranked": 0, "final": 0 if self.empty else 1},
@@ -113,6 +124,17 @@ class Milestone3APITests(unittest.TestCase):
         result = response.json()
         self.assertEqual(result["result_state"], "answered")
         self.assertEqual(result["citations"][0]["chunk_id"], result["retrieval_trace"]["final_chunks"][0]["chunk"]["chunk_id"])
+
+    def test_chat_api_preserves_empty_scope_as_public_only(self):
+        with patch("api.routes.chat.resolve_access_scope", return_value={}):
+            response = self.client.post("/api/v1/chat", json={"question": "报销公开说明"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.pipeline.access_scopes[-1], {})
+        self.assertEqual(
+            [item["chunk_id"] for item in response.json()["citations"]],
+            ["public.md::0"],
+        )
 
     def test_out_of_scope_empty_index_provider_missing_timeout_and_degradation(self):
         self.assertEqual(self.client.post("/api/v1/chat", json={"question": "公司工资是多少"}).json()["result_state"], "out_of_scope")

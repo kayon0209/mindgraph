@@ -36,7 +36,7 @@ class _EmptyDenseRetriever:
     chunks: list = []
     metadata: dict = {}
 
-    def search(self, query, top_k):
+    def search(self, query, top_k, allowed_chunk_ids=None):
         return [], {}
 
 

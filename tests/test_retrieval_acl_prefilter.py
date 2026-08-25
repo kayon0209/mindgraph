@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from retrieval.dense import FAISSDenseRetriever
 from retrieval.fusion import ReciprocalRankFusion
 from retrieval.mindgraph_pipeline import MindGraphRetrievalPipeline
@@ -194,3 +196,31 @@ def test_graph_expansion_excludes_private_related_chunk_for_public_scope():
     assert _ids(trace.final_selected_chunks) == ["public::0"]
     assert trace.candidate_counts["graph_expanded"] == 0
     assert trace.graph_links == []
+
+
+def test_duplicate_dense_chunk_ids_fail_before_any_retrieval_stage():
+    private = _chunk("collision::0", "private-secret-body")
+    public = _chunk("collision::0", "public body", public=True)
+    dense = RecordingRetriever([private, public], "dense_score")
+    sparse = RecordingRetriever([private, public], "sparse_score")
+    reranker = RecordingReranker()
+
+    class RecordingFusion:
+        calls = 0
+
+        def fuse(self, _rankings, _top_k):
+            self.calls += 1
+            return []
+
+    fusion = RecordingFusion()
+    pipeline = RetrievalPipeline(dense, sparse, fusion, reranker)
+
+    with pytest.raises(ValueError, match="duplicate") as raised:
+        pipeline.retrieve("body", "hybrid_rerank", access_scope={})
+
+    assert dense.allowed_calls == []
+    assert sparse.allowed_calls == []
+    assert fusion.calls == 0
+    assert reranker.seen_ids == []
+    assert "collision::0" not in str(raised.value)
+    assert "private-secret-body" not in str(raised.value)
