@@ -874,17 +874,19 @@ def test_reconciliation_failure_blocks_new_index_activation(index_service, faili
     assert index_service.current_version() == previous
 
 
-def test_failed_connector_scan_neither_prunes_reconciles_nor_builds(connector, spies):
+def test_failed_connector_scan_neither_prunes_reconciles_nor_builds(connector_with_fail_if_called_services):
+    connector = connector_with_fail_if_called_services
     result = connector.sync()
     assert result["pruned"] == 0
-    assert spies.reconcile_calls == []
-    assert spies.build_calls == []
+    assert result["status"] == "failed"
 
 
-def test_watcher_reconciles_before_build(watcher, call_log):
-    watcher.run_once()
-    assert call_log == ["scan", "reconcile", "build"]
+def test_watcher_reconciles_before_build(watcher_with_order_checking_services):
+    result = watcher_with_order_checking_services.run_once()
+    assert result["build"]["status"] == "validated"
 ```
+
+`connector_with_fail_if_called_services` injects reconciler/index doubles that raise `AssertionError` on any call, so the failed-scan path proves they were not reached without asserting on mock call history. `watcher_with_order_checking_services` uses a reconciler that creates a transaction-visible marker and an index service that refuses to build unless that marker exists; a validated result therefore proves ordering through behavior.
 
 - [ ] **Step 2: Run focused tests and confirm current indexing admits ineligible notes**
 
@@ -957,17 +959,10 @@ def test_historical_flag_requires_query_date():
         ChatRequest(question="旧制度是什么", include_historical=True)
 
 
-def test_acl_then_governance_prefilter_precedes_search(spied_pipeline):
-    spied_pipeline.retrieve("报销上限", "hybrid", access_scope=finance_scope())
-    assert spied_pipeline.calls == [
-        "load_complete_metadata",
-        "acl_prefilter",
-        "load_confirmed_decisions",
-        "governance_prefilter",
-        "dense",
-        "bm25",
-        "fusion",
-    ]
+def test_acl_and_governance_prefilters_precede_search(order_checking_pipeline):
+    trace = order_checking_pipeline.retrieve("报销上限", "hybrid", access_scope=finance_scope())
+    assert trace.actual_strategy == "hybrid"
+    assert trace.applied_filters["governance_prefilter"]["eligible_count"] == 1
 
 
 def test_expired_chunk_in_stale_index_never_reaches_retrievers(pipeline_with_expired_chunk):
@@ -979,10 +974,11 @@ def test_expired_chunk_in_stale_index_never_reaches_retrievers(pipeline_with_exp
     }
 
 
-def test_hidden_conflict_participant_is_not_disclosed(chat_service, provider_spy):
+def test_hidden_conflict_participant_is_not_disclosed(chat_service_with_sentinel_provider):
+    chat_service = chat_service_with_sentinel_provider
     result = chat_service.answer(request(), access_scope=finance_scope())
     assert result.result_state is ResultState.conflicting_evidence
-    assert provider_spy.complete_calls == 0
+    assert result.answer == CONFLICTING
     assert "hidden-note" not in json.dumps(result.model_dump())
 
 
@@ -998,6 +994,8 @@ def test_canonical_citation_retains_acl_equivalent_alias_ids(chat_service):
 ```
 
 Also cover empty scope, public scope, wildcard, deny, incomplete corpus metadata, dense/sparse governance metadata disagreement, duplicate chunk IDs, current unique selection, zero eligible versions, historical date selection, and overlap refusal before Provider invocation in both answer and SSE paths.
+
+The order-checking dense and sparse retrievers raise if their allowed-ID set contains an ACL-denied or governance-excluded chunk; successful retrieval plus the aggregate trace proves both prefilters ran before search. The sentinel Provider returns the unique text `PROVIDER_WAS_CALLED`; deterministic refusal tests assert that text is absent and the exact refusal state/text is returned, testing the service result rather than mock call counts.
 
 - [ ] **Step 2: Run focused tests and confirm governance prefilter is absent**
 
