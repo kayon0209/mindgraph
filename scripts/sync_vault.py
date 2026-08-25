@@ -29,8 +29,6 @@ import sys
 ROOT = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(ROOT))
 
-from application.governance_policy import GovernancePolicy  # noqa: E402
-from application.governance_reconciliation_service import GovernanceReconciliationService  # noqa: E402
 from application.mindgraph_index_service import MindGraphIndexService  # noqa: E402
 from application.mindgraph_sync_watcher import MindGraphSyncWatcher  # noqa: E402
 from application.vault_sync_service import DEFAULT_IGNORE_DIRS, VaultSyncService  # noqa: E402
@@ -39,6 +37,9 @@ from infrastructure.database import ProductDatabase  # noqa: E402
 
 
 def main() -> None:
+    from application.governance_policy import GovernancePolicy
+    from application.governance_reconciliation_service import GovernanceReconciliationService
+
     ap = argparse.ArgumentParser(description="MindGraph 增量同步（扫描 + 索引构建）")
     ap.add_argument("--vault", required=True, help="Obsidian Vault 根目录")
     ap.add_argument("--watch", action="store_true", help="持续监听模式（Ctrl+C 退出）")

@@ -116,8 +116,8 @@ def main(argv: list[str] | None = None) -> int:
 
     # 导入生产类
     from application.chat_service import ChatService  # noqa: E402
-    from application.governance_policy import GovernancePolicy  # noqa: E402
-    from application.governance_reconciliation_service import GovernanceReconciliationService  # noqa: E402
+    from application.governance_policy import GovernancePolicy
+    from application.governance_reconciliation_service import GovernanceReconciliationService
     from application.mindgraph_graph_store import MindGraphGraphStore  # noqa: E402
     from application.mindgraph_index_service import MindGraphIndexService  # noqa: E402
     from application.vault_sync_service import VaultSyncService  # noqa: E402
