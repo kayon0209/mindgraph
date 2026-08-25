@@ -26,7 +26,7 @@ import numpy as np
 
 from application.governance_reconciliation_service import GovernanceReconciliationService
 from document_loader import _chunk_text, _split_by_markdown_headers
-from domain.errors import GovernanceUnavailableError
+from domain.errors import GovernanceUnavailableError, IndexUnavailableError
 from domain.governance import GovernanceDisposition, GovernanceEvaluation, GovernanceMode
 from infrastructure.database import ProductDatabase, dumps, loads
 from infrastructure.markdown_frontmatter import parse_frontmatter
@@ -56,6 +56,7 @@ class MindGraphIndexService:
         provider: Any | None = None,
         on_activated: Callable[[], None] | None = None,
         governance_reconciler: GovernanceReconciliationService | None = None,
+        today: Callable[[], date] = date.today,
     ) -> None:
         self.db = db
         self.vault_root = Path(vault_root)
@@ -66,6 +67,7 @@ class MindGraphIndexService:
         # ``None`` remains only for isolated legacy callers. Production composition
         # always supplies the governance authority.
         self.governance_reconciler = governance_reconciler
+        self._today = today
 
     # ------------------------------------------------------------------ #
     # 查询待索引笔记
@@ -131,10 +133,14 @@ class MindGraphIndexService:
         path = self._resolve_note_path(note)
         category = Path(note["vault_path"]).parent.name or "根目录"
         if path is None:
+            if evaluation is not None and evaluation.disposition is GovernanceDisposition.ELIGIBLE:
+                raise IndexUnavailableError("eligible note could not be read for index construction")
             return []
         try:
             raw = path.read_text(encoding="utf-8")
-        except OSError:
+        except OSError as exc:
+            if evaluation is not None and evaluation.disposition is GovernanceDisposition.ELIGIBLE:
+                raise IndexUnavailableError("eligible note could not be read for index construction") from exc
             return []
         _, body, _ = parse_frontmatter(raw)
         if not body.strip():
@@ -278,7 +284,8 @@ class MindGraphIndexService:
         self,
         operator: str = "local",
         force: bool = False,
-        governance_reconciled: bool = False,
+        build_date: date | None = None,
+        governance_reconciled_as_of: date | None = None,
     ) -> dict[str, Any]:
         """构建索引。
 
@@ -287,10 +294,19 @@ class MindGraphIndexService:
           可触发，但旧 FAISS 索引仍含其 chunk，需强制全量重建以排除。
           embedding 仍按 checksum 命中缓存，重建成本仅为 FAISS.add（毫秒级）。
         """
-        build_date = date.today()
-        if self.governance_reconciler is not None and not governance_reconciled:
+        evaluated_on = build_date if build_date is not None else self._today()
+        if not isinstance(evaluated_on, date):
+            raise TypeError("build_date must be a date")
+        if governance_reconciled_as_of is not None and not isinstance(
+            governance_reconciled_as_of, date
+        ):
+            raise TypeError("governance_reconciled_as_of must be a date")
+        if (
+            self.governance_reconciler is not None
+            and governance_reconciled_as_of != evaluated_on
+        ):
             try:
-                self.governance_reconciler.reconcile(as_of=build_date)
+                self.governance_reconciler.reconcile(as_of=evaluated_on)
             except Exception as exc:
                 raise GovernanceUnavailableError("knowledge governance reconciliation is unavailable") from exc
 
@@ -315,13 +331,13 @@ class MindGraphIndexService:
         new_count = 0
         try:
             eligible_notes, evaluations, equivalent_ids, excluded_reason_counts = self._governed_notes(
-                build_date
+                evaluated_on
             )
             chunks = self._all_chunks(
                 eligible_notes,
                 evaluations,
                 equivalent_ids,
-                build_date,
+                evaluated_on,
             )
 
             vectors: list[list[float] | None] = [None] * len(chunks)
@@ -365,7 +381,7 @@ class MindGraphIndexService:
                 "vector_dimension": self.provider.dimension,
                 "chunk_count": len(chunks),
                 "note_count": len(all_ids),
-                "governance_as_of": build_date.isoformat() if self.governance_reconciler else None,
+                "governance_as_of": evaluated_on.isoformat() if self.governance_reconciler else None,
                 "governance_policy_version": (
                     "v1" if self.governance_reconciler is not None else None
                 ),

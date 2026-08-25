@@ -13,21 +13,21 @@ from __future__ import annotations
 
 import argparse
 import atexit
+from datetime import date
 import hashlib
-import json
-import os
+from pathlib import Path
 import re
 import shutil
 import sys
 import tempfile
 import time
-from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_VAULT = ROOT / "demo-vault"
 sys.path.insert(0, str(ROOT / "src"))
 
 import numpy as np  # noqa: E402
+
 
 # --------------------------------------------------------------------------- #
 # 1) Fake 嵌入：bag-of-chars 向量（共享字符 -> 高余弦），使检索语义可信
@@ -115,12 +115,14 @@ def main(argv: list[str] | None = None) -> int:
     shutil.copytree(source, vault_copy, ignore=shutil.ignore_patterns(*IGNORE), dirs_exist_ok=True)
 
     # 导入生产类
-    from infrastructure.database import ProductDatabase  # noqa: E402
-    from application.vault_sync_service import VaultSyncService  # noqa: E402
-    from application.mindgraph_index_service import MindGraphIndexService  # noqa: E402
-    from application.mindgraph_graph_store import MindGraphGraphStore  # noqa: E402
     from application.chat_service import ChatService  # noqa: E402
+    from application.governance_policy import GovernancePolicy  # noqa: E402
+    from application.governance_reconciliation_service import GovernanceReconciliationService  # noqa: E402
+    from application.mindgraph_graph_store import MindGraphGraphStore  # noqa: E402
+    from application.mindgraph_index_service import MindGraphIndexService  # noqa: E402
+    from application.vault_sync_service import VaultSyncService  # noqa: E402
     from domain.models import ChatRequest  # noqa: E402
+    from infrastructure.database import ProductDatabase  # noqa: E402
     import infrastructure.retrieval_factory as rf  # noqa: E402
     from infrastructure.retrieval_factory import create_mindgraph_retrieval_pipeline  # noqa: E402
 
@@ -131,16 +133,30 @@ def main(argv: list[str] | None = None) -> int:
     db.initialize()
 
     # ---------------- D2：扫描 + 注入稳定 ID ---------------- #
+    reconciler = GovernanceReconciliationService(db, GovernancePolicy())
     sync = VaultSyncService(db, vault_copy, write_ids=True)
     scan = sync.scan_vault()
     print(f"[D2] 扫描笔记 {len(scan.scanned)} 篇，注入ID {sum(1 for n in scan.scanned if n.id_injected)} 篇，跳过 {len(scan.skipped)}，错误 {len(scan.errors)}")
     if scan.errors:
         print("      扫描错误样本:", scan.errors[:3])
+        return 1
 
     # ---------------- D3：增量索引（Fake 嵌入） ---------------- #
     provider = FakeEmbeddingProvider()
-    idx = MindGraphIndexService(db, vault_copy, index_root, provider=provider)
-    manifest = idx.build(force=True)
+    build_date = date.today()
+    reconciler.reconcile(as_of=build_date)
+    idx = MindGraphIndexService(
+        db,
+        vault_copy,
+        index_root,
+        provider=provider,
+        governance_reconciler=reconciler,
+    )
+    manifest = idx.build(
+        force=True,
+        build_date=build_date,
+        governance_reconciled_as_of=build_date,
+    )
     print(f"[D3] 索引构建: version={manifest['index_version']} chunks={manifest['chunk_count']} notes={manifest['note_count']} reused={manifest.get('reused_embeddings')} new={manifest.get('new_embeddings')}")
 
     graph_store = MindGraphGraphStore(db)

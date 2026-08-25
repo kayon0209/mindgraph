@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import date
 import logging
 import time
@@ -26,12 +27,14 @@ class MindGraphSyncWatcher:
         poll_interval: float = 3.0,
         debounce: float = 0.6,
         governance_reconciler: GovernanceReconciliationService | None = None,
+        today: Callable[[], date] = date.today,
     ) -> None:
         self.scan = scan_service
         self.index = index_service
         self.poll_interval = poll_interval
         self.debounce = debounce
         self.governance_reconciler = governance_reconciler
+        self._today = today
         self._running = False
 
     def run_once(self) -> dict[str, Any]:
@@ -47,8 +50,9 @@ class MindGraphSyncWatcher:
         if scan.errors:
             result["status"] = "failed"
             return result
+        cycle_date = self._today()
         if self.governance_reconciler is not None:
-            self.governance_reconciler.reconcile(as_of=date.today())
+            self.governance_reconciler.reconcile(as_of=cycle_date)
         # 删除场景：笔记已从 notes 表剪枝，无 pending 可触发，但旧索引仍含其 chunk，
         # 需 force 重建以排除。编辑场景走 pending 触发（force=False，命中 embedding 缓存）。
         if self.index.has_pending() or scan.pruned > 0:
@@ -57,7 +61,9 @@ class MindGraphSyncWatcher:
                 manifest = self.index.build(force=scan.pruned > 0)
             else:
                 manifest = self.index.build(
-                    force=scan.pruned > 0, governance_reconciled=True
+                    force=scan.pruned > 0,
+                    build_date=cycle_date,
+                    governance_reconciled_as_of=cycle_date,
                 )
             result["build"] = manifest
             result["indexed"] = manifest.get("status") != "noop"

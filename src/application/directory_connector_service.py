@@ -212,9 +212,10 @@ class DirectoryConnectorService:
                 connector_id,
             )
 
+            sync_date = date.today()
             if self.governance_reconciler is not None:
                 try:
-                    self.governance_reconciler.reconcile(as_of=date.today())
+                    self.governance_reconciler.reconcile(as_of=sync_date)
                 except Exception as exc:
                     return self._failed_result(
                         connector_id,
@@ -241,7 +242,9 @@ class DirectoryConnectorService:
                     manifest = self.index_service.build(force=pruned > 0)
                 else:
                     manifest = self.index_service.build(
-                        force=pruned > 0, governance_reconciled=True
+                        force=pruned > 0,
+                        build_date=sync_date,
+                        governance_reconciled_as_of=sync_date,
                     )
                 index_version = manifest.get("index_version") if isinstance(manifest, dict) else None
 

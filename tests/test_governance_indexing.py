@@ -12,7 +12,7 @@ from application.governance_reconciliation_service import GovernanceReconciliati
 from application.mindgraph_index_service import MindGraphIndexService
 from application.mindgraph_sync_watcher import MindGraphSyncWatcher
 from application.vault_sync_service import VaultScanResult, VaultSyncService
-from domain.errors import GovernanceUnavailableError
+from domain.errors import GovernanceUnavailableError, IndexUnavailableError
 from infrastructure.database import ProductDatabase
 
 
@@ -139,6 +139,31 @@ def test_reconciliation_failure_blocks_new_index_activation(
     assert governance_index_service.current_version() == previous
 
 
+def test_eligible_note_disappearing_after_scan_preserves_current_index(
+    governance_index_service: MindGraphIndexService,
+) -> None:
+    first = governance_index_service.build(force=True)
+    note = governance_index_service.vault_root / "current.md"
+    note.write_text(_note("current-note") + "Revised text.\n", encoding="utf-8")
+    VaultSyncService(
+        governance_index_service.db, governance_index_service.vault_root, write_ids=False
+    ).scan_vault()
+    before = governance_index_service.db.fetch_one(
+        "SELECT index_status,index_version,last_indexed_at FROM notes WHERE note_id='current-note'"
+    )
+    assert before is not None
+    note.unlink()
+
+    with pytest.raises(IndexUnavailableError, match="eligible note"):
+        governance_index_service.build()
+
+    after = governance_index_service.db.fetch_one(
+        "SELECT index_status,index_version,last_indexed_at FROM notes WHERE note_id='current-note'"
+    )
+    assert governance_index_service.current_version() == first["index_version"]
+    assert after == before
+
+
 def test_failed_connector_scan_neither_prunes_reconciles_nor_builds(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()
@@ -154,23 +179,26 @@ def test_failed_connector_scan_neither_prunes_reconciles_nor_builds(tmp_path: Pa
         def __getattr__(self, _name: str):
             raise AssertionError("failed scan must not reach governance or indexing")
 
-    connector = DirectoryConnectorService(
+    class FailedScanConnector(DirectoryConnectorService):
+        def _sync_service(self, source_path: Path, connector_id: str) -> FailedScan:
+            return FailedScan()
+
+    connector = FailedScanConnector(
         database,
         source,
         index_service=FailIfCalled(),
         governance_reconciler=FailIfCalled(),
         allowed_roots=(source,),
     )
-    connector._sync_service = lambda _source, _connector_id: FailedScan()  # type: ignore[method-assign]
-
     result = connector.sync(source, trigger_index=True)
 
     assert result["pruned"] == 0
     assert result["status"] == "failed"
 
 
-def test_watcher_reconciles_before_build() -> None:
-    marker: dict[str, bool] = {"reconciled": False}
+def test_watcher_reconciles_before_build_through_committed_marker(tmp_path: Path) -> None:
+    database = ProductDatabase(tmp_path / "product.sqlite3")
+    database.initialize()
 
     class Scan:
         def scan_vault(self) -> VaultScanResult:
@@ -178,22 +206,81 @@ def test_watcher_reconciles_before_build() -> None:
 
     class Reconciler:
         def reconcile(self, *, as_of: date):
-            marker["reconciled"] = True
+            database.execute(
+                "CREATE TABLE IF NOT EXISTS watcher_markers (as_of TEXT PRIMARY KEY)"
+            )
+            database.execute(
+                "INSERT INTO watcher_markers(as_of) VALUES (?)", (as_of.isoformat(),)
+            )
 
     class Index:
         def has_pending(self) -> bool:
             return True
 
-        def build(self, *, force: bool = False, governance_reconciled: bool = False) -> dict[str, object]:
+        def build(
+            self,
+            *,
+            force: bool = False,
+            build_date: date | None = None,
+            governance_reconciled_as_of: date | None = None,
+        ) -> dict[str, object]:
             assert force is False
-            assert governance_reconciled is True
-            assert marker["reconciled"] is True
+            assert build_date == date(2026, 8, 25)
+            assert governance_reconciled_as_of == build_date
+            assert database.fetch_one(
+                "SELECT 1 FROM watcher_markers WHERE as_of=?", (build_date.isoformat(),)
+            ) == {"1": 1}
             return {"status": "validated", "index_version": "v1", "reused_embeddings": 0, "new_embeddings": 1}
 
     watcher = MindGraphSyncWatcher(
-        Scan(), Index(), governance_reconciler=Reconciler(), debounce=0
+        Scan(), Index(), governance_reconciler=Reconciler(), debounce=0,
+        today=lambda: date(2026, 8, 25),
     )
 
     result = watcher.run_once()
 
     assert result["build"]["status"] == "validated"
+
+
+def test_watcher_rebuilds_once_on_date_transition_and_not_on_same_date(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "expiring.md").write_text(
+        _note("expiring-note", effective_to="2026-08-25"), encoding="utf-8"
+    )
+    database = ProductDatabase(tmp_path / "product.sqlite3")
+    database.initialize()
+    days = [date(2026, 8, 25), date(2026, 8, 25), date(2026, 8, 26)]
+
+    def today() -> date:
+        return days.pop(0)
+
+    reconciler = GovernanceReconciliationService(database, GovernancePolicy())
+    index = MindGraphIndexService(
+        database,
+        vault,
+        tmp_path / "indexes",
+        provider=FakeEmbeddingProvider(),
+        governance_reconciler=reconciler,
+    )
+    watcher = MindGraphSyncWatcher(
+        VaultSyncService(database, vault, write_ids=False),
+        index,
+        governance_reconciler=reconciler,
+        debounce=0,
+        today=today,
+    )
+
+    first = watcher.run_once()
+    event_count = database.fetch_one("SELECT COUNT(*) AS count FROM governance_events")
+    assert event_count is not None
+    second = watcher.run_once()
+    third = watcher.run_once()
+
+    assert first["indexed"] is True
+    assert second["indexed"] is False
+    assert third["indexed"] is True
+    assert first["index_version"] != third["index_version"]
+    assert database.fetch_one("SELECT COUNT(*) AS count FROM governance_events") == {
+        "count": event_count["count"] + 1
+    }
