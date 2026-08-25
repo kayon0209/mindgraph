@@ -6,10 +6,12 @@
 """
 from __future__ import annotations
 
+from datetime import date
 import logging
 import time
 from typing import Any
 
+from .governance_reconciliation_service import GovernanceReconciliationService
 from .mindgraph_index_service import MindGraphIndexService
 from .vault_sync_service import VaultSyncService
 
@@ -23,11 +25,13 @@ class MindGraphSyncWatcher:
         index_service: MindGraphIndexService,
         poll_interval: float = 3.0,
         debounce: float = 0.6,
+        governance_reconciler: GovernanceReconciliationService | None = None,
     ) -> None:
         self.scan = scan_service
         self.index = index_service
         self.poll_interval = poll_interval
         self.debounce = debounce
+        self.governance_reconciler = governance_reconciler
         self._running = False
 
     def run_once(self) -> dict[str, Any]:
@@ -40,11 +44,22 @@ class MindGraphSyncWatcher:
             "indexed": False,
             "index_version": None,
         }
+        if scan.errors:
+            result["status"] = "failed"
+            return result
+        if self.governance_reconciler is not None:
+            self.governance_reconciler.reconcile(as_of=date.today())
         # 删除场景：笔记已从 notes 表剪枝，无 pending 可触发，但旧索引仍含其 chunk，
         # 需 force 重建以排除。编辑场景走 pending 触发（force=False，命中 embedding 缓存）。
         if self.index.has_pending() or scan.pruned > 0:
             time.sleep(self.debounce)  # 去抖：连续保存时等编辑稳定再构建
-            manifest = self.index.build(force=scan.pruned > 0)
+            if self.governance_reconciler is None:
+                manifest = self.index.build(force=scan.pruned > 0)
+            else:
+                manifest = self.index.build(
+                    force=scan.pruned > 0, governance_reconciled=True
+                )
+            result["build"] = manifest
             result["indexed"] = manifest.get("status") != "noop"
             result["index_version"] = manifest.get("index_version")
             result["reused_embeddings"] = manifest.get("reused_embeddings")

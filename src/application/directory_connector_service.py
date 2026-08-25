@@ -13,7 +13,7 @@
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 import hashlib
 import json
 import logging
@@ -21,6 +21,7 @@ from pathlib import Path
 import re
 from typing import Any
 
+from application.governance_reconciliation_service import GovernanceReconciliationService
 from application.vault_sync_service import VaultSyncService
 from infrastructure.database import ProductDatabase
 
@@ -62,10 +63,12 @@ class DirectoryConnectorService:
         vault_root: Path,
         index_service: Any | None = None,
         allowed_roots: tuple[Path, ...] | None = None,
+        governance_reconciler: GovernanceReconciliationService | None = None,
     ) -> None:
         self.database = database
         self.vault_root = Path(vault_root)
         self.index_service = index_service
+        self.governance_reconciler = governance_reconciler
         configured_roots = allowed_roots if allowed_roots is not None else (self.vault_root,)
         self.allowed_roots = tuple(Path(root).resolve() for root in configured_roots)
 
@@ -182,6 +185,14 @@ class DirectoryConnectorService:
             file_count = len(result.scanned)
             pruned = result.pruned
 
+            if result.errors:
+                return self._failed_result(
+                    connector_id,
+                    file_count=file_count,
+                    pruned=pruned,
+                    errors=result.errors,
+                )
+
             added = 0
             updated = 0
             for note in result.scanned:
@@ -201,6 +212,17 @@ class DirectoryConnectorService:
                 connector_id,
             )
 
+            if self.governance_reconciler is not None:
+                try:
+                    self.governance_reconciler.reconcile(as_of=date.today())
+                except Exception as exc:
+                    return self._failed_result(
+                        connector_id,
+                        file_count=file_count,
+                        pruned=pruned,
+                        errors=[f"governance: {exc}"],
+                    )
+
             metadata = {
                 "scanned": file_count,
                 "skipped": len(result.skipped),
@@ -215,7 +237,12 @@ class DirectoryConnectorService:
 
             index_version = None
             if trigger_index and self.index_service is not None:
-                manifest = self.index_service.build(force=pruned > 0)
+                if self.governance_reconciler is None:
+                    manifest = self.index_service.build(force=pruned > 0)
+                else:
+                    manifest = self.index_service.build(
+                        force=pruned > 0, governance_reconciled=True
+                    )
                 index_version = manifest.get("index_version") if isinstance(manifest, dict) else None
 
             return {
@@ -235,6 +262,31 @@ class DirectoryConnectorService:
             )
             logger.exception("directory_connector_sync_failed", extra={"connector_id": connector_id, "source": str(source)})
             raise
+
+    def _failed_result(
+        self,
+        connector_id: str,
+        *,
+        file_count: int,
+        pruned: int,
+        errors: list[str],
+    ) -> dict[str, Any]:
+        error = "; ".join(errors)[:500]
+        self.database.execute(
+            "UPDATE connector_syncs SET status='failed', file_count=?, pruned=?, error=?, finished_at=? "
+            "WHERE connector_id=?",
+            (file_count, pruned, error, _utc_iso(), connector_id),
+        )
+        return {
+            "connector_id": connector_id,
+            "status": "failed",
+            "file_count": file_count,
+            "added": 0,
+            "updated": 0,
+            "pruned": pruned,
+            "errors": errors,
+            "index_version": None,
+        }
 
     def _apply_connector_acl(
         self,

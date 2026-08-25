@@ -88,18 +88,25 @@ class ServiceContainer:
         )
         # 本地目录 / Markdown 目录增量同步连接器（Phase 5-2）
         from application.directory_connector_service import DirectoryConnectorService
+        from application.governance_policy import GovernancePolicy
+        from application.governance_reconciliation_service import GovernanceReconciliationService
         from application.mindgraph_index_service import MindGraphIndexService
+        self.governance_reconciler = GovernanceReconciliationService(
+            self.database, GovernancePolicy()
+        )
         self.mindgraph_index_service = MindGraphIndexService(
             self.database,
             self.root / "knowledge",
             self.mindgraph_index_root,
             on_activated=self.invalidate_pipelines,
+            governance_reconciler=self.governance_reconciler,
         )
         self.directory_connector = DirectoryConnectorService(
             self.database,
             self.root / "knowledge",
             self.mindgraph_index_service,
             allowed_roots=(self.root / "knowledge", *settings.connector_allowed_root_list),
+            governance_reconciler=self.governance_reconciler,
         )
 
     def mindgraph_pipeline(self, top_k: int, graph_enabled: bool = True):

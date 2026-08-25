@@ -20,6 +20,8 @@ from typing import Any, NamedTuple
 import uuid
 
 from application.governance_policy import normalize_policy_metadata
+from application.governance_reconciliation_service import GovernanceReconciliationService
+from domain.errors import GovernanceUnavailableError
 from domain.governance import NormalizedPolicyMetadata
 from infrastructure.database import ProductDatabase
 from infrastructure.markdown_frontmatter import inject_mindgraph_id, parse_frontmatter
@@ -152,6 +154,7 @@ class VaultSyncService:
         path_prefix: str | None = None,
         id_namespace: str | None = None,
         source_id: str = "builtin",
+        governance_reconciler: GovernanceReconciliationService | None = None,
     ) -> None:
         self.db = db
         self.vault_path = Path(vault_path)
@@ -159,6 +162,7 @@ class VaultSyncService:
         self.path_prefix = path_prefix.strip("/") if path_prefix else None
         self.id_namespace = id_namespace
         self.source_id = source_id
+        self.governance_reconciler = governance_reconciler
         # None → 使用默认忽略集合；空集合 → 不忽略任何目录
         self.ignore_dirs = DEFAULT_IGNORE_DIRS if ignore_dirs is None else frozenset(ignore_dirs)
 
@@ -203,6 +207,13 @@ class VaultSyncService:
         pruned = 0
         if prune_missing and not errors:
             pruned = self._prune_missing({n.vault_path for n in scanned})
+        # A scan/read error is not a complete ownership snapshot. It must not
+        # progress to governance or indexing, even though successful rows remain.
+        if not errors and self.governance_reconciler is not None:
+            try:
+                self.governance_reconciler.reconcile(as_of=date.today())
+            except Exception as exc:
+                raise GovernanceUnavailableError("knowledge governance reconciliation is unavailable") from exc
         return VaultScanResult(scanned, skipped, errors, pruned)
 
     def _process_file(self, path: Path, now: str, seen_ids: dict[str, Path]) -> ScannedNote | None:
