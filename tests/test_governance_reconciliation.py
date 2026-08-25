@@ -312,6 +312,7 @@ def test_same_normalized_version_conflicts_even_when_intervals_do_not_overlap(
     )
 
     case = _case_by_type(schema9_database, "version_conflict")
+    assert case["reason_code"] == "same_version_different_checksum"
     participants = schema9_database.fetch_all(
         "SELECT note_id FROM governance_case_notes WHERE case_id = ? ORDER BY note_id",
         (case["case_id"],),
@@ -320,6 +321,41 @@ def test_same_normalized_version_conflicts_even_when_intervals_do_not_overlap(
         {"note_id": min(first.note_id, second.note_id)},
         {"note_id": max(first.note_id, second.note_id)},
     ]
+
+
+def test_version_conflict_checksum_change_creates_a_new_rule_identity(
+    schema9_database: ProductDatabase,
+) -> None:
+    """Catches checksum evidence changing without changing conflict identity."""
+    first = _insert_note(
+        schema9_database,
+        "checksum-evidence-old",
+        version="2026-A",
+        effective_from="2026-01-01",
+        effective_to="2026-03-31",
+        content_hash="checksum-old",
+    )
+    _insert_note(
+        schema9_database,
+        "checksum-evidence-new",
+        version="2026-A",
+        effective_from="2026-04-01",
+        content_hash="checksum-new",
+    )
+    service = GovernanceReconciliationService(schema9_database, GovernancePolicy())
+    service.reconcile(as_of=date(2026, 8, 25))
+
+    schema9_database.execute(
+        "UPDATE notes SET content_hash = 'checksum-revised' WHERE note_id = ?",
+        (first.note_id,),
+    )
+    service.reconcile(as_of=date(2026, 8, 25))
+
+    cases = schema9_database.fetch_all(
+        "SELECT rule_key FROM governance_cases WHERE case_type = 'version_conflict'"
+    )
+    assert len(cases) == 2
+    assert len({case["rule_key"] for case in cases}) == 2
 
 
 def test_overlapping_same_checksum_with_divergent_acl_also_creates_conflict(
@@ -338,6 +374,46 @@ def test_overlapping_same_checksum_with_divergent_acl_also_creates_conflict(
         {"case_type": "exact_duplicate", "status": "proposed"},
         {"case_type": "version_conflict", "status": "proposed"},
     ]
+
+
+def test_same_version_same_checksum_without_overlap_has_no_conflict_or_conflict_event(
+    schema9_database: ProductDatabase,
+) -> None:
+    """Catches equal version/checksum pairs being mislabeled as interval conflicts."""
+    _insert_note(
+        schema9_database,
+        "same-version-checksum-old",
+        version=" 2026-A ",
+        effective_from="2026-01-01",
+        effective_to="2026-03-31",
+        content_hash="same-checksum",
+    )
+    _insert_note(
+        schema9_database,
+        "same-version-checksum-new",
+        version="2026-A",
+        effective_from="2026-04-01",
+        content_hash="same-checksum",
+        acl_json='{"allow":["workspace:other"]}',
+    )
+
+    GovernanceReconciliationService(schema9_database, GovernancePolicy()).reconcile(
+        as_of=date(2026, 8, 25)
+    )
+
+    assert schema9_database.fetch_all(
+        "SELECT case_type FROM governance_cases ORDER BY case_type"
+    ) == [{"case_type": "exact_duplicate"}]
+    events = schema9_database.fetch_all(
+        "SELECT new_state_json, reason_code FROM governance_events ORDER BY created_at"
+    )
+    assert all(
+        json.loads(str(event["new_state_json"])).get("case_type") != "version_conflict"
+        for event in events
+    )
+    assert all(
+        event["reason_code"] != "overlapping_effective_intervals" for event in events
+    )
 
 
 def test_event_payload_does_not_contain_sensitive_fields(
@@ -772,6 +848,134 @@ def test_evaluate_notes_rejects_corrupt_confirmed_case_identity(
     )
     row = schema9_database.fetch_one("SELECT * FROM notes WHERE note_id = ?", (alias_id,))
     assert row is not None
+
+    with pytest.raises(GovernancePersistenceError, match="confirmed governance authority"):
+        service.evaluate_notes(
+            [row], as_of=date(2026, 8, 25), mode=GovernanceMode.CURRENT
+        )
+
+
+@pytest.mark.parametrize(
+    "corruption", ["duplicate", "unordered", "extra_field", "wrong_linkage"]
+)
+def test_confirmed_decisions_rejects_noncanonical_evidence_and_linkage(
+    schema9_database: ProductDatabase,
+    equivalent_notes: tuple[StoredNote, StoredNote],
+    corruption: str,
+) -> None:
+    """Catches confirmed evidence being normalized or linkage damage being ignored."""
+    service = GovernanceReconciliationService(schema9_database, GovernancePolicy())
+    service.reconcile(as_of=date(2026, 8, 25))
+    case = _only_case(schema9_database)
+    evidence = json.loads(str(case["evidence_json"]))
+    participant_ids = evidence["participant_note_ids"]
+    alias_id = max(note.note_id for note in equivalent_notes)
+    if corruption == "duplicate":
+        evidence["participant_note_ids"] = [*participant_ids, participant_ids[0]]
+    elif corruption == "unordered":
+        evidence["participant_note_ids"] = list(reversed(participant_ids))
+    elif corruption == "extra_field":
+        evidence["unexpected"] = "must-not-be-accepted"
+    else:
+        schema9_database.execute(
+            "DELETE FROM governance_case_notes WHERE case_id = ? AND note_id = ?",
+            (case["case_id"], alias_id),
+        )
+    if corruption != "wrong_linkage":
+        schema9_database.execute(
+            "UPDATE governance_cases SET evidence_json = ? WHERE case_id = ?",
+            (json.dumps(evidence), case["case_id"]),
+        )
+
+    with pytest.raises(GovernancePersistenceError, match="confirmed governance authority"):
+        service.confirmed_decisions([alias_id])
+
+
+@pytest.mark.parametrize(
+    "corruption", ["duplicate", "unordered", "extra_field", "wrong_linkage"]
+)
+def test_evaluate_notes_rejects_noncanonical_evidence_and_linkage(
+    schema9_database: ProductDatabase,
+    equivalent_notes: tuple[StoredNote, StoredNote],
+    corruption: str,
+) -> None:
+    """Catches direct evaluation accepting repaired evidence or damaged linkage."""
+    service = GovernanceReconciliationService(schema9_database, GovernancePolicy())
+    service.reconcile(as_of=date(2026, 8, 25))
+    case = _only_case(schema9_database)
+    evidence = json.loads(str(case["evidence_json"]))
+    participant_ids = evidence["participant_note_ids"]
+    alias_id = max(note.note_id for note in equivalent_notes)
+    row = schema9_database.fetch_one("SELECT * FROM notes WHERE note_id = ?", (alias_id,))
+    assert row is not None
+    if corruption == "duplicate":
+        evidence["participant_note_ids"] = [*participant_ids, participant_ids[0]]
+    elif corruption == "unordered":
+        evidence["participant_note_ids"] = list(reversed(participant_ids))
+    elif corruption == "extra_field":
+        evidence["unexpected"] = "must-not-be-accepted"
+    else:
+        schema9_database.execute(
+            "DELETE FROM governance_case_notes WHERE case_id = ? AND note_id = ?",
+            (case["case_id"], alias_id),
+        )
+    if corruption != "wrong_linkage":
+        schema9_database.execute(
+            "UPDATE governance_cases SET evidence_json = ? WHERE case_id = ?",
+            (json.dumps(evidence), case["case_id"]),
+        )
+
+    with pytest.raises(GovernancePersistenceError, match="confirmed governance authority"):
+        service.evaluate_notes(
+            [row], as_of=date(2026, 8, 25), mode=GovernanceMode.CURRENT
+        )
+
+
+@pytest.mark.parametrize("participant_role", ["alias", "canonical"])
+def test_confirmed_decisions_rejects_non_candidate_version_conflict_roles(
+    schema9_database: ProductDatabase,
+    overlapping_notes: tuple[StoredNote, StoredNote],
+    participant_role: str,
+) -> None:
+    """Catches malformed version-conflict roles being accepted as authority."""
+    service = GovernanceReconciliationService(schema9_database, GovernancePolicy())
+    service.reconcile(as_of=date(2026, 8, 25))
+    case = _only_case(schema9_database)
+    target_id = overlapping_notes[0].note_id
+    schema9_database.execute(
+        "UPDATE governance_cases SET status = 'confirmed' WHERE case_id = ?",
+        (case["case_id"],),
+    )
+    schema9_database.execute(
+        "UPDATE governance_case_notes SET participant_role = ? WHERE case_id = ? AND note_id = ?",
+        (participant_role, case["case_id"], target_id),
+    )
+
+    with pytest.raises(GovernancePersistenceError, match="confirmed governance authority"):
+        service.confirmed_decisions([note.note_id for note in overlapping_notes])
+
+
+@pytest.mark.parametrize("participant_role", ["alias", "canonical"])
+def test_evaluate_notes_rejects_non_candidate_version_conflict_roles(
+    schema9_database: ProductDatabase,
+    overlapping_notes: tuple[StoredNote, StoredNote],
+    participant_role: str,
+) -> None:
+    """Catches direct evaluation trusting malformed version-conflict roles."""
+    service = GovernanceReconciliationService(schema9_database, GovernancePolicy())
+    service.reconcile(as_of=date(2026, 8, 25))
+    case = _only_case(schema9_database)
+    target_id = overlapping_notes[0].note_id
+    row = schema9_database.fetch_one("SELECT * FROM notes WHERE note_id = ?", (target_id,))
+    assert row is not None
+    schema9_database.execute(
+        "UPDATE governance_cases SET status = 'confirmed' WHERE case_id = ?",
+        (case["case_id"],),
+    )
+    schema9_database.execute(
+        "UPDATE governance_case_notes SET participant_role = ? WHERE case_id = ? AND note_id = ?",
+        (participant_role, case["case_id"], target_id),
+    )
 
     with pytest.raises(GovernancePersistenceError, match="confirmed governance authority"):
         service.evaluate_notes(

@@ -60,6 +60,7 @@ GOVERNANCE_REASON_CODES = frozenset(
         "missing_version",
         "not_yet_effective",
         "overlapping_effective_intervals",
+        "same_version_different_checksum",
     }
 )
 
@@ -382,6 +383,7 @@ class GovernanceReconciliationService:
     ) -> tuple[_CaseCandidate, ...]:
         by_id = {note.note_id: (note, interval) for note, interval in governed}
         edges: dict[str, set[str]] = defaultdict(set)
+        overlap_edges: set[tuple[str, str]] = set()
         ids = sorted(by_id)
         for index, left_id in enumerate(ids):
             left, left_interval = by_id[left_id]
@@ -389,13 +391,20 @@ class GovernanceReconciliationService:
                 right, right_interval = by_id[right_id]
                 if self.policy.exact_duplicate_equivalent(left, right):
                     continue
-                left_version = governance_metadata_dict(left)["document_version"]
-                right_version = governance_metadata_dict(right)["document_version"]
-                if left_version == right_version or _intervals_overlap(
-                    left_interval, right_interval
-                ):
-                    edges[left_id].add(right_id)
-                    edges[right_id].add(left_id)
+                left_metadata = governance_metadata_dict(left)
+                right_metadata = governance_metadata_dict(right)
+                overlaps = _intervals_overlap(left_interval, right_interval)
+                same_version_different_checksum = (
+                    left_metadata["document_version"]
+                    == right_metadata["document_version"]
+                    and left_metadata["content_hash"] != right_metadata["content_hash"]
+                )
+                if not overlaps and not same_version_different_checksum:
+                    continue
+                edges[left_id].add(right_id)
+                edges[right_id].add(left_id)
+                if overlaps:
+                    overlap_edges.add((left_id, right_id))
 
         result: list[_CaseCandidate] = []
         unseen = set(edges)
@@ -411,6 +420,10 @@ class GovernanceReconciliationService:
                 stack.extend(sorted(edges[current] - component, reverse=True))
             unseen.difference_update(component)
             participant_ids = tuple(sorted(component))
+            has_overlap = any(
+                left_id in component and right_id in component
+                for left_id, right_id in overlap_edges
+            )
             relevant = {
                 "intervals": {
                     note_id: {
@@ -429,6 +442,10 @@ class GovernanceReconciliationService:
                     ]
                     for note_id in participant_ids
                 },
+                "checksums": {
+                    note_id: governance_metadata_dict(by_id[note_id][0])["content_hash"]
+                    for note_id in participant_ids
+                },
             }
             result.append(
                 self._case_candidate(
@@ -438,7 +455,11 @@ class GovernanceReconciliationService:
                     relevant,
                     status="proposed",
                     canonical_note_id=None,
-                    reason_code="overlapping_effective_intervals",
+                    reason_code=(
+                        "overlapping_effective_intervals"
+                        if has_overlap
+                        else "same_version_different_checksum"
+                    ),
                 )
             )
         return tuple(result)
@@ -789,7 +810,7 @@ class GovernanceReconciliationService:
             and _safe_reason_code(row.get("reason_code"))
             and evidence_ids is not None
             and _evidence_metadata_hash(row.get("evidence_json")) is not None
-            and set(linked) == set(evidence_ids or ())
+            and tuple(sorted(linked)) == evidence_ids
             and all(note_id in notes_by_id for note_id in evidence_ids or ())
         )
         if case_type == "exact_duplicate":
@@ -803,7 +824,11 @@ class GovernanceReconciliationService:
                 )
             )
         elif case_type == "version_conflict":
-            structurally_valid = structurally_valid and canonical_note_id is None
+            structurally_valid = (
+                structurally_valid
+                and canonical_note_id is None
+                and all(role == "candidate" for role in linked.values())
+            )
         if not structurally_valid or evidence_ids is None:
             raise GovernancePersistenceError("confirmed governance authority is malformed")
         return evidence_ids
@@ -979,16 +1004,21 @@ def _evidence_payload(value: Any) -> dict[str, Any] | None:
 
 def _evidence_participant_ids(value: Any) -> tuple[str, ...] | None:
     payload = _evidence_payload(value)
-    if payload is None:
+    if payload is None or set(payload) != {
+        "participant_note_ids",
+        "relevant_metadata_hash",
+    }:
         return None
     note_ids = payload.get("participant_note_ids")
     if (
         not isinstance(note_ids, list)
         or not note_ids
         or not all(isinstance(note_id, str) and note_id for note_id in note_ids)
+        or note_ids != sorted(note_ids)
+        or len(note_ids) != len(set(note_ids))
     ):
         return None
-    return tuple(sorted(set(note_ids)))
+    return tuple(note_ids)
 
 
 def _evidence_metadata_hash(value: Any) -> str | None:
