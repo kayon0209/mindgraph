@@ -125,6 +125,23 @@ Status, effective-date, category and permission filters are shared by base retri
   <img src="assets/architecture.svg" alt="MindGraph architecture" width="92%">
 </div>
 
+## ACL backfill operations
+
+Historical notes can be given repeatable ACL metadata through a deliberately operator-run workflow. It never runs automatically against production data.
+
+```bash
+# 1. Preview aggregate counts only. Review unresolved/private records before proceeding.
+python scripts/backfill_note_acl.py --dry-run
+
+# 2. After an operator review, write the backfill and retain the returned run ID.
+python scripts/backfill_note_acl.py --apply
+
+# 3. Roll back only that completed run ID when needed.
+python scripts/backfill_note_acl.py --rollback RUN_ID
+```
+
+The CLI prints aggregate counts and a run ID only; it does not print note bodies, paths or ACL contents. Unresolved source ownership is intentionally backfilled as private and must be reviewed by an operator before any live production change.
+
 ## MCP for AI agents
 
 MindGraph exposes a read-only MCP server with five tools:

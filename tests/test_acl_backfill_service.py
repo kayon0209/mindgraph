@@ -4,12 +4,127 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import sys
+from types import SimpleNamespace
 
 import pytest
 
 from application.acl_backfill_service import AclBackfillService
 from infrastructure import database as database_module
 from infrastructure.database import ProductDatabase
+
+
+def _load_backfill_cli_module():
+    import importlib.util
+
+    script = Path(__file__).resolve().parents[1] / "scripts" / "backfill_note_acl.py"
+    spec = importlib.util.spec_from_file_location("backfill_note_acl", script)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_acl_backfill_cli_defaults_to_dry_run(monkeypatch, capsys):
+    cli = _load_backfill_cli_module()
+    service = SimpleNamespace(plan=lambda: {"note_count": 1, "unresolved_count": 1})
+    monkeypatch.setattr(cli, "_service", lambda: service)
+
+    cli.main([])
+
+    assert json.loads(capsys.readouterr().out) == {
+        "mode": "dry_run",
+        "note_count": 1,
+        "unresolved_count": 1,
+    }
+
+
+def test_acl_backfill_cli_accepts_explicit_dry_run(monkeypatch, capsys):
+    cli = _load_backfill_cli_module()
+    monkeypatch.setattr(
+        cli,
+        "_service",
+        lambda: SimpleNamespace(plan=lambda: {"note_count": 0, "unresolved_count": 0}),
+    )
+
+    cli.main(["--dry-run"])
+
+    assert json.loads(capsys.readouterr().out)["mode"] == "dry_run"
+
+
+def test_acl_backfill_cli_apply_calls_service_once(monkeypatch, capsys):
+    cli = _load_backfill_cli_module()
+    calls: list[str] = []
+
+    def apply():
+        calls.append("apply")
+        return {"run_id": "run-1", "changed": 2, "unresolved_count": 1}
+
+    monkeypatch.setattr(cli, "_service", lambda: SimpleNamespace(apply=apply))
+
+    cli.main(["--apply"])
+
+    assert calls == ["apply"]
+    assert json.loads(capsys.readouterr().out) == {
+        "mode": "apply",
+        "run_id": "run-1",
+        "changed": 2,
+        "unresolved_count": 1,
+    }
+
+
+def test_acl_backfill_cli_rollback_requires_exact_run_id():
+    cli = _load_backfill_cli_module()
+
+    with pytest.raises(SystemExit):
+        cli.main(["--rollback"])
+    with pytest.raises(SystemExit):
+        cli.main(["--rollback", ""])
+
+
+def test_acl_backfill_cli_rollback_calls_service_once(monkeypatch, capsys):
+    cli = _load_backfill_cli_module()
+    calls: list[str] = []
+
+    def rollback(run_id: str):
+        calls.append(run_id)
+        return {"run_id": run_id, "restored": 2}
+
+    monkeypatch.setattr(cli, "_service", lambda: SimpleNamespace(rollback=rollback))
+
+    cli.main(["--rollback", "run-1"])
+
+    assert calls == ["run-1"]
+    assert json.loads(capsys.readouterr().out) == {
+        "mode": "rollback",
+        "run_id": "run-1",
+        "restored": 2,
+    }
+
+
+def test_acl_backfill_cli_output_omits_private_path_and_body(monkeypatch, capsys):
+    cli = _load_backfill_cli_module()
+    private_path = "private/hr/redundancy.md"
+    private_body = "dismissal terms for a named employee"
+    monkeypatch.setattr(
+        cli,
+        "_service",
+        lambda: SimpleNamespace(
+            plan=lambda: {
+                "note_count": 1,
+                "unresolved_count": 1,
+                "items": [{"vault_path": private_path, "body": private_body, "acl": {"allow": []}}],
+            }
+        ),
+    )
+
+    cli.main([])
+
+    output = capsys.readouterr().out
+    assert private_path not in output
+    assert private_body not in output
+    assert "allow" not in output
 
 
 def _insert_note(

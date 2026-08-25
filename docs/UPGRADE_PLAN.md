@@ -12,9 +12,9 @@
 
 | ID | 升级项 | 优先级 | 状态 | 核心缺口 / 交付标准 |
 |----|--------|:---:|:---:|----|
-| UG-003 | 多租户 / 权限前置过滤 | **P1** | **Partial** | ACL 历史数据回填；未授权 chunk 不得进入融合、重排或模型上下文 |
-| UG-004 | 企业连接器 source ownership | **P1** | **Partial** | 建立正式来源归属、完成迁移和 source-aware prune，外部源仍不可改写 |
-| UG-007 | 检索质量评测与证据可观测性 | **P1** | Planned | 真实问题集、期望证据、Recall@k / 引用正确率 / 拒答正确率和 CI 回归门禁 |
+| UG-003 | 多租户 / 权限前置过滤 | **P1** | **Done** | 可审计、可回滚 ACL 回填；未授权 chunk 不得进入融合、重排或模型上下文 |
+| UG-004 | 企业连接器 source ownership | **P1** | **Done** | 正式来源归属、完成迁移和 source-aware prune；外部源仍不可改写 |
+| UG-007 | 检索质量评测与证据可观测性 | **P1** | **Partial** | 仍缺 50–200 独立样本、期望证据标注和 CI 回归门禁 |
 | UG-001 | 鲁棒文档 ingestion（layout-aware） | P2 | **Partial** | 执行 OCR；按语义结构、表头、单位、页码和来源构建可独立回答的 chunk |
 | UG-002 | Query 理解与多查询召回 | P2 | **Partial** | 各 query variant 分别检索，合并去重并以元数据/ACL 预过滤后排序 |
 | UG-008 | 知识治理与生命周期过滤 | P2 | Planned | 过期、草稿、冲突、重复资料在入库和召回两端均可识别、过滤和审计 |
@@ -31,7 +31,7 @@
 4. **上下文最小且可追溯**：只向模型提供经过过滤和排序的必要证据；证据缺失时拒答，证据冲突时说明冲突而非擅自裁决。
 5. **每项先测后改**：先加入正常、异常、边界测试，再改生产代码；修改分片、检索、embedding、reranker 或 prompt 时必须运行检索回归集。
 
-### UG-003：多租户 / 权限前置过滤（P1，Partial）
+### UG-003：多租户 / 权限前置过滤（P1，Done）
 
 **实现**：
 - `notes` 表新增 `workspace` / `department` / `acl_json` / `acl_public` 列；
@@ -40,12 +40,13 @@
 - `access_audit` 表记录每次访问的 actor / action / resource / decision / reason。
 - 企业认证模式下缺失、无效或失败的凭据返回 401，不再降级为匿名；
 - `AUTH_MODE=demo` 的匿名主体使用 public-only scope，`AUTH_MODE=off` 是唯一显式 ACL bypass。
+- `AclBackfillService` 提供可审计的 plan / apply / rollback；CLI 默认 dry-run，输出仅含聚合计数和 run ID。
 
-**剩余工作**：按“frontmatter 显式 ACL > 受控目录默认 ACL > 显式 public 标记”回填历史 notes；无法可靠判定的记录默认 private 并输出待治理清单。在 dense、BM25 和 MindGraph 适配层按 workspace、department、allow/deny、状态和有效期预过滤，再融合和重排；trace 仅记录排除计数与原因，不记录私有正文。
+**运维约束**：生产历史数据回填由操作人员执行，不自动运行。流程为 dry-run → 审核 unresolved/private 聚合计数 → apply 并保存 run ID → 必要时按精确 run ID rollback。无法可靠判定的记录默认 private；trace 仅记录排除计数与原因，不记录私有正文。
 
 **验收**：无权限 chunk 不出现在 dense/sparse/fusion/rerank/LLM context 任一阶段；回填可重复、可审计、可回滚；最终 `_filter_by_access` 仍作为防御纵深。
 
-### UG-004：企业连接器 source ownership（P1，Partial）
+### UG-004：企业连接器 source ownership（P1，Done）
 
 **实现**：
 - `DirectoryConnectorService` 支持本地 Markdown 目录增量同步；
@@ -55,9 +56,8 @@
 - API：`POST /api/v1/connectors/directories`。
 - 同步只允许 `CONNECTOR_ALLOWED_ROOTS` 或项目 `knowledge/` 下的 canonical path；
 - 连接器不再向源 Markdown 注入 ID，不同 source 通过稳定 connector 前缀临时隔离同名相对路径。
-- 外部 source 文件已通过 `connector_syncs` 的受控路径解析进入索引；该项不再是路线图缺口。
-
-**剩余工作**：为 notes 建立正式 source ownership 并迁移既有笔记；以“当前 connector 上次成功快照”和“本次完整成功扫描”为前提实现 source-aware prune。扫描失败、部分读取失败或 source 不可达时绝不删除，外部内容也绝不写回源文件。
+- 外部 source 文件已通过 `connector_syncs` 的受控路径解析进入索引；该项不再是路线图缺口；
+- `notes.source_id` 已持久化并迁移历史记录；只有上次快照和本次扫描完整成功时才会执行 source-aware prune。扫描失败、部分读取失败或 source 不可达时绝不删除，外部内容也绝不写回源文件。
 
 **验收**：connector A 的删除永不影响 connector B 或内置 Vault；失败扫描零删除；删除后索引原子切换且缓存失效；迁移前后 note ID、ACL 与检索结果一致。
 
@@ -88,11 +88,11 @@
 
 ---
 
-## UG-007：检索质量评测与证据可观测性（P1，Planned）
+## UG-007：检索质量评测与证据可观测性（P1，Partial）
 
 **实施范围**：建立 50–200 条脱敏的真实高频问题集；每题记录期望文档、章节/chunk、版本/有效期、权限主体，以及应拒答或应标记冲突的情形。报告 Recall@k、MRR、引用正确率、版本正确率、拒答正确率、ACL 泄露数、重复候选率、延迟与 token 使用量；`RetrievalTrace` 输出 variants、候选数、预过滤原因、融合/重排变化和最终引用 ID。
 
-**验收**：正确证据未进 Top-k、进入但排序靠后、证据第一但生成错误三类问题可被区分；任何 ACL 泄露为零容忍失败；确定性离线回归作为 CI 门禁，外部模型评测单独标记为非阻塞。
+**剩余工作与验收**：仍需建立 50–200 条独立脱敏样本并完成期望证据标注；正确证据未进 Top-k、进入但排序靠后、证据第一但生成错误三类问题可被区分；任何 ACL 泄露为零容忍失败；确定性离线回归作为 CI 门禁，外部模型评测单独标记为非阻塞。
 
 ## UG-001：鲁棒文档 ingestion（layout-aware）（P2，Partial）
 
