@@ -51,6 +51,7 @@ class RetrievalTrace:
     applied_filters: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     graph_enabled: bool = False
+    graph_hops: int = 1
     graph_links: list[dict] = field(default_factory=list)
     route_decision: dict[str, Any] = field(default_factory=dict)
     query_variants: list[str] = field(default_factory=list)
@@ -73,6 +74,9 @@ class RetrievalTrace:
             "index_version": self.index_version,
             "applied_filters": self.applied_filters,
             "warnings": self.warnings,
+            "graph_enabled": self.graph_enabled,
+            "graph_hops": self.graph_hops,
+            "graph_links": self.graph_links,
             "route_decision": self.route_decision,
             "query_variants": self.query_variants,
             "original_query": self.original_query,

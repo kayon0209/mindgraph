@@ -26,7 +26,7 @@ from domain.models import ChatRequest  # noqa: E402
 
 
 EVALUATOR_VERSION = "deterministic-answer-v1"
-DEFAULT_GOLDEN = PROJECT_ROOT / "evaluation" / "datasets" / "mindgraph_golden.jsonl"
+DEFAULT_GOLDEN = PROJECT_ROOT / "evaluation" / "datasets" / "mindgraph_golden_v2.jsonl"
 
 
 def _load_jsonl(path: Path) -> list[dict]:

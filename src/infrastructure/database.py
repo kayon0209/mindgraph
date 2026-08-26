@@ -10,7 +10,7 @@ from typing import Any
 
 logger = logging.getLogger("mindgraph.database")
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 class ProductDatabase:
@@ -179,6 +179,8 @@ class ProductDatabase:
                     index_version TEXT,
                     workspace TEXT,
                     department TEXT,
+                    source_id TEXT,
+                    source_path TEXT,
                     acl_json TEXT NOT NULL DEFAULT '{}',
                     acl_public INTEGER NOT NULL DEFAULT 0,
                     policy_key TEXT,
@@ -248,6 +250,8 @@ class ProductDatabase:
             self._ensure_columns(connection, "notes", {
                 "workspace": "TEXT",
                 "department": "TEXT",
+                "source_id": "TEXT",
+                "source_path": "TEXT",
                 "acl_json": "TEXT NOT NULL DEFAULT '{}'",
                 "acl_public": "INTEGER NOT NULL DEFAULT 0",
                 "policy_key": "TEXT",
@@ -258,12 +262,23 @@ class ProductDatabase:
                 "policy_status": "TEXT NOT NULL DEFAULT 'unspecified'",
                 "metadata_issues_json": "TEXT NOT NULL DEFAULT '[]'",
             })
+            self._ensure_columns(connection, "note_relations", {
+                "evidence_span": "TEXT",
+                "evidence_section": "TEXT",
+                "source_document_version": "TEXT",
+                "effective_from": "TEXT",
+                "effective_to": "TEXT",
+                "extraction_method": "TEXT",
+            })
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_notes_policy_lifecycle "
                 "ON notes(policy_key, policy_status, effective_from, effective_to)"
             )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_notes_workspace ON notes(workspace)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_notes_source ON notes(source_id, source_path)"
             )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_notes_department ON notes(department)"

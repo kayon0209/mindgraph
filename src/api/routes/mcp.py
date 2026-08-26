@@ -10,11 +10,13 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
 
 from fastapi import APIRouter, Request
+from starlette.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 import api.auth as auth
@@ -24,6 +26,11 @@ from mcp_server import handle_jsonrpc
 
 logger = logging.getLogger("mindgraph.api.mcp")
 router = APIRouter(prefix="/mcp", tags=["mcp"])
+
+
+async def _run_mcp_with_timeout(payload: dict[str, Any], principal: dict[str, Any] | None, container: Any):
+    timeout = float(getattr(getattr(container, "settings", None), "MCP_TIMEOUT_SECONDS", 15.0))
+    return await asyncio.wait_for(run_in_threadpool(handle_jsonrpc, payload, principal), timeout=timeout)
 
 
 @router.get("/health")
@@ -52,16 +59,34 @@ async def mcp_rpc(request: Request):
     except json.JSONDecodeError:
         return JSONResponse({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "parse error"}}, status_code=400)
 
+    if not isinstance(payload, (dict, list)):
+        return JSONResponse({"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "invalid request"}}, status_code=400)
+
     if isinstance(payload, list):
+        settings = getattr(container, "settings", None)
+        max_items = int(getattr(settings, "MCP_MAX_BATCH_ITEMS", 20))
+        if len(payload) > max_items:
+            return JSONResponse({"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "batch limit exceeded"}}, status_code=400)
         results: list[dict[str, Any]] = []
         for item in payload:
-            response = handle_jsonrpc(item, principal=principal)
+            if not isinstance(item, dict):
+                results.append({"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "invalid request"}})
+                continue
+            try:
+                response = await _run_mcp_with_timeout(item, principal, container)
+            except asyncio.TimeoutError:
+                response = {"jsonrpc": "2.0", "id": item.get("id"), "error": {"code": -32000, "message": "tool timeout"}}
             if response is not None:
                 results.append(response)
         record_access_audit(container.database, actor=actor, action="mcp_batch", resource="mcp", decision="allow", metadata={"count": len(results), "scope_user": (scope or {}).get("user")})
         return JSONResponse(results)
 
-    response = handle_jsonrpc(payload, principal=principal)
+    if not isinstance(payload, dict):
+        return JSONResponse({"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "invalid request"}}, status_code=400)
+    try:
+        response = await _run_mcp_with_timeout(payload, principal, container)
+    except asyncio.TimeoutError:
+        response = {"jsonrpc": "2.0", "id": payload.get("id"), "error": {"code": -32000, "message": "tool timeout"}}
     if payload.get("method") == "tools/call":
         tool_name = (payload.get("params") or {}).get("name")
         record_access_audit(

@@ -77,13 +77,13 @@ Obsidian Vault 是当前已实现的数据源和客户端之一，不是产品�
 | Graph RAG 可信问答（SSE） | ✅ 完成 | `mindgraph_pipeline` + `/api/v1/mindgraph/chat` |
 | 只读 API（notes / 评测 / 关系） | ✅ 完成 | `mindgraph_readonly.py` |
 | 公开样例闭环 | ✅ 完成 | `demo-vault/` 提供 12 篇企业制度样例，无需自备 Vault 即可复现 |
-| 可复现评测（三组消融） | ✅ 完成 | `run_ablation.py` → `evaluation_runs` |
-| 独立 Golden Set | ✅ 完成 | 12 个手工标注问题，不从数据库 confirmed 关系反向派生 |
-| 关系 seed（图谱 / 链接建议有内容） | ✅ 完成 | `seed_relations.py` 为演示数据生成 proposed 关系 |
+| 可复现评测（三组消融） | ⚠️ 部分完成 | 历史消融可复现；统一 Runner、同版本 trace 与分层 Graph gate 仍需持续扩充 |
+| 独立 Golden Set | ⚠️ 部分完成 | V2 当前 12 个手工标注问题；达到 30 条人工确认前不能作为阶段完成 |
+| 关系 seed（图谱 / 链接建议有内容） | ⚠️ Demo only | `seed_relations.py` 仅生成演示候选；不能证明 typed policy graph 已完成 |
 | Web 控制台（4 页、无 mock） | ✅ 完成 | `web/`；问答 SSE、知识库、评测指标和关系审核均连接真实 API |
-| 制度元数据治理 | ✅ 第一批完成 | owner/version/effective dates/status 入库、质量标记、API 过滤、Web 台账与 citation 透传 |
+| 制度元数据治理 | ⚠️ 部分完成 | owner/version/effective dates/status 入库、质量标记与 API 过滤已存在；真实来源回填和完整企业验收仍待完成 |
 | 制度版本冲突保护 | ✅ 第一批完成 | policy_key 入库；查询日期存在多个有效版本时在模型前安全拒答，SSE/Web 展示全部冲突依据 |
-| 生命周期检索约束 | ✅ 第一批完成 | policy 字段映射到检索过滤元数据；关系扩展复用状态、生效期与分类过滤，不能重新引入历史制度 |
+| 生命周期检索约束 | ⚠️ 部分完成 | policy 字段映射到检索过滤元数据；关系扩展复用状态、生效期与分类过滤，仍需真实版本回归 |
 | **Obsidian 插件（双前端①）** | ✅ 完成 | `obsidian-plugin/`（纯 JS 可加载，调 `/chat/stream`） |
 | **关系抽取自动化（闭环最后一环）** | ✅ 完成 | `relation_extraction_service.py` + `POST /api/v1/mindgraph/relations/extract` + `scripts/extract_relations.py` |
 
@@ -97,7 +97,7 @@ Obsidian Vault 是当前已实现的数据源和客户端之一，不是产品�
 - 评测为小样本 Golden Set，代表工程可复现，非生产效果结论
 - 当前独立 Golden Set 只有 12 个问题，可验证回归与三组消融，但不足以证明生产场景的普遍效果
 - `demo-vault/` 是合成制度样例，用于零配置体验和回归；企业落地仍需接入自身文档与权限体系
-- 当前未实现企业 ACL 继承、SSO 与完整审计，不应宣称企业生产就绪
+- ACL 前置过滤、OIDC 最小实现、MCP 审计和连接器来源归属已进入代码，但仍需真实非生产 IdP、来源迁移和跨租户验收；不应宣称企业生产就绪
 - 根目录 `.streamlit-run*.log` 为旧报销 RAG 残留日志，被历史进程占用无法删除，不影响 MindGraph 运行
 
 ## 8. 复现命令

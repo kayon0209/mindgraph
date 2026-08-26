@@ -57,7 +57,7 @@ export function RelationsPage() {
         description="默认 BGE 路径只能发现相似笔记。审核者确认之后，关系才有资格进入一跳扩展。"
         actions={
           <button className="button secondary" onClick={() => void load()} type="button">
-            <RefreshCw className={loading ? "spin" : ""} size={16} /> 刷新队列
+            <RefreshCw size={16} className={loading ? "spin" : ""} /> 刷新队列
           </button>
         }
       />

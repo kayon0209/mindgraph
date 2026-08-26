@@ -14,10 +14,15 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import date
+import inspect
 from typing import Any
 
 from .pipeline import RetrievalPipeline
 from .types import RetrievalCandidate, RetrievalTrace
+
+
+DEFAULT_GRAPH_HOPS = 1
+MAX_GRAPH_HOPS = 2
 
 
 class MindGraphRetrievalPipeline:
@@ -27,47 +32,101 @@ class MindGraphRetrievalPipeline:
         self,
         base: RetrievalPipeline,
         graph_store: Any,
-        graph_enabled: bool = True,
+        graph_enabled: bool = False,
         max_graph_chunks: int = 4,
+        max_graph_hops: int = DEFAULT_GRAPH_HOPS,
     ) -> None:
         self.base = base
         self.graph_store = graph_store
         self.graph_enabled = graph_enabled
         self.max_graph_chunks = max_graph_chunks
+        self.max_graph_hops = max_graph_hops
 
     @property
     def dense(self):
         return self.base.dense
 
     def retrieve(self, query, strategy, query_date=None, categories=None,
-                 include_historical=False, graph_enabled=None, access_scope=None):
+                 include_historical=False, graph_enabled=None, access_scope=None, graph_hops=None):
         ge = self.graph_enabled if graph_enabled is None else graph_enabled
+        hops = self.max_graph_hops if graph_hops is None else graph_hops
         trace = self.base.retrieve(
             query, strategy, query_date, categories, include_historical, access_scope=access_scope,
         )
         trace.graph_enabled = ge
+        trace.graph_hops = hops
         if ge and strategy in {"hybrid", "hybrid_rerank"}:
-            self._expand_graph(trace)
+            try:
+                self._expand_graph(trace, access_scope=access_scope, hops=hops)
+            except Exception as exc:
+                trace.warnings.append(f"graph_expansion_failed:{type(exc).__name__}")
+                trace.graph_links = []
+        trace.candidate_counts = {
+            **trace.candidate_counts,
+            "final": len(trace.final_selected_chunks),
+            "graph_expanded": trace.candidate_counts.get("graph_expanded", 0),
+        }
         return trace
 
-    def _expand_graph(self, trace: RetrievalTrace) -> None:
+    def _expand_graph(self, trace: RetrievalTrace, *, access_scope=None, hops: int = DEFAULT_GRAPH_HOPS) -> None:
         hit_notes = {
             c.chunk.metadata.get("mindgraph_id")
             for c in trace.final_selected_chunks
             if c.chunk.metadata.get("mindgraph_id")
         }
         if not hit_notes:
+            trace.candidate_counts = {
+                **trace.candidate_counts,
+                "final": len(trace.final_selected_chunks),
+                "graph_expanded": 0,
+            }
             return
-        relations = self.graph_store.related_note_ids(hit_notes)
+        relation_method = self.graph_store.related_note_ids
+        parameters = inspect.signature(relation_method).parameters
+        relation_kwargs = {}
+        if "hops" in parameters:
+            relation_kwargs["hops"] = hops
+        if "access_scope" in parameters:
+            relation_kwargs["access_scope"] = access_scope
+        if "as_of" in parameters:
+            relation_kwargs["as_of"] = trace.applied_filters.get("query_date") if trace.applied_filters else None
+        relations = relation_method(hit_notes, **relation_kwargs)
         if not relations:
+            trace.candidate_counts = {
+                **trace.candidate_counts,
+                "final": len(trace.final_selected_chunks),
+                "graph_expanded": 0,
+            }
+            return
+
+        # 证据可追溯校验：关系引用的 evidence_chunk_id 必须存在于激活索引，
+        # 否则无法回原文；无 span 兜底的关系不进入检索扩展。
+        known_chunk_ids = {c.chunk_id for c in self.dense.chunks}
+        resolvable: list[dict] = []
+        for rel in relations:
+            evidence_chunk_id = rel.get("evidence_chunk_id")
+            if evidence_chunk_id and evidence_chunk_id not in known_chunk_ids:
+                trace.warnings.append(
+                    f"graph_evidence_chunk_unresolved:{evidence_chunk_id}:{rel.get('relation_id')}"
+                )
+                if not rel.get("evidence_span"):
+                    continue
+            resolvable.append(rel)
+        relations = resolvable
+        if not relations:
+            trace.candidate_counts = {
+                **trace.candidate_counts,
+                "final": len(trace.final_selected_chunks),
+                "graph_expanded": 0,
+            }
             return
 
         # 按 target 聚合，保留最高 confidence 的关系
         rel_by_target: dict[str, dict] = {}
-        for r in relations:
-            t = r["target_note_id"]
-            if t not in rel_by_target or (r.get("confidence") or 0) > (rel_by_target[t].get("confidence") or 0):
-                rel_by_target[t] = r
+        for rel in relations:
+            target_id = rel["target_note_id"]
+            if target_id not in rel_by_target or (rel.get("confidence") or 0) > (rel_by_target[target_id].get("confidence") or 0):
+                rel_by_target[target_id] = rel
 
         titles = self.graph_store.note_titles(set(rel_by_target) | hit_notes)
         existing_ids = {c.chunk.chunk_id for c in trace.final_selected_chunks}
@@ -89,6 +148,18 @@ class MindGraphRetrievalPipeline:
                     "via_relation": rel.get("relation_type"),
                     "via_source_note": rel.get("source_note_id"),
                     "graph_confidence": rel.get("confidence", 0.0),
+                    "graph_relation_id": rel.get("relation_id"),
+                    "graph_relation_direction": rel.get("direction"),
+                    "graph_traversed_direction": rel.get("traversed_direction"),
+                    "graph_relation_status": rel.get("status"),
+                    "graph_model_version": rel.get("model_version"),
+                    "graph_prompt_version": rel.get("prompt_version"),
+                    "graph_evidence_span": rel.get("evidence_span"),
+                    "graph_evidence_section": rel.get("evidence_section"),
+                    "graph_source_document_version": rel.get("source_document_version"),
+                    "graph_extraction_method": rel.get("extraction_method"),
+                    "graph_proposed_at": rel.get("proposed_at"),
+                    "graph_resolved_at": rel.get("resolved_at"),
                 })
                 candidate = RetrievalCandidate(
                     chunk=replace(chunk, metadata=enriched_meta),
@@ -115,6 +186,7 @@ class MindGraphRetrievalPipeline:
             if target_id in hit_notes or target_id not in added_targets:
                 continue
             graph_links.append({
+                "relation_id": rel.get("relation_id"),
                 "source_note_id": rel.get("source_note_id"),
                 "source_title": titles.get(rel.get("source_note_id"), rel.get("source_note_id")),
                 "relation_type": rel.get("relation_type"),
@@ -122,6 +194,20 @@ class MindGraphRetrievalPipeline:
                 "target_title": titles.get(target_id, target_id),
                 "evidence_chunk_id": rel.get("evidence_chunk_id"),
                 "confidence": rel.get("confidence", 0.0),
+                "status": rel.get("status"),
+                "direction": rel.get("direction"),
+                "traversed_direction": rel.get("traversed_direction"),
+                "model_version": rel.get("model_version"),
+                "prompt_version": rel.get("prompt_version"),
+                "proposed_at": rel.get("proposed_at"),
+                "resolved_at": rel.get("resolved_at"),
+                "evidence_span": rel.get("evidence_span"),
+                "evidence_section": rel.get("evidence_section"),
+                "source_document_version": rel.get("source_document_version"),
+                "effective_from": rel.get("effective_from"),
+                "effective_to": rel.get("effective_to"),
+                "extraction_method": rel.get("extraction_method"),
+                "hop": rel.get("hop", 1),
             })
 
         for rank, candidate in enumerate(trace.final_selected_chunks, 1):

@@ -165,10 +165,9 @@ class DirectoryConnectorService:
                 for row in self.database.fetch_all("SELECT note_id FROM notes")
             }
             sync = self._sync_service(source, connector_id)
-            # Generic VaultSync pruning is global because the current notes
-            # schema has no source_id.  Disable it for connectors until the
-            # source-ownership migration is explicitly performed.
-            result = sync.scan_vault(prune_missing=False)
+            # VaultSyncService scopes pruning by source_id/source_path, so a
+            # connector can safely remove only records owned by this source.
+            result = sync.scan_vault(prune_missing=True)
             file_count = len(result.scanned)
             pruned = result.pruned
 

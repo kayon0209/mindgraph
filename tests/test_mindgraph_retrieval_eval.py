@@ -4,8 +4,12 @@ from pathlib import Path
 import pytest
 
 from evaluation.mindgraph_retrieval_eval import (
+    DEFAULT_CANDIDATE_DATASET_PATH,
+    dataset_sha256,
     evaluate_retrieval_cases,
+    load_candidate_dataset,
     load_golden_dataset,
+    validate_candidate_cases,
     validate_golden_cases,
 )
 from src.retrieval.types import Chunk, RetrievalCandidate, RetrievalTrace
@@ -23,6 +27,27 @@ def case(case_id="A", behavior="answer", paths=None, question="q"):
         "forbidden_facts": [],
         "dataset_version": "test-v1",
         "label_source": "human-authored-test-fixture",
+    }
+
+
+def candidate_case(case_id="C", behavior="answer", paths=None, question="q"):
+    return {
+        "case_id": case_id,
+        "question": question,
+        "category": "candidate",
+        "query_type": "versioned_policy",
+        "split": "development",
+        "expected_behavior": behavior,
+        "gold_vault_paths": paths if paths is not None else ["gold.md"],
+        "required_facts": ["required"] if behavior == "answer" else [],
+        "forbidden_facts": [],
+        "dataset_version": "candidate-v1",
+        "label_source": "generated-candidate-test-fixture",
+        "source": "generated_candidate",
+        "validation_status": "pending",
+        "expected_route": "hybrid",
+        "graph_needed": False,
+        "acl_context": {"roles": ["employee"]},
     }
 
 
@@ -157,7 +182,7 @@ def test_repository_v2_golden_dataset_is_valid_and_structurally_complete():
     cases = load_golden_dataset()
 
     assert len(cases) == 12
-    assert {item["dataset_version"] for item in cases} == {"2.1.0"}
+    assert {item["dataset_version"] for item in cases} == {"2.2.0"}
     assert {item["expected_behavior"] for item in cases} == {"answer", "abstain"}
     assert {item["split"] for item in cases} == {"development", "regression"}
     assert {item["category"] for item in cases} >= {
@@ -173,6 +198,79 @@ def test_repository_v2_golden_dataset_is_valid_and_structurally_complete():
         item["gold_vault_paths"] if item["expected_behavior"] == "answer" else not item["gold_vault_paths"]
         for item in cases
     )
+
+
+def test_candidate_dataset_contract_requires_pending_review_and_is_separate_from_golden():
+    candidate_cases = [candidate_case("C-1"), candidate_case("C-2", behavior="abstain", paths=[])]
+    validated = validate_candidate_cases(candidate_cases)
+    assert validated == candidate_cases
+
+    with pytest.raises(ValueError, match=r"must remain pending"):
+        bad = candidate_case("C-3")
+        bad["validation_status"] = "approved"
+        validate_candidate_cases([bad])
+
+    with pytest.raises(ValueError, match=r"must use source='generated_candidate'"):
+        bad = candidate_case("C-4")
+        bad["source"] = "human-authored"
+        validate_candidate_cases([bad])
+
+    with pytest.raises(ValueError, match=r"require expected_relations"):
+        bad = candidate_case("C-5")
+        bad["graph_needed"] = True
+        validate_candidate_cases([bad])
+
+    with pytest.raises(ValueError, match=r"require validation_status='pending'"):
+        bad = candidate_case("C-6")
+        bad.pop("validation_status")
+        validate_candidate_cases([bad])
+
+
+def test_candidate_dataset_path_is_separate_from_golden():
+    assert DEFAULT_CANDIDATE_DATASET_PATH.name == "mindgraph_candidates_v2.jsonl"
+    assert DEFAULT_CANDIDATE_DATASET_PATH != Path(
+        __file__).resolve().parent.parent / "evaluation" / "datasets" / "mindgraph_golden.jsonl"
+
+
+def test_dataset_sha256_is_deterministic_and_stable(tmp_path: Path):
+    path = tmp_path / "golden.jsonl"
+    path.write_text(json.dumps(case(), ensure_ascii=False) + "\n", encoding="utf-8")
+    h1 = dataset_sha256(path)
+    h2 = dataset_sha256(path)
+    assert h1 == h2
+    assert len(h1) == 64
+
+
+def test_load_candidate_dataset_from_path(tmp_path: Path):
+    path = tmp_path / "candidates.jsonl"
+    path.write_text(json.dumps(candidate_case("C-1"), ensure_ascii=False) + "\n", encoding="utf-8")
+    loaded = load_candidate_dataset(path)
+    assert loaded[0]["case_id"] == "C-1"
+    assert loaded[0]["source"] == "generated_candidate"
+    assert loaded[0]["validation_status"] == "pending"
+
+
+def test_candidate_with_graph_needed_requires_expected_relations(tmp_path: Path):
+    bad = candidate_case("C-7")
+    bad["graph_needed"] = True
+    bad["expected_relations"] = []
+    with pytest.raises(ValueError, match=r"require expected_relations"):
+        validate_candidate_cases([bad])
+
+    good = candidate_case("C-8")
+    good["graph_needed"] = True
+    good["expected_relations"] = [
+        {"source_path": "policies/expense-general-v2.md", "target_path": "workflows/no-invoice-exception.md", "relation_type": "REQUIRES"}
+    ]
+    validated = validate_candidate_cases([good])
+    assert validated == [good]
+
+
+def test_candidate_without_query_type_is_rejected(tmp_path: Path):
+    bad = candidate_case("C-9")
+    bad.pop("query_type")
+    with pytest.raises(ValueError, match=r"require a non-empty query_type"):
+        validate_candidate_cases([bad])
 
 
 def test_metrics_and_stage_attribution():

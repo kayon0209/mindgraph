@@ -223,6 +223,85 @@ def test_retrieval_pipeline_filter_by_access_drops_out_of_scope_chunks():
     assert "access_denied_chunks_filtered" in trace.warnings
 
 
+def test_acl_cross_tenant_scope_blocks_foreign_workspace_chunks():
+    tenant_a_chunk = Chunk(
+        chunk_id="tenant-a::0", text="报销", document_id="tenant-a", chunk_index=0, section_path=None,
+        metadata={"workspace": "acme-corp", "department": "finance", "acl_json": "{}", "acl_public": False,
+                  "document_status": "active"},
+    )
+    tenant_b_chunk = Chunk(
+        chunk_id="tenant-b::0", text="请假", document_id="tenant-b", chunk_index=0, section_path=None,
+        metadata={"workspace": "other-corp", "department": "hr", "acl_json": "{}", "acl_public": False,
+                  "document_status": "active"},
+    )
+    pipeline = RetrievalPipeline(
+        dense=SimpleNamespace(metadata={}),
+        sparse=SimpleNamespace(),
+        fusion=SimpleNamespace(),
+        reranker=None,
+    )
+    trace = RetrievalTrace(query="q", requested_strategy="hybrid", actual_strategy="hybrid")
+    scope = {"allow": ["workspace:acme-corp"], "deny": []}
+    visible = pipeline._filter_by_access(
+        [
+            RetrievalCandidate(chunk=tenant_a_chunk, final_rank=1),
+            RetrievalCandidate(chunk=tenant_b_chunk, final_rank=2),
+        ],
+        scope,
+        trace,
+    )
+    assert [c.chunk.document_id for c in visible] == ["tenant-a"]
+    assert "access_denied_chunks_filtered" in trace.warnings
+
+
+def test_retrieval_pipeline_acl_filters_legacy_retrievers_before_fusion_and_trace():
+    finance_chunk = Chunk(
+        chunk_id="fin::0", text="报销", document_id="fin", chunk_index=0, section_path=None,
+        metadata={"workspace": "corp", "department": "finance", "acl_json": "{}", "acl_public": False,
+                  "document_status": "active"},
+    )
+    hr_chunk = Chunk(
+        chunk_id="hr::0", text="请假", document_id="hr", chunk_index=0, section_path=None,
+        metadata={"workspace": "corp", "department": "hr", "acl_json": "{}", "acl_public": False,
+                  "document_status": "active"},
+    )
+    unauthorized = RetrievalCandidate(chunk=hr_chunk, dense_score=1.0, sparse_score=1.0)
+    authorized = RetrievalCandidate(chunk=finance_chunk, dense_score=0.9, sparse_score=0.9)
+
+    class LegacyRetriever:
+        def __init__(self, candidates):
+            self.candidates = candidates
+
+        def search(self, _query, _top_k):
+            return list(self.candidates), {"retrieval_ms": 0.0}
+
+    class CapturingFusion:
+        def __init__(self):
+            self.rankings = None
+
+        def fuse(self, rankings, _top_k):
+            self.rankings = rankings
+            return list(rankings[0])
+
+    fusion = CapturingFusion()
+    pipeline = RetrievalPipeline(
+        dense=LegacyRetriever([unauthorized, authorized]),
+        sparse=LegacyRetriever([unauthorized, authorized]),
+        fusion=fusion,
+        final_top_k=5,
+    )
+    trace = pipeline.retrieve(
+        "制度", "hybrid", access_scope={"allow": ["department:finance"], "deny": []}
+    )
+
+    assert fusion.rankings is not None
+    assert all(item.chunk.document_id == "fin" for ranking in fusion.rankings for item in ranking)
+    assert [item.chunk.document_id for item in trace.dense_results] == ["fin"]
+    assert [item.chunk.document_id for item in trace.sparse_results] == ["fin"]
+    assert [item.chunk.document_id for item in trace.fused_results] == ["fin"]
+    assert [item.chunk.document_id for item in trace.final_selected_chunks] == ["fin"]
+
+
 def test_notes_list_filtered_by_principal_scope(tmp_path: Path):
     database, _vault = _bootstrap_db(tmp_path)
     graph_store = SimpleNamespace(related_note_ids=lambda *_a, **_kw: [], note_titles=lambda _ids: {})

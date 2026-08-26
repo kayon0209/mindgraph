@@ -1,244 +1,248 @@
-"""评测运行器：逐题调用 RAG 系统，收集答案与检索上下文，混合评分并输出报告。
+"""Unified offline evaluation runner with auditable manifests.
 
-用法：
-    # 在项目根目录运行
-    python -m evaluation.runner
-    # 或带参数
-    python -m evaluation.runner --no-llm-check   # 跳过 LLM 幻觉检测（省 token）
-    python -m evaluation.runner --cases 1-10      # 只跑指定题号
+The runner orchestrates the existing deterministic evaluators for routing,
+answer quality, and ablation-ledger reshaping. It intentionally does not invent
+new scoring logic.
 """
+
 from __future__ import annotations
 
 import argparse
-import io
 import json
-import sys
-import time
 from pathlib import Path
-from typing import Dict, List, Optional
+import sys
+from typing import Any
 
-# 设置 UTF-8 编码（Windows 兼容）
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = PROJECT_ROOT / "src"
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
-# 确保 src/ 在路径中
-_ROOT = Path(__file__).resolve().parent.parent
-_SRC = _ROOT / "src"
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
+from application.adaptive_retrieval_router import AdaptiveRetrievalRouter
+from evaluation.ablation_runner import run as run_ablation_report
+from evaluation.answer_eval import evaluate_answer_predictions
+from evaluation.manifest import build_manifest, to_json
+from evaluation.mindgraph_retrieval_eval import DEFAULT_DATASET_PATH, evaluate_retrieval_cases, load_golden_dataset
+from src.retrieval.types import Chunk, RetrievalCandidate, RetrievalTrace
+from evaluation.routing_eval import evaluate_routing_cases
 
-from config import ZHIPU_API_KEY, CHAT_MODEL
-from rag_engine import ask, build_context
-from zhipuai import ZhipuAI
-
-from evaluation.test_cases import ALL_CASES, STANDARD_CASES, ADVERSARIAL_CASES
-from evaluation.scorer import score_case, ScoreResult
+DEFAULT_MANIFEST_DIR = PROJECT_ROOT / "evaluation" / "results" / "manifests"
+DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "evaluation" / "results" / "unified"
+DEFAULT_ROUTING_DATASET = PROJECT_ROOT / "evaluation" / "datasets" / "mindgraph_routing.jsonl"
+DEFAULT_ABLATION_SOURCE = PROJECT_ROOT / "evaluation" / "results" / "retrieval_v2" / "comparison_20260713T153349Z.json"
 
 
-def run_evaluation(
-    *,
-    api_key: str,
-    cases: Optional[List[Dict]] = None,
-    enable_llm_check: bool = True,
-) -> Dict:
-    """执行全部评测，返回结果字典。"""
-    if not api_key:
-        print("错误：未配置 ZHIPU_API_KEY，请在 .env 中设置。")
-        sys.exit(1)
+def _load_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file():
+        raise FileNotFoundError(f"JSONL file not found: {path}")
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
-    client = ZhipuAI(api_key=api_key) if enable_llm_check else None
-    test_cases = cases or ALL_CASES
 
-    results: List[ScoreResult] = []
-    details: List[Dict] = []
+def _write_artifacts(manifest: dict[str, Any], payload: dict[str, Any], *, manifest_dir: Path, output_dir: Path, suite: str) -> dict[str, str]:
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = manifest_dir / f"{manifest['run_id']}_{suite}.json"
+    result_path = output_dir / f"{manifest['run_id']}_{suite}.json"
+    manifest_path.write_text(to_json(manifest), encoding="utf-8")
+    result_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"manifest": str(manifest_path), "result": str(result_path)}
 
-    print(f"\n{'='*60}")
-    print(f"评测开始：共 {len(test_cases)} 题")
-    print(f"LLM 幻觉检测：{'开启' if enable_llm_check else '关闭'}")
-    print(f"{'='*60}\n")
 
-    for i, case in enumerate(test_cases, 1):
-        q = case["question"]
-        print(f"[{i}/{len(test_cases)}] {case['category']} | {q}")
+def _routing_run(dataset: Path) -> dict[str, Any]:
+    cases = _load_jsonl(dataset)
+    manifest = build_manifest(
+        root=PROJECT_ROOT,
+        suite="routing",
+        dataset=dataset,
+        dataset_version=cases[0]["dataset_version"] if cases else None,
+        configuration={"dataset": dataset.name, "evaluator": "deterministic-routing-v1"},
+        evaluator_version="deterministic-routing-v1",
+    )
+    summary = evaluate_routing_cases(cases, AdaptiveRetrievalRouter())
+    return {"manifest": manifest, "summary": summary, "dataset_version": cases[0]["dataset_version"] if cases else None}
 
-        try:
-            # 获取 RAG 回答与检索上下文
-            rag_ans = ask(api_key, q)
-            answer = rag_ans.answer
 
-            # 复用 ask() 已经拿到的检索上下文，避免拒答题和评测阶段重复调用 Embedding API。
-            context = build_context(rag_ans.sources) if rag_ans.sources else ""
-        except Exception as e:
-            answer = f"系统错误：{e}"
-            context = ""
+def _answer_run(dataset: Path, predictions: Path) -> dict[str, Any]:
+    cases = load_golden_dataset(dataset)
+    prediction_rows = _load_jsonl(predictions)
+    manifest = build_manifest(
+        root=PROJECT_ROOT,
+        suite="answer",
+        dataset=dataset,
+        dataset_version=cases[0]["dataset_version"] if cases else None,
+        configuration={"dataset": dataset.name, "predictions": predictions.name, "evaluator": "deterministic-answer-v1"},
+        evaluator_version="deterministic-answer-v1",
+    )
+    summary = evaluate_answer_predictions(cases, prediction_rows)
+    return {"manifest": manifest, "summary": summary, "dataset_version": cases[0]["dataset_version"] if cases else None}
 
-        # 评分
-        sr = score_case(
-            case, answer, context,
-            client=client,
-            model=CHAT_MODEL,
-            enable_llm_check=enable_llm_check,
+
+def _ablation_run(source: Path) -> dict[str, Any]:
+    if not source.is_file():
+        raise FileNotFoundError(f"ablation source file not found: {source}")
+    payload = run_ablation_report(source)
+    manifest = build_manifest(
+        root=PROJECT_ROOT,
+        suite="ablation",
+        dataset=source,
+        dataset_version=payload.get("dataset_version"),
+        configuration={"source": source.name, "evaluator": "ablation-ledger-v1"},
+        evaluator_version="ablation-ledger-v1",
+    )
+    return {"manifest": manifest, "payload": payload, "dataset_version": payload.get("dataset_version")}
+
+
+def _trace_from_dict(raw: dict[str, Any]) -> RetrievalTrace:
+    def candidates(values: list[dict[str, Any]]) -> list[RetrievalCandidate]:
+        result = []
+        for item in values:
+            chunk_data = item.get("chunk") or {}
+            result.append(
+                RetrievalCandidate(
+                    chunk=Chunk(**chunk_data),
+                    dense_score=item.get("dense_score"),
+                    dense_rank=item.get("dense_rank"),
+                    sparse_score=item.get("sparse_score"),
+                    sparse_rank=item.get("sparse_rank"),
+                    rrf_score=item.get("rrf_score"),
+                    fused_rank=item.get("fused_rank"),
+                    reranker_score=item.get("reranker_score"),
+                    final_rank=item.get("final_rank"),
+                    original_score=item.get("original_score"),
+                    authority_adjustment=item.get("authority_adjustment", 0.0),
+                    adjusted_score=item.get("adjusted_score"),
+                )
+            )
+        return result
+
+    return RetrievalTrace(
+        query=raw["query"],
+        requested_strategy=raw["requested_strategy"],
+        actual_strategy=raw["actual_strategy"],
+        degraded=raw.get("degraded", False),
+        degradation_reason=raw.get("degradation_reason"),
+        candidate_counts=raw.get("candidate_counts", {}),
+        dense_results=candidates(raw.get("dense_results", [])),
+        sparse_results=candidates(raw.get("sparse_results", [])),
+        fused_results=candidates(raw.get("fused_results", [])),
+        reranked_results=candidates(raw.get("reranked_results", [])),
+        final_selected_chunks=candidates(raw.get("final_selected_chunks", [])),
+        latency_ms=raw.get("latency_ms", {}),
+        index_version=raw.get("index_version"),
+        applied_filters=raw.get("applied_filters", {}),
+        warnings=raw.get("warnings", []),
+    )
+
+
+def _retrieval_run(*, dataset: Path, trace_source: Path | None, top_k: int) -> dict[str, Any]:
+    cases = load_golden_dataset(dataset)
+    source_path = trace_source or DEFAULT_ABLATION_SOURCE
+    if not source_path.is_file():
+        raise FileNotFoundError(f"retrieval trace source not found: {source_path}")
+    source = json.loads(source_path.read_text(encoding="utf-8"))
+    details_by_case = source.get("details", {})
+    strategy = source.get("strategy") or source.get("retrieval_strategy") or "hybrid"
+    if isinstance(details_by_case, dict) and strategy in details_by_case:
+        details_by_case = details_by_case[strategy]
+    if isinstance(details_by_case, dict):
+        details_by_case = list(details_by_case.values())
+    if not isinstance(details_by_case, list):
+        raise ValueError("trace source must contain a list of case details")
+    traces = {row["case_id"]: _trace_from_dict(row["trace"]) for row in details_by_case if row.get("trace")}
+    if not traces:
+        raise ValueError("trace source contains no serialized traces")
+    available_case_ids = set(traces)
+    requested_case_ids = {case["case_id"] for case in cases}
+    if not requested_case_ids.issubset(available_case_ids):
+        missing = sorted(requested_case_ids - available_case_ids)
+        raise ValueError(
+            "trace source and dataset are not from the same evaluation version; "
+            f"missing case_id(s): {', '.join(missing[:5])}"
         )
-        results.append(sr)
 
-        # 打印单题结果
-        status = "PASS" if sr.final_score >= 0.6 else "FAIL"
-        print(f"  → [{status}] 综合={sr.final_score:.2f}  关键词={sr.keyword_score:.1f}  幻觉={sr.hallucination_score:.1f}")
-        if sr.keyword_hits:
-            print(f"    关键词命中：{sr.keyword_hits}")
-        if sr.hallucination_reason:
-            print(f"    幻觉检测：{sr.hallucination_reason}")
-        print()
+    def retrieve(case: dict[str, Any]) -> RetrievalTrace:
+        try:
+            return traces[case["case_id"]]
+        except KeyError as exc:
+            raise ValueError(f"trace source missing case_id {case['case_id']!r}") from exc
 
-        # 避免触发速率限制
-        time.sleep(0.5)
-
-    # 汇总统计
-    total = len(results)
-    passed = sum(1 for r in results if r.final_score >= 0.6)
-    avg_final = sum(r.final_score for r in results) / total if total else 0
-    avg_kw = sum(r.keyword_score for r in results) / total if total else 0
-    avg_hal = sum(r.hallucination_score for r in results) / total if total else 0
-
-    # 按类别统计
-    by_category: Dict[str, Dict] = {}
-    for r in results:
-        cat = r.category
-        if cat not in by_category:
-            by_category[cat] = {"count": 0, "passed": 0, "total_score": 0.0}
-        by_category[cat]["count"] += 1
-        by_category[cat]["passed"] += 1 if r.final_score >= 0.6 else 0
-        by_category[cat]["total_score"] += r.final_score
-
-    # 打印报告
-    print(f"\n{'='*60}")
-    print("评测报告")
-    print(f"{'='*60}")
-    print(f"总题数：{total}  通过：{passed}  通过率：{passed/total*100:.1f}%")
-    print(f"平均综合分：{avg_final:.2f}")
-    print(f"平均关键词分：{avg_kw:.2f}")
-    print(f"平均幻觉检测分：{avg_hal:.2f}")
-    print()
-
-    print("按类别统计：")
-    print(f"  {'类别':<16} {'题数':>4} {'通过':>4} {'通过率':>8} {'平均分':>8}")
-    print(f"  {'-'*44}")
-    for cat, s in sorted(by_category.items()):
-        rate = s["passed"] / s["count"] * 100 if s["count"] else 0
-        avg = s["total_score"] / s["count"] if s["count"] else 0
-        print(f"  {cat:<16} {s['count']:>4} {s['passed']:>4} {rate:>7.1f}% {avg:>8.2f}")
-
-    # 未通过的题目
-    failed = [r for r in results if r.final_score < 0.6]
-    if failed:
-        print(f"\n未通过题目（{len(failed)}）：")
-        for r in failed:
-            print(f"  #{r.case_id} [{r.category}] {r.question}")
-            print(f"     综合={r.final_score:.2f}  关键词={r.keyword_score:.1f}  幻觉={r.hallucination_score:.1f}")
-            print(f"     回答片段：{r.answer[:100]}...")
-
-    # 构造返回结果
-    report = {
-        "total": total,
-        "passed": passed,
-        "pass_rate": round(passed / total * 100, 1) if total else 0,
-        "avg_final_score": round(avg_final, 2),
-        "avg_keyword_score": round(avg_kw, 2),
-        "avg_hallucination_score": round(avg_hal, 2),
-        "by_category": {
-            cat: {
-                "count": s["count"],
-                "passed": s["passed"],
-                "pass_rate": round(s["passed"] / s["count"] * 100, 1) if s["count"] else 0,
-                "avg_score": round(s["total_score"] / s["count"], 2) if s["count"] else 0,
-            }
-            for cat, s in by_category.items()
-        },
-        "details": [
-            {
-                "id": r.case_id,
-                "category": r.category,
-                "question": r.question,
-                "answer": r.answer,
-                "expected_type": r.expected_type,
-                "reject_expected": r.reject_expected,
-                "keyword_score": r.keyword_score,
-                "hallucination_score": r.hallucination_score,
-                "final_score": r.final_score,
-                "keyword_hits": r.keyword_hits,
-                "hallucination_reason": r.hallucination_reason,
-            }
-            for r in results
-        ],
-    }
-
-    # 保存结果到 JSON
-    out_dir = _ROOT / "evaluation" / "results"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    ts = time.strftime("%Y%m%d_%H%M%S")
-    out_file = out_dir / f"eval_{ts}.json"
-    out_file.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"\n结果已保存至：{out_file}")
-
-    return report
-
-
-def _parse_case_range(spec: str) -> List[int]:
-    """解析题号范围，如 '1-10' 或 '11,13,15'。"""
-    ids = []
-    for part in spec.split(","):
-        part = part.strip()
-        if "-" in part:
-            lo, hi = part.split("-", 1)
-            ids.extend(range(int(lo), int(hi) + 1))
-        else:
-            ids.append(int(part))
-    return ids
-
-
-def main():
-    parser = argparse.ArgumentParser(description="企业报销 RAG 评测运行器")
-    parser.add_argument(
-        "--no-llm-check",
-        action="store_true",
-        help="跳过 LLM 幻觉检测（节省 API 调用）",
+    manifest = build_manifest(
+        root=PROJECT_ROOT,
+        suite="retrieval",
+        dataset=dataset,
+        dataset_version=cases[0]["dataset_version"] if cases else None,
+        configuration={"dataset": dataset.name, "trace_source": source_path.name, "top_k": top_k, "evaluator": "mindgraph-retrieval-v1"},
+        evaluator_version="mindgraph-retrieval-v1",
+        index=source.get("index_metadata"),
     )
-    parser.add_argument(
-        "--cases",
-        type=str,
-        default=None,
-        help="指定题号范围，如 '1-10' 或 '11,13,15'",
+    report = evaluate_retrieval_cases(cases, retrieve, top_k=top_k)
+    return {"manifest": manifest, "summary": report, "dataset_version": cases[0]["dataset_version"] if cases else None}
+
+
+def run_suite(
+    suite: str,
+    *,
+    dataset: Path,
+    predictions: Path | None = None,
+    trace_source: Path | None = None,
+    source: Path | None = None,
+    top_k: int = 5,
+    manifest_dir: Path | None = None,
+    output_dir: Path | None = None,
+) -> dict[str, Any]:
+    manifest_dir = manifest_dir or DEFAULT_MANIFEST_DIR
+    output_dir = output_dir or DEFAULT_OUTPUT_DIR
+
+    if suite == "routing":
+        result = _routing_run(dataset)
+    elif suite == "answer":
+        if predictions is None:
+            raise ValueError("answer suite requires --predictions")
+        result = _answer_run(dataset, predictions)
+    elif suite == "ablation":
+        ablation_source = source or DEFAULT_ABLATION_SOURCE
+        result = _ablation_run(ablation_source)
+    elif suite == "retrieval":
+        result = _retrieval_run(dataset=dataset, trace_source=trace_source, top_k=top_k)
+    else:
+        raise ValueError(f"unsupported suite: {suite}")
+
+    artifacts = _write_artifacts(
+        result["manifest"],
+        {key: value for key, value in result.items() if key != "manifest"},
+        manifest_dir=manifest_dir,
+        output_dir=output_dir,
+        suite=suite,
     )
-    parser.add_argument(
-        "--standard-only",
-        action="store_true",
-        help="只跑 30 题标准测试集",
-    )
-    parser.add_argument(
-        "--adversarial-only",
-        action="store_true",
-        help="只跑 4 题对抗性测试",
-    )
+    result.update(artifacts)
+    return result
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Unified MindGraph offline evaluation runner")
+    parser.add_argument("--suite", required=True, choices=["retrieval", "routing", "answer", "ablation"])
+    parser.add_argument("--dataset", default=str(DEFAULT_DATASET_PATH))
+    parser.add_argument("--predictions")
+    parser.add_argument("--trace-source", default=str(DEFAULT_ABLATION_SOURCE))
+    parser.add_argument("--source", default=str(DEFAULT_ABLATION_SOURCE))
+    parser.add_argument("--top-k", type=int, default=5)
+    parser.add_argument("--manifest-dir", default=str(DEFAULT_MANIFEST_DIR))
+    parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     args = parser.parse_args()
 
-    # 选择测试集
-    if args.adversarial_only:
-        cases = ADVERSARIAL_CASES
-    elif args.standard_only:
-        cases = STANDARD_CASES
-    else:
-        cases = ALL_CASES
-
-    # 按题号筛选
-    if args.cases:
-        allowed = set(_parse_case_range(args.cases))
-        cases = [c for c in cases if c["id"] in allowed]
-
-    run_evaluation(
-        api_key=ZHIPU_API_KEY,
-        cases=cases if args.cases or args.standard_only or args.adversarial_only else None,
-        enable_llm_check=not args.no_llm_check,
+    result = run_suite(
+        args.suite,
+        dataset=Path(args.dataset),
+        predictions=Path(args.predictions) if args.predictions else None,
+        trace_source=Path(args.trace_source) if args.trace_source else None,
+        source=Path(args.source) if args.source else None,
+        top_k=args.top_k,
+        manifest_dir=Path(args.manifest_dir),
+        output_dir=Path(args.output_dir),
     )
+    print(json.dumps({"suite": args.suite, "manifest": result["manifest"], "result": result["result"]}, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

@@ -36,6 +36,7 @@ const STATUS_LABELS: Record<string, string> = {
   confirmed: "已确认",
   rejected: "已拒绝",
   healthy: "健康",
+  proposed: "待审核",
 };
 
 export function StatusPill({ value }: { value: string }) {

@@ -129,6 +129,6 @@ def test_stream_announces_route_before_retrieval_starts(tmp_path) -> None:
 
     assert names.index("retrieval_routed") < names.index("retrieval_started")
     assert routed["selected_strategy"] == "hybrid_rerank"
-    assert routed["graph_enabled"] is True
-    assert pipeline.calls == [{"strategy": "hybrid_rerank", "graph_enabled": True}]
+    assert routed["graph_enabled"] is False
+    assert pipeline.calls == [{"strategy": "hybrid_rerank", "graph_enabled": False}]
 

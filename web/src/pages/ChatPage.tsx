@@ -41,7 +41,7 @@ export function ChatPage() {
   const [question, setQuestion] = useState("");
   const [strategy, setStrategy] = useState<ChatRequest["retrieval_strategy"]>("auto");
   const [topK, setTopK] = useState(5);
-  const [graphEnabled, setGraphEnabled] = useState(true);
+  const [graphEnabled, setGraphEnabled] = useState(false);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [citations, setCitations] = useState<Citation[]>([]);
   const [trace, setTrace] = useState<RetrievalTrace | null>(null);
@@ -393,6 +393,7 @@ export function ChatPage() {
                     <span>{link.source_title || "来源文档"}</span>
                     <i>{link.relation_type}</i>
                     <span>{link.target_title || "关联文档"}</span>
+                    {link.evidence_chunk_id || link.evidence_span ? <small>证据：{link.evidence_section || link.evidence_chunk_id || link.evidence_span}</small> : null}
                   </div>
                 ))}
               </div>

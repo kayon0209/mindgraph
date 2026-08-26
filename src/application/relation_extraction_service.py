@@ -29,8 +29,9 @@ from retrieval.embeddings import BGEEmbeddingProvider
 
 logger = logging.getLogger("mindgraph.relation_extraction")
 
-MODEL_VERSION = "auto-v1"
-PROMPT_VERSION = "auto-v1"
+MODEL_VERSION = "auto-v2"
+PROMPT_VERSION = "auto-v2"
+ALLOWED_RELATION_TYPES = {"related_to", "references", "elaborates", "APPLIES_TO", "REQUIRES_APPROVAL", "HAS_LIMIT", "EXCEPTION_TO", "SUPERSEDES", "CONTRADICTS"}
 EMBED_TRUNC_CHARS = 2000
 LLM_EXCERPT_CHARS = 500
 
@@ -172,7 +173,9 @@ class RelationExtractionService:
                         "target": b,
                         "relation_type": "related_to",
                         "confidence": round(min(0.95, max(0.5, score)), 3),
-                        "evidence": f"语义相似度 {score:.2f}",
+                        "evidence": None,
+                        "evidence_span": None,
+                        "evidence_section": None,
                         "signal": "embedding",
                     }
                 )
@@ -209,7 +212,9 @@ class RelationExtractionService:
                     "target": b["note_id"],
                     "relation_type": "related_to",
                     "confidence": 0.82,
-                    "evidence": f"共享标签 #{tag}",
+                    "evidence": None,
+                    "evidence_span": None,
+                    "evidence_section": None,
                     "signal": "tag",
                 }
             )
@@ -244,8 +249,9 @@ class RelationExtractionService:
                 kept.append(c)  # 失败则保留规则候选
                 continue
             if decision.get("related"):
-                c["relation_type"] = decision.get("relation_type", "related_to")
-                c["evidence"] = decision.get("reason", c["evidence"])
+                relation_type = decision.get("relation_type", "related_to")
+                c["relation_type"] = relation_type if relation_type in ALLOWED_RELATION_TYPES else "related_to"
+                c["evidence_span"] = decision.get("reason") or c.get("evidence_span")
                 c["confidence"] = round(min(0.95, max(c["confidence"], 0.7)), 3)
                 kept.append(c)
             # related=False → 丢弃该候选（LLM 判定不相关）
@@ -341,8 +347,9 @@ class RelationExtractionService:
                 self.db.execute(
                     """INSERT INTO note_relations
                        (relation_id, source_note_id, target_note_id, relation_type, direction, status,
-                        evidence_chunk_id, confidence, model_version, prompt_version, proposed_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                        evidence_chunk_id, confidence, model_version, prompt_version, proposed_at,
+                        evidence_span, evidence_section, source_document_version, effective_from, effective_to, extraction_method)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         relation_id,
                         c["source"],
@@ -350,11 +357,17 @@ class RelationExtractionService:
                         c["relation_type"],
                         "outgoing",
                         "proposed",
-                        c["evidence"],
+                        c.get("evidence"),
                         c["confidence"],
                         MODEL_VERSION,
                         PROMPT_VERSION,
                         ts,
+                        c.get("evidence_span"),
+                        c.get("evidence_section"),
+                        c.get("source_document_version"),
+                        c.get("effective_from"),
+                        c.get("effective_to"),
+                        c.get("signal"),
                     ),
                 )
                 inserted += 1

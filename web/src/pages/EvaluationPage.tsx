@@ -42,7 +42,10 @@ export function EvaluationPage() {
   const latestAnswerRun = latestRunWithMetric(data?.runs ?? [], "citation_correctness");
   const latestEfficiencyRun = latestRunWithMetric(data?.runs ?? [], "p95_total_latency_ms");
   const latestRoutingRun = latestRunWithMetric(data?.runs ?? [], "route_accuracy");
+  const latestGraphGateRun = latestRunWithMetric(data?.runs ?? [], "graph_gate_pass_rate");
   const efficiency = evaluationEfficiencyView(latestEfficiencyRun);
+  const hasRouteMetrics = Boolean(latestRoutingRun);
+  const hasGraphGateMetrics = Boolean(latestGraphGateRun);
 
   return (
     <div className="page evaluation-page">
@@ -70,12 +73,18 @@ export function EvaluationPage() {
             <MetricCard label="路由准确率" note="冻结路由矩阵" value={percent(latestRoutingRun ? metricValue(latestRoutingRun, "route_accuracy") : null)} />
             <MetricCard label="重排路由占比" note="高成本路径使用率" value={percent(latestRoutingRun ? metricValue(latestRoutingRun, "rerank_route_rate") : null)} />
             <MetricCard label="关系扩展占比" note="受控图路径使用率" value={percent(latestRoutingRun ? metricValue(latestRoutingRun, "graph_route_rate") : null)} />
+            <MetricCard label="图门槛通过率" note="只在 graph 真有增益时才默认开启" value={percent(latestGraphGateRun ? metricValue(latestGraphGateRun, "graph_gate_pass_rate") : null)} />
             <MetricCard label="P95 总延迟" note="最新答案级评测" value={efficiency.p95Latency} />
             <MetricCard label="平均 Token" note="仅统计 Provider 已上报样本" value={efficiency.meanTokens} />
             <MetricCard label="平均估算成本" note={`成本覆盖率 ${efficiency.costCoverage}`} value={efficiency.meanCost} />
             <MetricCard label="评测运行" note="最多展示最近 20 条" value={data.runs.length} />
             <MetricCard label="已索引制度" note="真实 CURRENT manifest" value={data.library_stats.indexed_notes} />
             <MetricCard label="待审核关系" note="不会自动进入检索" value={data.library_stats.relations_proposed} />
+          </div>
+
+          <div className="evaluation-notes reveal reveal-3">
+            <div><Scale size={18} /><p><strong>路由门槛已显式记录</strong><span>{hasRouteMetrics ? "可以看到 route_accuracy、graph_route_rate 等真实指标。" : "当前没有可用路由结果。"}</span></p></div>
+            <div><TimerReset size={18} /><p><strong>图门槛不遮掩失败</strong><span>{hasGraphGateMetrics ? "图路径是否可默认开启，必须由 gate 决策。" : "图路径未达到默认开启门槛时，保持关闭。"}</span></p></div>
           </div>
 
           {data.runs.length === 0 ? (
@@ -124,6 +133,7 @@ export function EvaluationPage() {
                       <th>拒答正确性</th>
                       <th>版本有效性</th>
                       <th>路由准确率</th>
+                      <th>图门槛</th>
                       <th>P95 / 检索平均延迟</th>
                       <th>平均成本</th>
                       <th>状态</th>
@@ -141,6 +151,7 @@ export function EvaluationPage() {
                         <td>{percent(metricValue(run, "refusal_correctness"))}</td>
                         <td>{percent(metricValue(run, "version_validity"))}</td>
                         <td>{percent(metricValue(run, "route_accuracy"))}</td>
+                        <td>{percent(metricValue(run, "graph_gate_pass_rate"))}</td>
                         <td>{numericMetricValue(run, "p95_total_latency_ms") !== null
                           ? `${numericMetricValue(run, "p95_total_latency_ms")!.toFixed(0)} ms`
                           : typeof run.metrics.mean_retrieval_latency_ms === "number"

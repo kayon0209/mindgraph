@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -33,6 +34,9 @@ JSONRPC_VERSION = "2.0"
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "mindgraph-mcp"
 SERVER_VERSION = "3.1.0"
+MAX_TOOL_CALLS_PER_BATCH = 20
+MAX_LIST_LIMIT = 200
+MAX_SEARCH_TOP_K = 20
 
 
 def _utc_iso() -> str:
@@ -50,7 +54,7 @@ def _tools() -> list[dict[str, Any]]:
                     "q": {"type": "string", "description": "标题/路径关键词"},
                     "workspace": {"type": "string"},
                     "department": {"type": "string"},
-                    "limit": {"type": "integer", "default": 50, "minimum": 1, "maximum": 200},
+                    "limit": {"type": "integer", "default": 50, "minimum": 1, "maximum": MAX_LIST_LIMIT},
                 },
             },
         },
@@ -70,55 +74,50 @@ def _tools() -> list[dict[str, Any]]:
                 "type": "object",
                 "properties": {
                     "query": {"type": "string"},
-                    "top_k": {"type": "integer", "default": 5, "minimum": 1, "maximum": 20},
-                    "strategy": {"type": "string", "default": "hybrid", "enum": ["dense", "bm25", "hybrid", "hybrid_rerank"]},
-                    "include_historical": {"type": "boolean", "default": False},
+                    "top_k": {"type": "integer", "default": 5, "minimum": 1, "maximum": MAX_SEARCH_TOP_K},
+                    "strategy": {"type": "string", "enum": ["dense", "bm25", "hybrid", "hybrid_rerank"]},
                 },
                 "required": ["query"],
             },
         },
         {
             "name": "mindgraph_evaluation_overview",
-            "description": "评测看板概览（按当前主体 ACL 裁剪后的统计）。",
+            "description": "返回评测运行概览与最近结果（只读）。",
             "inputSchema": {"type": "object", "properties": {}},
         },
         {
             "name": "mindgraph_list_relations",
-            "description": "列出当前主体可见的 confirmed 关系。",
+            "description": "列出双端都可见的 confirmed 关系（只读）。",
             "inputSchema": {
                 "type": "object",
-                "properties": {"limit": {"type": "integer", "default": 50}},
+                "properties": {"limit": {"type": "integer", "default": 50, "minimum": 1, "maximum": MAX_LIST_LIMIT}},
             },
         },
     ]
 
 
-def _resolve_scope(principal: dict[str, Any] | None) -> dict[str, Any] | None:
-    if not principal or not principal.get("authenticated"):
-        return None
-    return build_access_scope(principal)
-
-
-def _call_tool(name: str, arguments: dict[str, Any], principal: dict[str, Any] | None) -> dict[str, Any]:
+def _call_tool(name: str, arguments: dict[str, Any], principal: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Execute a named tool with ACL-aware scope and audit."""
     container = get_container()
     database = container.database
-    scope = _resolve_scope(principal)
-    actor = (principal or {}).get("name") or "mcp-anonymous"
-    request_id = str(uuid.uuid4())
+    scope = build_access_scope(principal) if principal else None
+    actor = (principal or {}).get("name") or (principal or {}).get("username") or "anonymous"
+    request_id = uuid.uuid4().hex
 
-    def _audit(action: str, resource: str, decision: str, metadata: dict[str, Any] | None = None) -> None:
+    def _audit(action: str, resource: str, decision: str, metadata: dict[str, Any] | None = None, reason: str | None = None) -> None:
         record_access_audit(
             database,
             actor=actor,
             action=action,
             resource=resource,
             decision=decision,
+            reason=reason,
             metadata=metadata or {},
             request_id=request_id,
         )
 
     if name == "mindgraph_list_notes":
-        limit = min(max(int(arguments.get("limit", 50)), 1), 200)
+        limit = min(max(int(arguments.get("limit", 50)), 1), MAX_LIST_LIMIT)
         q = arguments.get("q")
         rows = database.fetch_all(
             "SELECT note_id, vault_path, title, ai_access_level, chunk_count, index_status, "
@@ -157,79 +156,59 @@ def _call_tool(name: str, arguments: dict[str, Any], principal: dict[str, Any] |
             _audit("mcp_get_note", f"notes/{note_id}", "deny", {"reason": "not_found"})
             return {"error": "note not found"}
         if not note_acl_matches(row, scope):
-            _audit("mcp_get_note", f"notes/{note_id}", "deny", {"reason": "out_of_scope"})
+            _audit("mcp_get_note", f"notes/{note_id}", "deny", {"reason": "acl"})
             return {"error": "note not found"}
-        _audit("mcp_get_note", f"notes/{note_id}", "allow")
-        return {
-            "id": row["note_id"],
-            "title": row["title"],
-            "vault_path": row["vault_path"],
-            "workspace": row.get("workspace"),
-            "department": row.get("department"),
-            "status": row["index_status"],
-            "chunk_count": row["chunk_count"],
+        body = {
+            "note": row,
+            "governance": {
+                "policy_key": row.get("policy_key"),
+                "owner": row.get("owner"),
+                "version": row.get("document_version"),
+                "effective_from": row.get("effective_from"),
+                "effective_to": row.get("effective_to"),
+                "policy_status": row.get("policy_status"),
+            },
+            "relations": [],
         }
+        _audit("mcp_get_note", f"notes/{note_id}", "allow", {"title": row.get("title")})
+        return body
 
     if name == "mindgraph_search":
-        query = arguments.get("query", "").strip()
-        if not query:
-            raise ValueError("query is required")
-        top_k = min(max(int(arguments.get("top_k", 5)), 1), 20)
-        strategy = arguments.get("strategy", "hybrid")
-        include_historical = bool(arguments.get("include_historical", False))
-        pipeline_factory = getattr(container, "mindgraph_pipeline", None)
-        if pipeline_factory is None:
-            pipeline_factory = getattr(container, "pipeline", None)
-        if pipeline_factory is None:
-            raise ValueError("mindgraph pipeline unavailable")
-        pipeline = pipeline_factory(top_k, graph_enabled=True) if callable(pipeline_factory) else pipeline_factory
-        trace = pipeline.retrieve(
-            query,
-            strategy,
-            categories=None,
-            include_historical=include_historical,
-            access_scope=scope,
-        )
+        query = arguments.get("query") or ""
+        strategy = arguments.get("strategy") or "hybrid"
+        top_k = min(max(int(arguments.get("top_k", 5)), 1), MAX_SEARCH_TOP_K)
+        pipeline = container.mindgraph_pipeline(top_k=top_k, graph_enabled=False)
+        trace = pipeline.retrieve(query, strategy, access_scope=scope)
         citations = []
-        for candidate in trace.final_selected_chunks:
-            metadata = candidate.chunk.metadata
+        for candidate in trace.final_selected_chunks[:top_k]:
             citations.append({
-                "citation_id": f"citation-{candidate.final_rank}",
+                "citation_id": candidate.chunk.chunk_id,
                 "document_id": candidate.chunk.document_id,
-                "document_name": metadata.get("title") or metadata.get("doc_name") or candidate.chunk.document_id,
+                "document_name": candidate.chunk.metadata.get("title") or candidate.chunk.document_id,
                 "chunk_id": candidate.chunk.chunk_id,
                 "section_path": candidate.chunk.section_path,
-                "excerpt": candidate.chunk.text[:300],
-                "workspace": metadata.get("workspace"),
-                "department": metadata.get("department"),
-                "retrieval_score": candidate.dense_score,
+                "excerpt": candidate.chunk.text[:400],
+                "final_rank": candidate.final_rank,
+                "retrieval_score": candidate.rrf_score,
+                "document_version": candidate.chunk.metadata.get("document_version"),
+                "owner": candidate.chunk.metadata.get("owner"),
+                "effective_from": candidate.chunk.metadata.get("effective_from"),
+                "effective_to": candidate.chunk.metadata.get("effective_to"),
+                "policy_status": candidate.chunk.metadata.get("policy_status"),
+                "policy_key": candidate.chunk.metadata.get("policy_key"),
+                "authority_level": candidate.chunk.metadata.get("ai_access_level"),
+                "vault_path": candidate.chunk.metadata.get("vault_path"),
             })
-        _audit("mcp_search", "retrieval", "allow", {"query": query[:80], "results": len(citations)})
-        return {
-            "query": query,
-            "strategy": trace.actual_strategy,
-            "candidate_counts": trace.candidate_counts,
-            "citations": citations,
-            "degraded": trace.degraded,
-        }
+        _audit("mcp_search", "search", "allow", {"query": query[:60], "top_k": top_k, "strategy": strategy})
+        return {"query": query, "strategy": strategy, "citations": citations, "graph_enabled": False}
 
     if name == "mindgraph_evaluation_overview":
-        notes_rows = database.fetch_all("SELECT note_id, workspace, department, acl_json, acl_public FROM notes")
-        visible_ids = {r["note_id"] for r in notes_rows if note_acl_matches(r, scope)}
-        relations_confirmed = 0
-        if visible_ids:
-            placeholders = ",".join("?" for _ in visible_ids)
-            row = database.fetch_one(
-                f"SELECT COUNT(*) AS c FROM note_relations WHERE status='confirmed' "
-                f"AND source_note_id IN ({placeholders}) AND target_note_id IN ({placeholders})",
-                tuple(visible_ids) * 2,
-            )
-            relations_confirmed = row["c"] if row else 0
-        _audit("mcp_evaluation_overview", "evaluation", "allow", {"notes_visible": len(visible_ids)})
-        return {"notes_total": len(visible_ids), "relations_confirmed": relations_confirmed}
+        rows = database.fetch_all("SELECT run_id, status, dataset_name, dataset_version, retrieval_strategy, finished_at, summary_metrics_json FROM evaluation_runs ORDER BY finished_at DESC LIMIT 20")
+        _audit("mcp_evaluation_overview", "evaluation", "allow", {"runs": len(rows)})
+        return {"runs": rows}
 
     if name == "mindgraph_list_relations":
-        limit = min(max(int(arguments.get("limit", 50)), 1), 200)
+        limit = min(max(int(arguments.get("limit", 50)), 1), MAX_LIST_LIMIT)
         rows = database.fetch_all(
             "SELECT relation_id, source_note_id, target_note_id, relation_type, confidence "
             "FROM note_relations WHERE status='confirmed' ORDER BY confidence DESC LIMIT ?",
@@ -267,7 +246,6 @@ def handle_jsonrpc(message: dict[str, Any], principal: dict[str, Any] | None = N
     """处理单条 JSON-RPC 2.0 请求，返回响应 dict（通知返回 None）。"""
     method = message.get("method")
     msg_id = message.get("id")
-    params = message.get("params") or {}
 
     if method == "initialize":
         return {
@@ -276,19 +254,16 @@ def handle_jsonrpc(message: dict[str, Any], principal: dict[str, Any] | None = N
             "result": {
                 "protocolVersion": PROTOCOL_VERSION,
                 "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
-                "capabilities": {"tools": {}},
+                "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
             },
         }
-
-    if method == "notifications/initialized":
-        return None
 
     if method == "tools/list":
         return {"jsonrpc": JSONRPC_VERSION, "id": msg_id, "result": {"tools": _tools()}}
 
     if method == "tools/call":
-        tool_name = params.get("name")
-        arguments = params.get("arguments") or {}
+        tool_name = (message.get("params") or {}).get("name")
+        arguments = (message.get("params") or {}).get("arguments") or {}
         try:
             result = _call_tool(tool_name, arguments, principal)
             return {
@@ -333,3 +308,9 @@ def run_stdio(principal: dict[str, Any] | None = None) -> None:
         if response is not None:
             sys.stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
             sys.stdout.flush()
+
+
+if __name__ == "__main__":
+    env_principal = os.getenv("MCP_PRINCIPAL")
+    principal = {"name": env_principal, "authenticated": bool(env_principal)} if env_principal else None
+    run_stdio(principal=principal)

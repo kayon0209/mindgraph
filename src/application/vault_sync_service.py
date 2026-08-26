@@ -189,6 +189,7 @@ class VaultSyncService:
         self.write_ids = write_ids
         self.path_prefix = path_prefix.strip("/") if path_prefix else None
         self.id_namespace = id_namespace
+        self.source_id = path_prefix or str(self.vault_path.resolve())
         # None → 使用默认忽略集合；空集合 → 不忽略任何目录
         self.ignore_dirs = DEFAULT_IGNORE_DIRS if ignore_dirs is None else frozenset(ignore_dirs)
 
@@ -275,10 +276,10 @@ class VaultSyncService:
     _UPSERT = """
         INSERT INTO notes
             (note_id, vault_path, title, content_hash, frontmatter_json, ai_access_level,
-             workspace, department, acl_json, acl_public, chunk_count, index_status, index_version,
+             workspace, department, source_id, source_path, acl_json, acl_public, chunk_count, index_status, index_version,
              owner, document_version, policy_key, effective_from, effective_to, policy_status,
              metadata_issues_json, created_at, updated_at, last_indexed_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'pending', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'pending', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
         ON CONFLICT(note_id) DO UPDATE SET
             vault_path=excluded.vault_path,
             title=excluded.title,
@@ -289,6 +290,8 @@ class VaultSyncService:
             department=excluded.department,
             acl_json=excluded.acl_json,
             acl_public=excluded.acl_public,
+            source_id=excluded.source_id,
+            source_path=excluded.source_path,
             owner=excluded.owner,
             document_version=excluded.document_version,
             policy_key=excluded.policy_key,
@@ -337,6 +340,8 @@ class VaultSyncService:
                 access,
                 access_meta.workspace,
                 access_meta.department,
+                self.source_id,
+                vault_path,
                 access_meta.acl_json,
                 1 if access_meta.acl_public else 0,
                 policy.owner,
@@ -352,8 +357,8 @@ class VaultSyncService:
         )
 
     def _prune_missing(self, current_paths: set[str]) -> int:
-        rows = self.db.fetch_all("SELECT note_id, vault_path FROM notes")
-        to_delete = [row["note_id"] for row in rows if row["vault_path"] not in current_paths]
+        rows = self.db.fetch_all("SELECT note_id, source_id, source_path FROM notes WHERE source_id=?", (self.source_id,))
+        to_delete = [row["note_id"] for row in rows if row["source_path"] not in current_paths]
         if not to_delete:
             return 0
         placeholders = ",".join("?" * len(to_delete))

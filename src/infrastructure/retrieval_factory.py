@@ -44,7 +44,7 @@ def create_mindgraph_retrieval_pipeline(
     index_root: Path,
     graph_store: Any,
     final_top_k: int = 5,
-    graph_enabled: bool = True,
+    graph_enabled: bool = False,
 ) -> "MindGraphRetrievalPipeline":
     """构建 MindGraph 检索管线（Hybrid + 图谱一跳扩展）。
 

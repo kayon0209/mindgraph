@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from hashlib import sha256
 import json
 from pathlib import Path
 import re
@@ -10,7 +11,8 @@ from typing import Any
 
 from src.retrieval.types import RetrievalTrace
 
-DEFAULT_DATASET_PATH = Path(__file__).resolve().parent / "datasets" / "mindgraph_golden.jsonl"
+DEFAULT_DATASET_PATH = Path(__file__).resolve().parent / "datasets" / "mindgraph_golden_v2.jsonl"
+DEFAULT_CANDIDATE_DATASET_PATH = Path(__file__).resolve().parent / "datasets" / "mindgraph_candidates_v2.jsonl"
 _REQUIRED_FIELDS = (
     "case_id",
     "question",
@@ -25,10 +27,42 @@ _REQUIRED_FIELDS = (
 )
 _STAGES = ("dense_results", "sparse_results", "fused_results", "reranked_results", "final_selected_chunks")
 _STAGE_ORDER = {"not_retrieved": 0, "retrieved_not_ranked": 1, "ranked_not_final": 2, "final": 3}
+_APPROVED_STATUS = "approved"
+_PENDING_STATUS = "pending"
+_CANDIDATE_SOURCE = "generated_candidate"
 
 
-def validate_golden_cases(cases: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Validate and return golden cases, with identifiers in every error."""
+def _jsonl_records(path: str | Path) -> list[dict[str, Any]]:
+    source = Path(path)
+    records: list[dict[str, Any]] = []
+    with source.open(encoding="utf-8") as handle:
+        for line_number, raw_line in enumerate(handle, 1):
+            if not raw_line.strip():
+                continue
+            try:
+                value = json.loads(raw_line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"line {line_number}: invalid JSON ({exc.msg})") from exc
+            if not isinstance(value, dict):
+                raise ValueError(f"line {line_number}: expected a JSON object")
+            value["_source_line"] = line_number
+            records.append(value)
+    return records
+
+
+def _canonical_jsonl_bytes(cases: Iterable[dict[str, Any]]) -> bytes:
+    normalized = [json.dumps(case, ensure_ascii=False, sort_keys=True, separators=(",", ":")) for case in cases]
+    payload = "\n".join(normalized)
+    if payload:
+        payload += "\n"
+    return payload.encode("utf-8")
+
+
+def dataset_sha256(path: str | Path) -> str:
+    return sha256(_canonical_jsonl_bytes(_jsonl_records(path))).hexdigest()
+
+
+def _validate_case_contract(cases: Iterable[dict[str, Any]], *, kind: str) -> list[dict[str, Any]]:
     if not isinstance(cases, list):
         cases = list(cases)
     if not cases:
@@ -79,28 +113,92 @@ def validate_golden_cases(cases: Iterable[dict[str, Any]]) -> list[dict[str, Any
             raise ValueError(f"{location} answer case requires at least one required_facts entry")
         if behavior == "abstain" and paths:
             raise ValueError(f"{location} abstain case must not contain gold_vault_paths")
+
+        validation_status = case.get("validation_status")
+        if validation_status is not None:
+            if not isinstance(validation_status, str) or not validation_status.strip():
+                raise ValueError(f"{location} validation_status must be a non-empty string when present")
+            if kind == "golden" and validation_status != _APPROVED_STATUS:
+                raise ValueError(f"{location} golden cases must be approved")
+            if kind == "candidate" and validation_status != _PENDING_STATUS:
+                raise ValueError(f"{location} candidate cases must remain pending until human review")
+        elif kind == "candidate":
+            raise ValueError(f"{location} candidate cases require validation_status='pending'")
+
+        source = case.get("source")
+        if source is not None:
+            if not isinstance(source, str) or not source.strip():
+                raise ValueError(f"{location} source must be a non-empty string when present")
+            if kind == "candidate" and source != _CANDIDATE_SOURCE:
+                raise ValueError(f"{location} candidate cases must use source='{_CANDIDATE_SOURCE}'")
+        elif kind == "candidate":
+            raise ValueError(f"{location} candidate cases require source='{_CANDIDATE_SOURCE}'")
+
+        query_type = case.get("query_type")
+        if kind == "candidate":
+            if not isinstance(query_type, str) or not query_type.strip():
+                raise ValueError(f"{location} candidate cases require a non-empty query_type")
+
+        graph_needed = case.get("graph_needed")
+        expected_relations = case.get("expected_relations")
+        if kind == "golden" and case.get("validation_status") == "approved" and graph_needed:
+            if not isinstance(expected_relations, list) or not expected_relations:
+                raise ValueError(f"{location} approved graph_needed cases require expected_relations")
+        if kind == "candidate" and graph_needed:
+            if not isinstance(expected_relations, list) or not expected_relations:
+                raise ValueError(f"{location} graph_needed cases require expected_relations")
+            for rel_index, relation in enumerate(expected_relations, 1):
+                if not isinstance(relation, dict):
+                    raise ValueError(f"{location} expected_relations[{rel_index}] must be an object")
+                for rel_field in ("source_path", "target_path", "relation_type"):
+                    value = relation.get(rel_field)
+                    if not isinstance(value, str) or not value.strip():
+                        raise ValueError(f"{location} expected_relations[{rel_index}].{rel_field} must be a non-empty string")
+        elif expected_relations is not None and not isinstance(expected_relations, list):
+            raise ValueError(f"{location} expected_relations must be a list when present")
+
+        acl_context = case.get("acl_context")
+        if acl_context is not None and not isinstance(acl_context, dict):
+            raise ValueError(f"{location} acl_context must be an object when present")
+
+        if kind == "candidate" and case.get("expected_route") is not None:
+            if not isinstance(case["expected_route"], str) or not case["expected_route"].strip():
+                raise ValueError(f"{location} expected_route must be a non-empty string when present")
+
         validated.append(case)
     return validated
 
 
+def validate_golden_cases(cases: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    return _validate_case_contract(cases, kind="golden")
+
+
+def validate_candidate_cases(cases: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    return _validate_case_contract(cases, kind="candidate")
+
+
 def load_golden_dataset(path: str | Path = DEFAULT_DATASET_PATH) -> list[dict[str, Any]]:
     """Load JSONL golden cases and report malformed lines with line numbers."""
-    source = Path(path)
-    cases: list[dict[str, Any]] = []
-    with source.open(encoding="utf-8") as handle:
-        for line_number, raw_line in enumerate(handle, 1):
-            if not raw_line.strip():
-                continue
-            try:
-                value = json.loads(raw_line)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"line {line_number}: invalid JSON ({exc.msg})") from exc
-            if not isinstance(value, dict):
-                raise ValueError(f"line {line_number}: expected a JSON object")
-            value["_source_line"] = line_number
-            cases.append(value)
+    cases = _jsonl_records(path)
     try:
         validated = validate_golden_cases(cases)
+    except ValueError as exc:
+        message = str(exc)
+        match = re.search(r"index (\d+)", message)
+        if match:
+            index = int(match.group(1))
+            line = next((c.get("_source_line") for c in cases[index - 1:index]), None)
+            message = f"line {line}: {message}"
+        raise ValueError(message) from exc
+    for case in validated:
+        case.pop("_source_line", None)
+    return validated
+
+
+def load_candidate_dataset(path: str | Path = DEFAULT_CANDIDATE_DATASET_PATH) -> list[dict[str, Any]]:
+    cases = _jsonl_records(path)
+    try:
+        validated = validate_candidate_cases(cases)
     except ValueError as exc:
         message = str(exc)
         match = re.search(r"index (\d+)", message)

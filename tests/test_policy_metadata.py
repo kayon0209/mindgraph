@@ -61,7 +61,7 @@ def test_initialize_migrates_existing_notes_without_losing_rows(tmp_path: Path) 
         "policy_status": "unspecified",
         "metadata_issues_json": "[]",
     }
-    assert database.fetch_one("SELECT version FROM schema_meta") == {"version": 7}
+    assert database.fetch_one("SELECT version FROM schema_meta") == {"version": 8}
     with database.connect() as connection:
         indexes = {item[1] for item in connection.execute("PRAGMA index_list(notes)")}
     assert "idx_notes_policy_lifecycle" in indexes
@@ -346,7 +346,7 @@ def test_graph_expansion_does_not_reintroduce_archived_policy() -> None:
             )
 
     graph_store = SimpleNamespace(
-        related_note_ids=lambda _ids: [
+        related_note_ids=lambda note_ids, status="confirmed", *, hops=1, access_scope=None: [
             {
                 "source_note_id": "active",
                 "target_note_id": "archived",
@@ -354,19 +354,19 @@ def test_graph_expansion_does_not_reintroduce_archived_policy() -> None:
                 "confidence": 0.9,
             }
         ],
-        note_titles=lambda _ids: {"active": "当前制度", "archived": "历史制度"},
+        note_titles=lambda note_ids: {"active": "当前制度", "archived": "历史制度"},
     )
     pipeline = MindGraphRetrievalPipeline(BasePipeline(), graph_store)
 
     current = pipeline.retrieve(
-        "当前规则", "hybrid", query_date="2026-08-17", categories=[], include_historical=False
+        "当前规则", "hybrid", query_date="2026-08-17", categories=[], include_historical=False, graph_enabled=True
     )
     assert [item.chunk.document_id for item in current.final_selected_chunks] == ["active"]
     assert current.candidate_counts["graph_expanded"] == 0
     assert current.graph_links == []
 
     historical = pipeline.retrieve(
-        "历史规则", "hybrid", query_date="2026-08-17", categories=[], include_historical=True
+        "历史规则", "hybrid", query_date="2026-08-17", categories=[], include_historical=True, graph_enabled=True
     )
     assert [item.chunk.document_id for item in historical.final_selected_chunks] == [
         "active",

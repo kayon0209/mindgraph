@@ -8,7 +8,7 @@
 
 用法：
     python scripts/run_ablation.py
-    python scripts/run_ablation.py --golden evaluation/datasets/mindgraph_golden.jsonl
+    python scripts/run_ablation.py --golden evaluation/datasets/mindgraph_golden_v2.jsonl
     python scripts/run_ablation.py --dry-run          # 计算指标但不写库（沙箱/离线验证用）
 
 依赖：
@@ -95,9 +95,15 @@ def evaluate_strategy(pipeline, cases: list[dict], strategy: str, graph_enabled:
     }
 
 
+def _should_enable_graph(graph_metrics: dict[str, float], baseline_metrics: dict[str, float]) -> bool:
+    from evaluation.ablation_runner import evaluate_graph_gate
+
+    return bool(evaluate_graph_gate(graph_metrics, baseline_metrics)["eligible"])
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="MindGraph 检索消融评测")
-    ap.add_argument("--golden", default=str(ROOT.parent / "evaluation" / "datasets" / "mindgraph_golden.jsonl"))
+    ap.add_argument("--golden", default=str(PROJECT_ROOT / "evaluation" / "datasets" / "mindgraph_golden_v2.jsonl"))
     ap.add_argument("--top-k", type=int, default=TOP_K)
     ap.add_argument("--dataset-name", default="mindgraph_enterprise_v2")
     ap.add_argument("--dry-run", action="store_true", help="计算指标但不写库")
@@ -118,7 +124,7 @@ def main() -> None:
         print("        （离线/无 BGE 时可用 --dry-run 验证逻辑，但不会写库）")
         return
 
-    pipeline = container.mindgraph_pipeline(top_k=args.top_k, graph_enabled=True)
+    pipeline = container.mindgraph_pipeline(top_k=args.top_k, graph_enabled=False)
     started = _utc_iso()
     results: list[tuple[str, dict]] = []
     for name, strategy, graph_enabled in STRATEGIES:
@@ -126,6 +132,16 @@ def main() -> None:
         results.append((name, metrics))
         print(f"[{name:18s}] R@1={metrics['recall_at_1']:.3f} R@3={metrics['recall_at_3']:.3f} "
               f"R@5={metrics['recall_at_5']:.3f} MRR={metrics['mrr']:.3f} hit@{args.top_k}={metrics['document_hit_rate']:.3f}")
+
+    decision = None
+    if len(results) >= 3:
+        baseline = results[1][1]
+        graph_metrics = results[2][1]
+        decision = {
+            "eligible": _should_enable_graph(graph_metrics, baseline),
+            "default_route_recommendation": "conditional_only" if _should_enable_graph(graph_metrics, baseline) else "keep_graph_disabled",
+        }
+        print(f"[gate] graph eligible: {decision['eligible']} -> {decision['default_route_recommendation']}")
 
     if args.dry_run:
         print("\n[dry-run] 未写入 evaluation_runs。")
@@ -144,9 +160,9 @@ def main() -> None:
             (
                 run_id, "completed", args.dataset_name, dataset_version, name, "retrieval-only",
                 started, finished,
-                dumps({"top_k": args.top_k, "golden": Path(args.golden).name, "sample_size": len(golden)}),
-                dumps(metrics),
-                dumps({}),
+                dumps({"top_k": args.top_k, "golden": Path(args.golden).name, "dataset_version": next(iter({case.get("dataset_version") for case in golden}), None), "sample_size": len(golden), "mode": "REAL_INDEX"}),
+                dumps({**metrics, **({"graph_gate": decision} if decision and name.endswith("graph") else {})}),
+                dumps({"sample_size": metrics.get("sample_size", 0)}),
                 dumps([]),
                 dumps([]),
                 dumps(["completed"]),

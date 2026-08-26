@@ -50,13 +50,16 @@ class BM25Retriever:
             score += inverse_document_frequency * frequency * (self.k1 + 1) / denominator
         return score
 
-    def search(self, query: str, top_k: int) -> tuple[list[RetrievalCandidate], dict[str, float]]:
+    def search(self, query: str, top_k: int, access_scope: dict | None = None) -> tuple[list[RetrievalCandidate], dict[str, float]]:
         if top_k <= 0 or not query.strip() or not self.chunks:
             return [], {"bm25_retrieval_ms": 0.0}
         start = time.perf_counter()
         query_tokens = tokenize_zh(query)
+        from application.access_control import chunk_acl_matches
+
         ranked = sorted(
-            ((self._score(query_tokens, index), index) for index in range(len(self.chunks))),
+            ((self._score(query_tokens, index), index) for index in range(len(self.chunks))
+             if access_scope is None or chunk_acl_matches(self.chunks[index].metadata, access_scope)),
             key=lambda item: (-item[0], self.chunks[item[1]].chunk_id),
         )[:top_k]
         elapsed = (time.perf_counter() - start) * 1000

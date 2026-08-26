@@ -36,12 +36,19 @@ export type Citation = {
 };
 
 export type GraphLink = {
+  relation_id?: string;
   source_note_id: string;
   source_title?: string;
   relation_type: string;
   target_note_id: string;
   target_title?: string;
   confidence?: number;
+  evidence_chunk_id?: string | null;
+  evidence_span?: string | null;
+  evidence_section?: string | null;
+  document_version?: string | null;
+  status?: string | null;
+  hop?: number;
 };
 
 export type PolicyConflictVersion = {
@@ -82,6 +89,8 @@ export type RetrievalTrace = {
   degradation_reason?: string | null;
   index_version?: string | null;
   graph_enabled: boolean;
+  graph_hops?: number;
+  graph_evidence?: { relation_id?: string; evidence_chunk_id?: string | null; evidence_span?: string | null; evidence_section?: string | null; status?: string | null }[];
   graph_links: GraphLink[];
   policy_conflicts?: PolicyConflict[];
   route_decision?: RouteDecision;

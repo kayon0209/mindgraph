@@ -30,6 +30,7 @@ _settings = get_settings()
 class ServiceContainer:
     def __init__(self) -> None:
         settings = get_settings()
+        self.settings = settings
         # PROJECT_ROOT: dependencies.py is in src/api/, three parents up = project root
         self.root = Path(__file__).resolve().parent.parent.parent
         DOCS_DIR = self.root / "knowledge"
@@ -102,7 +103,7 @@ class ServiceContainer:
             allowed_roots=(self.root / "knowledge", *settings.connector_allowed_root_list),
         )
 
-    def mindgraph_pipeline(self, top_k: int, graph_enabled: bool = True):
+    def mindgraph_pipeline(self, top_k: int, graph_enabled: bool = False):
         key = (top_k, graph_enabled)
         if key not in self._mindgraph_pipelines:
             self._mindgraph_pipelines[key] = create_mindgraph_retrieval_pipeline(

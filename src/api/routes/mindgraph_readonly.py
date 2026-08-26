@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from api.auth import resolve_access_scope, current_actor
 from api.dependencies import get_container
 from application.access_control import note_acl_matches, record_access_audit
+from application.mindgraph_graph_store import TYPED_RELATION_TYPES
 
 logger = logging.getLogger("mindgraph.api.readonly")
 router = APIRouter(prefix="/mindgraph", tags=["mindgraph-readonly"])
@@ -208,12 +209,15 @@ def get_note(note_id: str, request: Request):
         metadata={"scope_user": (access_scope or {}).get("user")},
     )
     store = get_container().mindgraph_graph_store
-    outgoing = store.related_note_ids([note_id], status="confirmed")
+    outgoing = store.related_note_ids([note_id], status="confirmed", access_scope=access_scope)
     incoming_rows = db.fetch_all(
-        """SELECT source_note_id, relation_type, confidence
-           FROM note_relations WHERE target_note_id = ? AND status = 'confirmed'""",
+        """SELECT r.source_note_id, r.relation_type, r.confidence,
+                  n.workspace, n.department, n.acl_json, n.acl_public
+           FROM note_relations r JOIN notes n ON n.note_id = r.source_note_id
+           WHERE r.target_note_id = ? AND r.status = 'confirmed'""",
         (note_id,),
     )
+    incoming_rows = [item for item in incoming_rows if note_acl_matches(item, access_scope)]
     related_ids = [o["target_note_id"] for o in outgoing] + [i["source_note_id"] for i in incoming_rows]
     titles = store.note_titles(related_ids)
     return {
@@ -448,6 +452,14 @@ def resolve_relation(relation_id: str, body: ResolveBody, request: Request):
     row = db.fetch_one("SELECT relation_id, status, source_note_id, target_note_id FROM note_relations WHERE relation_id=?", (relation_id,))
     if not row:
         raise HTTPException(status_code=404, detail="relation not found")
+    if row["status"] != "proposed":
+        raise HTTPException(status_code=409, detail="only proposed relations can be resolved")
+    relation_detail = db.fetch_one(
+        "SELECT relation_type, evidence_chunk_id, evidence_span FROM note_relations WHERE relation_id=?",
+        (relation_id,),
+    )
+    if not relation_detail or relation_detail["relation_type"] not in TYPED_RELATION_TYPES or (not relation_detail["evidence_chunk_id"] and not relation_detail["evidence_span"]):
+        raise HTTPException(status_code=409, detail="relation lacks an allowed type or evidence")
     note_rows = db.fetch_all(
         "SELECT note_id, title, vault_path, workspace, department, acl_json, acl_public FROM notes WHERE note_id IN (?, ?)",
         (row["source_note_id"], row["target_note_id"]),
@@ -474,7 +486,7 @@ class ResolveBatchBody(BaseModel):
 
 
 @router.post("/relations/resolve-batch")
-def resolve_relations_batch(body: ResolveBatchBody):
+def resolve_relations_batch(body: ResolveBatchBody, request: Request):
     """批量确认 / 拒绝若干 proposed 关系（Human-in-the-loop）。
 
     用于「一键确认高置信度候选」等场景；仅作用于传入的 relation_id 列表。
@@ -483,21 +495,44 @@ def resolve_relations_batch(body: ResolveBatchBody):
     if not body.ids:
         raise HTTPException(status_code=400, detail="ids 不能为空")
     db = get_container().database
+    access_scope = resolve_access_scope(request)
+    actor = current_actor(request)
     placeholders = ",".join("?" for _ in body.ids)
     rows = db.fetch_all(
-        f"SELECT relation_id, status FROM note_relations WHERE relation_id IN ({placeholders})",
+        f"""SELECT r.relation_id, r.status, r.relation_type, r.evidence_chunk_id, r.evidence_span,
+                   r.source_note_id, r.target_note_id,
+                   s.workspace AS source_workspace, s.department AS source_department,
+                   s.acl_json AS source_acl_json, s.acl_public AS source_acl_public,
+                   t.workspace AS target_workspace, t.department AS target_department,
+                   t.acl_json AS target_acl_json, t.acl_public AS target_acl_public
+            FROM note_relations r
+            JOIN notes s ON s.note_id = r.source_note_id
+            JOIN notes t ON t.note_id = r.target_note_id
+            WHERE r.relation_id IN ({placeholders})""",
         tuple(body.ids),
     )
-    valid = {r["relation_id"] for r in rows}
+    permitted = []
+    denied = []
+    for row in rows:
+        source = {"workspace": row["source_workspace"], "department": row["source_department"], "acl_json": row["source_acl_json"], "acl_public": row["source_acl_public"]}
+        target = {"workspace": row["target_workspace"], "department": row["target_department"], "acl_json": row["target_acl_json"], "acl_public": row["target_acl_public"]}
+        relation_type = row.get("relation_type")
+        has_evidence = row.get("evidence_chunk_id") or row.get("evidence_span")
+        if row["status"] == "proposed" and relation_type in TYPED_RELATION_TYPES and has_evidence and note_acl_matches(source, access_scope) and note_acl_matches(target, access_scope):
+            permitted.append(row["relation_id"])
+        else:
+            denied.append(row["relation_id"])
     new_status = "confirmed" if body.decision == "confirm" else "rejected"
     ts = _now_iso()
-    for rid in body.ids:
-        if rid in valid:
-            db.execute(
-                "UPDATE note_relations SET status=?, resolved_at=?, resolved_by=? WHERE relation_id=?",
-                (new_status, ts, body.resolved_by, rid),
-            )
-    return {"ok": True, "processed": len(valid), "skipped": len(body.ids) - len(valid), "status": new_status}
+    for rid in permitted:
+        db.execute(
+            "UPDATE note_relations SET status=?, resolved_at=?, resolved_by=? WHERE relation_id=?",
+            (new_status, ts, body.resolved_by, rid),
+        )
+        record_access_audit(db, actor=actor, action="resolve_relation", resource=f"note_relations/{rid}", decision="allow", metadata={"new_status": new_status, "batch": True})
+    for rid in denied:
+        record_access_audit(db, actor=actor, action="resolve_relation", resource=f"note_relations/{rid}", decision="deny", reason="out_of_scope_or_not_proposed", metadata={"batch": True})
+    return {"ok": True, "processed": len(permitted), "skipped": len(body.ids) - len(permitted), "status": new_status}
 
 
 class ExtractBody(BaseModel):

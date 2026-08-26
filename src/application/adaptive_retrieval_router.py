@@ -129,10 +129,10 @@ class AdaptiveRetrievalRouter:
                 "hybrid",
                 False,
                 search_query,
-                "structured_clause_store_unavailable",
+                "structured_clause_query_selected",
                 cost_tier="medium",
                 latency_tier="medium",
-                degraded=True,
+                degraded=False,
             )
         search_query = self._rewrite_query(normalized, route="factual")
         return self._adaptive(

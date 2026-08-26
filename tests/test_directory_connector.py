@@ -98,7 +98,7 @@ def test_directory_connector_incremental_sync_detects_changes(tmp_path: Path):
     assert note["index_status"] == "pending"
 
 
-def test_directory_connector_does_not_prune_without_source_ownership(tmp_path: Path):
+def test_directory_connector_prunes_only_its_owned_source(tmp_path: Path):
     database = ProductDatabase(tmp_path / "product.sqlite3")
     database.initialize()
     source = _make_source(tmp_path)
@@ -108,9 +108,9 @@ def test_directory_connector_does_not_prune_without_source_ownership(tmp_path: P
     (source / "hr" / "leave.md").unlink()
 
     second = svc.sync(source, workspace="corp")
-    assert second["pruned"] == 0
+    assert second["pruned"] == 1
     remaining = database.fetch_one("SELECT COUNT(*) AS c FROM notes WHERE vault_path LIKE '%leave.md'")
-    assert remaining["c"] == 1
+    assert remaining["c"] == 0
 
 
 def test_directory_connector_status_returns_history(tmp_path: Path):

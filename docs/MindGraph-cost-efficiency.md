@@ -127,4 +127,4 @@ R@K 曲线给出质量-成本权衡（governance hybrid）：
 ## TODO（若要补更强的简历指标）
 - [ ] 填充 `note_relations` 后重跑 `scripts/run_ablation.py`，得到 **Graph 臂真实 ΔRecall**（补「BM25+Vector+Graph」第三组）。
 - [ ] 在 `mindgraph_chat` 生成链路插桩记录 prompt/completion token，把「成本效率」从延迟代理升级为真实 token/$ 成本。
-- [x] 用人工冻结的 `evaluation/datasets/mindgraph_golden.jsonl` V2 替换运行库派生样本（当前 12 条回归集；尚不能冒充独立 holdout）。
+- [x] 用人工冻结的 `evaluation/datasets/mindgraph_golden_v2.jsonl`（版本 2.2.0）替换运行库派生样本（当前 12 条 approved 回归集；尚不能冒充独立 holdout）。

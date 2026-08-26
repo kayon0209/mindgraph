@@ -65,6 +65,8 @@ class RetrievalTraceModel(BaseModel):
     applied_filters: dict[str, Any] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
     graph_enabled: bool = False
+    graph_hops: int = Field(default=1, ge=1, le=2)
+    graph_hops: int = Field(default=1, ge=1, le=2)
     graph_links: list[dict[str, Any]] = Field(default_factory=list)
     policy_conflicts: list[dict[str, Any]] = Field(default_factory=list)
     route_decision: dict[str, Any] = Field(default_factory=dict)
@@ -124,7 +126,7 @@ class ChatRequest(BaseModel):
     query_date: str | None = None
     knowledge_categories: list[str] = Field(default_factory=list, max_length=10)
     include_historical: bool = False
-    graph_enabled: bool = True
+    graph_enabled: bool = False
 
     @field_validator("query_date")
     @classmethod

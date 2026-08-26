@@ -5,6 +5,10 @@ export const METRIC_DEFINITIONS = [
   { key: "mrr", label: "MRR" },
   { key: "document_hit_rate", label: "文档命中率" },
   { key: "chunk_hit_rate", label: "分块命中率" },
+  { key: "route_accuracy", label: "路由准确率" },
+  { key: "graph_policy_accuracy", label: "图路径策略准确率" },
+  { key: "mean_total_latency_ms", label: "平均总延迟" },
+  { key: "p95_total_latency_ms", label: "P95 总延迟" },
 ] as const;
 
 export function numericMetricValue(run: EvaluationRun, key: string): number | null {

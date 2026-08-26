@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import time
 from datetime import date
 
@@ -35,6 +36,13 @@ class RetrievalPipeline:
         self.candidate_count = candidate_count
         self.rerank_top_n = rerank_top_n
         self.final_top_k = final_top_k
+
+    @staticmethod
+    def _search(retriever, query: str, top_k: int, access_scope: dict | None):
+        parameters = inspect.signature(retriever.search).parameters
+        if "access_scope" in parameters:
+            return retriever.search(query, top_k, access_scope=access_scope)
+        return retriever.search(query, top_k)
 
     @staticmethod
     def _base_score(candidate) -> float:
@@ -117,11 +125,13 @@ class RetrievalPipeline:
         trace.applied_filters = {"query_date": query_date, "knowledge_categories": categories or [], "include_historical": include_historical, "access_scope": access_scope}
         dense_results, sparse_results = [], []
         if strategy in {"dense", "hybrid", "hybrid_rerank"}:
-            dense_results, timings = self.dense.search(query, self.candidate_count)
+            dense_results, timings = self._search(self.dense, query, self.candidate_count, access_scope)
+            dense_results = self._filter_by_access(dense_results, access_scope, trace)
             trace.latency_ms.update(timings)
             trace.dense_results = dense_results
         if strategy in {"bm25", "hybrid", "hybrid_rerank"}:
-            sparse_results, timings = self.sparse.search(query, self.candidate_count)
+            sparse_results, timings = self._search(self.sparse, query, self.candidate_count, access_scope)
+            sparse_results = self._filter_by_access(sparse_results, access_scope, trace)
             trace.latency_ms.update(timings)
             trace.sparse_results = sparse_results
         if strategy == "dense":
@@ -138,11 +148,9 @@ class RetrievalPipeline:
             start = time.perf_counter()
             fused = self.fusion.fuse([dense_results, sparse_results], self.candidate_count)
             trace.latency_ms["fusion_ms"] = round((time.perf_counter() - start) * 1000, 3)
+            fused = self._filter_by_access(fused, access_scope, trace)
             trace.fused_results = fused
-            filtered = self._filter_by_access(
-                self._filter_and_adjust(fused, query_date, categories or [], include_historical, trace),
-                access_scope, trace,
-            )
+            filtered = self._filter_and_adjust(fused, query_date, categories or [], include_historical, trace)
             final = filtered[:self.final_top_k]
             if strategy == "hybrid_rerank":
                 if self.reranker is None:
@@ -153,11 +161,9 @@ class RetrievalPipeline:
                     start = time.perf_counter()
                     try:
                         reranked = self.reranker.rerank(query, filtered[:self.rerank_top_n], self.final_top_k)
+                        reranked = self._filter_by_access(reranked, access_scope, trace)
                         trace.reranked_results = reranked
-                        final = self._filter_by_access(
-                            self._filter_and_adjust(reranked, query_date, categories or [], include_historical, trace),
-                            access_scope, trace,
-                        )[:self.final_top_k]
+                        final = self._filter_and_adjust(reranked, query_date, categories or [], include_historical, trace)[:self.final_top_k]
                     except Exception as exc:
                         trace.degraded = True
                         trace.actual_strategy = "hybrid"

@@ -61,12 +61,12 @@ MindGraph 把 Markdown 或 Obsidian Vault 变成人与 AI Agent 都能使用的�
 
 - **混合检索**：BGE / FAISS Dense + BM25 Sparse + RRF 融合
 - **自适应路由**：根据问题意图选择合适的检索策略
-- **受控关系扩展**：只有人工确认的关系才能补充证据
+- **受控关系扩展**：只有人工确认的关系才能补充证据；当消融没有带来真实增益时，默认图路径保持关闭
 - **可溯源回答**：SSE 流式输出、citation 与检索 trace
 - **制度生命周期**：稳定 `policy_key`、版本、状态和生效日期过滤
 - **生成前冲突检测**：多个有效版本冲突时不调用 LLM
 - **权限治理**：API Key / OIDC、workspace / department ACL 与审计日志
-- **评测账本**：检索、答案可信度、延迟和成本统一留档
+- **评测账本**：检索、答案可信度、路由、图门槛、延迟和成本统一留档
 - **Web 与 Obsidian**：问答、检查证据、审核关系和比较评测结果
 
 ## 快速开始
@@ -170,7 +170,7 @@ python scripts/run_routing_evaluation.py
 python scripts/run_answer_evaluation.py --live --strategy hybrid
 ```
 
-当前冻结集包含 12 条人工编写的制度案例，覆盖版本替代、审批阈值、例外、跨制度问题、无答案和歧义。评测 citation F1、拒答正确性、版本有效性、必需事实、禁用事实、延迟、Token 与估算成本。
+当前冻结集（`mindgraph_golden_v2.jsonl`，版本 `2.2.0`）包含 12 条人工编写的制度案例，覆盖版本替代、审批阈值、例外、跨制度问题、无答案和歧义。评测 citation F1、拒答正确性、版本有效性、必需事实、禁用事实、延迟、Token 与估算成本。
 
 ### MindGraph 现在是什么
 

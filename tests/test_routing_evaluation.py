@@ -1,7 +1,7 @@
 import pytest
 
 from application.adaptive_retrieval_router import AdaptiveRetrievalRouter
-from evaluation.routing_eval import evaluate_routing_cases
+from evaluation.routing_eval import RoutingEvaluationError, evaluate_routing_cases
 
 
 def test_routing_evaluation_reports_quality_and_cost_path_mix() -> None:
@@ -47,6 +47,8 @@ def test_routing_evaluation_reports_quality_and_cost_path_mix() -> None:
         "exact_title": 1,
         "factual": 1,
     }
+    assert result["group_metrics"]["cross_policy"]["sample_size"] == 1.0
+    assert result["group_metrics"]["title"]["sample_size"] == 1.0
 
 
 def test_routing_evaluation_rejects_duplicate_or_incomplete_cases() -> None:
@@ -64,3 +66,5 @@ def test_routing_evaluation_rejects_duplicate_or_incomplete_cases() -> None:
             [{"case_id": "missing", "question": "问题", "expected_route": "factual", "expected_graph_enabled": False}],
             AdaptiveRetrievalRouter(),
         )
+    with pytest.raises(RoutingEvaluationError, match="must contain at least one case"):
+        evaluate_routing_cases([], AdaptiveRetrievalRouter())

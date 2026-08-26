@@ -1,9 +1,13 @@
 # 检索评测数据规范
 
-`mindgraph_golden.jsonl` 是当前冻结的 V2 黄金集，共 12 条样本（数据集版本
-`2.1.0`）。它由 `demo-vault/` 中的公开制度原文人工标注，独立于运行时 SQLite
+`mindgraph_golden_v2.jsonl` 是当前冻结的 V2 黄金集，共 12 条样本（数据集版本
+`2.2.0`）。它由 `demo-vault/` 中的公开制度原文人工标注，独立于运行时 SQLite
 数据库、系统回答、候选关系和检索排序。当前阶段用它验证评测机制、证据路径和
 拒答边界是否有效，不足以支持统计显著性结论，也不是生产效果证明。
+
+> 注意：旧文件 `mindgraph_golden.jsonl`（版本 `2.1.0`）是迁移前的历史快照，
+> 只被 `scripts/run_ablation.py` 与 `tests/test_enterprise_golden.py` 等遗留
+> 评测入口引用；新增与评审一律以 `mindgraph_golden_v2.jsonl` 为准。
 
 离线结构回归测试会直接加载并复用 `evaluation.mindgraph_retrieval_eval` 的
 `load_golden_dataset` 和校验器，不调用模型、API、网络或运行时数据库：

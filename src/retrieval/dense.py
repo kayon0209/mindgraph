@@ -77,7 +77,7 @@ class FAISSDenseRetriever:
             raise IncompatibleIndexError("FAISS row count does not match chunk metadata")
         self._metadata = metadata
 
-    def search(self, query: str, top_k: int) -> tuple[list[RetrievalCandidate], dict[str, float]]:
+    def search(self, query: str, top_k: int, access_scope: dict[str, Any] | None = None) -> tuple[list[RetrievalCandidate], dict[str, float]]:
         if top_k <= 0 or not query.strip():
             return [], {"query_embedding_ms": 0.0, "dense_retrieval_ms": 0.0}
         if self._index is None:
@@ -87,11 +87,22 @@ class FAISSDenseRetriever:
         embedding_ms = (time.perf_counter() - start) * 1000
         self._faiss().normalize_L2(vector)
         start = time.perf_counter()
-        scores, positions = self._index.search(vector, min(top_k, len(self._chunks)))
+        # FAISS IndexFlatIP has no native metadata predicate. Over-fetch and
+        # discard unauthorized rows before constructing RetrievalCandidate so
+        # private chunks never enter the observable dense stage.
+        search_k = len(self._chunks) if access_scope else min(top_k, len(self._chunks))
+        scores, positions = self._index.search(vector, search_k)
         retrieval_ms = (time.perf_counter() - start) * 1000
-        results = [
-            RetrievalCandidate(chunk=self._chunks[int(position)], dense_score=float(score), dense_rank=rank)
-            for rank, (score, position) in enumerate(zip(scores[0], positions[0]), 1)
-            if position >= 0
-        ]
+        from application.access_control import chunk_acl_matches
+
+        results = []
+        for score, position in zip(scores[0], positions[0]):
+            if position < 0:
+                continue
+            chunk = self._chunks[int(position)]
+            if access_scope is not None and not chunk_acl_matches(chunk.metadata, access_scope):
+                continue
+            results.append(RetrievalCandidate(chunk=chunk, dense_score=float(score), dense_rank=len(results) + 1))
+            if len(results) >= top_k:
+                break
         return results, {"query_embedding_ms": round(embedding_ms, 3), "dense_retrieval_ms": round(retrieval_ms, 3)}

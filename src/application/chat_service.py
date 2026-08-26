@@ -126,6 +126,7 @@ class ChatService:
             index_version=payload.get("index_version"), applied_filters=payload.get("applied_filters", {}),
             warnings=payload.get("warnings", []),
             graph_enabled=getattr(trace, "graph_enabled", False),
+            graph_hops=getattr(trace, "graph_hops", 1),
             graph_links=getattr(trace, "graph_links", []),
             route_decision=payload.get("route_decision", {}),
             query_variants=payload.get("query_variants", []),

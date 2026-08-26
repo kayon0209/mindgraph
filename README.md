@@ -61,12 +61,12 @@ The first vertical is policy-heavy knowledge such as expense, finance and compli
 
 - **Hybrid retrieval:** BGE / FAISS dense search + BM25 sparse search + RRF fusion
 - **Adaptive routing:** selects an appropriate retrieval strategy from query intent
-- **Controlled graph expansion:** only human-confirmed relations can add evidence
+- **Controlled graph expansion:** only human-confirmed relations can add evidence, and current graph gating keeps default graph disabled when ablation does not show a real gain
 - **Grounded answers:** streaming responses with citations and retrieval traces
 - **Policy lifecycle:** stable `policy_key`, version, status and effective-date filtering
 - **Conflict-before-generation:** conflicting active versions stop the LLM call
 - **Governed access:** API key / OIDC, workspace / department ACLs and audit logs
-- **Evaluation ledger:** retrieval, answer trust, latency and cost in one history
+- **Evaluation ledger:** retrieval, answer trust, routing, graph gate, latency and cost in one history
 - **Web and Obsidian clients:** ask, inspect evidence, review relations and compare runs
 
 ## Quickstart
@@ -170,7 +170,7 @@ python scripts/run_routing_evaluation.py
 python scripts/run_answer_evaluation.py --live --strategy hybrid
 ```
 
-The current frozen set contains 12 hand-written policy cases covering replacement, thresholds, exceptions, cross-policy questions, no-answer cases and ambiguity. It scores citation F1, refusal correctness, version validity, required facts, forbidden facts, latency, tokens and estimated cost.
+The current frozen set (`mindgraph_golden_v2.jsonl`, version `2.2.0`) contains 12 hand-written policy cases covering replacement, thresholds, exceptions, cross-policy questions, no-answer cases and ambiguity. It scores citation F1, refusal correctness, version validity, required facts, forbidden facts, latency, tokens and estimated cost.
 
 ### What MindGraph is today
 

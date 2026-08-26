@@ -82,6 +82,8 @@ class Settings(BaseSettings):
     OPENAI_COMPAT_VERIFIED: bool = False
     CHAT_TIMEOUT_SECONDS: int = 60
     CHAT_MAX_RETRIES: int = 1
+    MCP_TIMEOUT_SECONDS: float = 15.0
+    MCP_MAX_BATCH_ITEMS: int = 20
 
     # ── LLM Provider — Anthropic ──
     ANTHROPIC_API_KEY: str = ""

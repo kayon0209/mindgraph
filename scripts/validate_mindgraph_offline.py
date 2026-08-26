@@ -192,7 +192,7 @@ def main(argv: list[str] | None = None) -> int:
             "evidence_chunk_id, confidence, model_version, prompt_version, proposed_at, resolved_at) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (f"rel-{aid[:6]}-{bid[:6]}", aid, bid, "related_to", "confirmed", "outgoing",
-             None, 0.92, "demo", "demo1", "2026-07-20T00:00:00Z", "2026-07-20T00:00:00Z"),
+             f"{aid}::0", 0.92, "demo", "demo1", "2026-07-20T00:00:00Z", "2026-07-20T00:00:00Z"),
         )
 
         q = f"请简要总结《{by_title[aid]}》这篇笔记主要讲了什么？"
