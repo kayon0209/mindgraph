@@ -61,3 +61,16 @@ data/api_keys.json
 # Evaluation results (can be large)
 evaluation/results/
 *.tar.gz
+
+# Curated dataset backups (do not commit)
+evaluation/datasets/*.bak*
+
+# Large downloaded source docs (re-downloadable; sources listed in docs/upgrade/PUBLIC_DATA_SOURCES.md)
+data-sources/ocr/chinese-gov/*.pdf
+
+# One-off debug scripts (Cursor) — not part of the repo deliverable
+scripts/check_*.py
+scripts/check_notes_status.py
+scripts/debug_retrieval.py
+scripts/fix_processing.py
+scripts/cleanup_external_html.py
