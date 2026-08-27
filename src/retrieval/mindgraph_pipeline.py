@@ -47,12 +47,30 @@ class MindGraphRetrievalPipeline:
         return self.base.dense
 
     def retrieve(self, query, strategy, query_date=None, categories=None,
-                 include_historical=False, graph_enabled=None, access_scope=None, graph_hops=None):
+                 include_historical=False, graph_enabled=None, access_scope=None, graph_hops=None,
+                 query_variants=None):
         ge = self.graph_enabled if graph_enabled is None else graph_enabled
         hops = self.max_graph_hops if graph_hops is None else graph_hops
-        trace = self.base.retrieve(
-            query, strategy, query_date, categories, include_historical, access_scope=access_scope,
-        )
+        variants = [query]
+        for v in query_variants or []:
+            if v and v.strip() and v != query:
+                variants.append(v.strip())
+        if len(variants) == 1:
+            trace = self.base.retrieve(
+                query, strategy, query_date, categories, include_historical, access_scope=access_scope,
+            )
+            trace.query_variants = [query]
+        else:
+            # 跨语言/多语言查询变体：各变体独立混合检索，RRF 按排名融合
+            # （score 跨语言不可比，rank 可比——与 chat 层同语言 max-score 合并互补）
+            traces = [self.base.retrieve(
+                v, strategy, query_date, categories, include_historical, access_scope=access_scope,
+            ) for v in variants]
+            trace = traces[0]
+            self._rrf_merge_variants(traces, strategy)
+            trace.query_variants = list(variants)
+            trace.original_query = query
+            trace.warnings.append(f"query_variants_applied:{len(variants)}")
         trace.graph_enabled = ge
         trace.graph_hops = hops
         if ge and strategy in {"hybrid", "hybrid_rerank"}:
@@ -67,6 +85,35 @@ class MindGraphRetrievalPipeline:
             "graph_expanded": trace.candidate_counts.get("graph_expanded", 0),
         }
         return trace
+
+    @staticmethod
+    def _rrf_merge_variants(traces: list, strategy: str, k: int = 60) -> None:
+        """按 chunk_id 做 RRF 排名融合（1/(k+rank) 累加），写入主 trace。"""
+        def merge(attr: str, limit: int) -> list:
+            scores: dict[str, float] = {}
+            best: dict[str, Any] = {}
+            for t in traces:
+                for rank, cand in enumerate(getattr(t, attr), 1):
+                    cid = cand.chunk.chunk_id
+                    scores[cid] = scores.get(cid, 0.0) + 1.0 / (k + rank)
+                    best.setdefault(cid, cand)
+            ordered = sorted(best.values(), key=lambda c: scores[c.chunk.chunk_id], reverse=True)
+            return ordered[:limit]
+
+        main = traces[0]
+        main.dense_results = merge("dense_results", len(main.dense_results))
+        main.sparse_results = merge("sparse_results", len(main.sparse_results))
+        if strategy in {"hybrid", "hybrid_rerank"}:
+            main.fused_results = merge("fused_results", len(main.fused_results))
+        top_k = len(main.final_selected_chunks)
+        if strategy == "dense":
+            main.final_selected_chunks = merge("dense_results", top_k)
+        elif strategy == "bm25":
+            main.final_selected_chunks = merge("sparse_results", top_k)
+        else:
+            main.final_selected_chunks = merge("fused_results", top_k)
+        for rank, cand in enumerate(main.final_selected_chunks, 1):
+            cand.final_rank = rank
 
     def _expand_graph(self, trace: RetrievalTrace, *, access_scope=None, hops: int = DEFAULT_GRAPH_HOPS) -> None:
         hit_notes = {
