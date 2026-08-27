@@ -20,15 +20,17 @@
 </p>
 
 <p>
-  <a href="#快速开始">快速开始</a> ·
   <a href="#为什么是-mindgraph">为什么是 MindGraph</a> ·
-  <a href="#mcp--ai-agent">MCP</a> ·
-  <a href="#工作原理">架构</a> ·
+  <a href="#功能特性">功能特性</a> ·
+  <a href="#技术栈">技术栈</a> ·
+  <a href="#快速开始">快速开始</a> ·
+  <a href="#使用说明mcp">MCP</a> ·
+  <a href="#架构">架构</a> ·
   <a href="#评测与可信边界">评测</a> ·
-  <a href="./docs/PRODUCT_STRATEGY.md">路线图</a>
+  <a href="#常见问题">FAQ</a>
 </p>
 
-<img src="assets/hero-banner.jpg" alt="MindGraph" width="100%">
+<img src="assets/hero-banner.jpg" alt="MindGraph — 先治理证据，再生成答案" width="100%">
 
 </div>
 
@@ -36,9 +38,9 @@ MindGraph 把 Markdown 或 Obsidian Vault 变成人与 AI Agent 都能使用的�
 
 当前首个垂直场景是报销、财务与企业制度合规；同一套证据链也适用于任何重视时效、权限和可追溯性的 Markdown 知识库。
 
-## MindGraph 要解决的典型错误
+## 为什么是 MindGraph
 
-**问题：** 2026 年 8 月发生的费用，应该遵循 30 天还是 60 天报销规则？
+**MindGraph 要解决的典型错误：** *2026 年 8 月发生的费用，应该遵循 30 天还是 60 天报销规则？*
 
 | 普通 RAG | MindGraph |
 |---|---|
@@ -48,28 +50,49 @@ MindGraph 把 Markdown 或 Obsidian Vault 变成人与 AI Agent 都能使用的�
 
 > **MindGraph 的产品原则：先治理证据，再生成答案。**
 
-## 为什么是 MindGraph
+<div align="center">
 
-<table>
-<tr>
-<td width="25%" align="center"><b>本地优先</b><br><sub>SQLite + 本地索引<br>知识保留在自己的环境</sub></td>
-<td width="25%" align="center"><b>证据优先</b><br><sub>Citation + 检索 trace<br>随时回到原始来源</sub></td>
-<td width="25%" align="center"><b>理解版本</b><br><sub>生命周期与生效日期<br>证据冲突时停止生成</sub></td>
-<td width="25%" align="center"><b>Agent-ready</b><br><sub>REST + SSE + MCP<br>接入 Agent 工作流</sub></td>
-</tr>
-</table>
+| | | | |
+|---|---|---|---|
+| **本地优先**<br><sub>SQLite + 本地索引<br>知识保留在自己的环境</sub> | **证据优先**<br><sub>Citation + 检索 trace<br>随时回到原始来源</sub> | **理解版本**<br><sub>生命周期与生效日期<br>证据冲突时停止生成</sub> | **Agent-ready**<br><sub>REST + SSE + MCP<br>接入 Agent 工作流</sub> |
+
+</div>
+
+## 功能特性
+
+### 检索与路由
 
 - **混合检索**：BGE / FAISS Dense + BM25 Sparse + RRF 融合
 - **自适应路由**：根据问题意图选择合适的检索策略
 - **受控关系扩展**：只有人工确认的关系才能补充证据；当消融没有带来真实增益时，默认图路径保持关闭
+
+### 证据与治理
+
 - **可溯源回答**：SSE 流式输出、citation 与检索 trace
 - **制度生命周期**：稳定 `policy_key`、版本、状态和生效日期过滤
 - **生成前冲突检测**：多个有效版本冲突时不调用 LLM
 - **权限治理**：API Key / OIDC、workspace / department ACL 与审计日志
+
+### 接口与评测
+
+- **Web 与 Obsidian 客户端**：问答、检查证据、审核关系和比较评测结果
+- **Agent 接口**：REST、SSE 与只读 MCP Server
 - **评测账本**：检索、答案可信度、路由、图门槛、延迟和成本统一留档
-- **Web 与 Obsidian**：问答、检查证据、审核关系和比较评测结果
+
+## 技术栈
+
+| 分层 | 技术 |
+|---|---|
+| 运行环境 | Python 3.11+ |
+| API | FastAPI（REST + SSE）、MCP Server |
+| 检索 | BGE 向量 · FAISS（Dense）· BM25（Sparse）· RRF 融合 |
+| 存储 | SQLite（WAL）、版本化 FAISS 索引 |
+| 客户端 | Web 工作台（Streamlit）、Obsidian 插件 |
+| 质量 | pytest、Ruff、mypy（见 `docs/DEPLOYMENT.md`） |
 
 ## 快速开始
+
+> **环境要求：** Python 3.11 或更高版本。
 
 ### 路径 A：无需密钥验证完整链路
 
@@ -101,31 +124,7 @@ docker compose up --build
 | API | <http://127.0.0.1:8000> |
 | OpenAPI 文档 | <http://127.0.0.1:8000/api/docs> |
 
-## 工作原理
-
-```mermaid
-flowchart LR
-    A[Markdown / Obsidian] --> B[解析、清洗与治理]
-    B --> C[(SQLite WAL)]
-    B --> D[版本化 FAISS 索引]
-    Q[用户 / AI Agent] --> R[自适应检索路由]
-    C --> R
-    D --> R
-    R --> F[Dense + Sparse + RRF]
-    F --> G{证据是否冲突?}
-    G -- 是 --> H[停止生成并列出冲突版本]
-    G -- 否 --> I[confirmed 关系扩展]
-    I --> J[LLM 生成]
-    J --> K[答案 + 引用 + Trace]
-```
-
-状态、生效日期、分类和权限过滤同时作用于基础检索与关系扩展，避免已归档文档通过图关系重新进入当前答案。
-
-<div align="center">
-  <img src="assets/architecture.svg" alt="MindGraph 架构" width="92%">
-</div>
-
-## MCP × AI Agent
+## 使用说明 MCP
 
 MindGraph 内置只读 MCP Server，目前提供五个工具：
 
@@ -162,6 +161,49 @@ Claude Desktop 风格配置：
 
 当前 MCP 有意保持只读。经过审核的关系提议、证据反馈和评测案例写回仍在路线图中。
 
+## 架构
+
+```mermaid
+flowchart LR
+    A[Markdown / Obsidian] --> B[解析、清洗与治理]
+    B --> C[(SQLite WAL)]
+    B --> D[版本化 FAISS 索引]
+    Q[用户 / AI Agent] --> R[自适应检索路由]
+    C --> R
+    D --> R
+    R --> F[Dense + Sparse + RRF]
+    F --> G{证据是否冲突?}
+    G -- 是 --> H[停止生成并列出冲突版本]
+    G -- 否 --> I[confirmed 关系扩展]
+    I --> J[LLM 生成]
+    J --> K[答案 + 引用 + Trace]
+```
+
+状态、生效日期、分类和权限过滤同时作用于基础检索与关系扩展，避免已归档文档通过图关系重新进入当前答案。
+
+<div align="center">
+  <img src="assets/architecture.svg" alt="MindGraph 架构" width="92%">
+</div>
+
+## 目录结构
+
+```text
+src/
+  api/            FastAPI 路由、认证、OIDC、中间件、MCP 挂载
+  application/    应用服务（编排、对话、生命周期）
+  domain/         稳定的模型、错误与接口
+  infrastructure/ 适配层：SQLite、解析器、模型 SDK
+  retrieval/      检索各阶段：向量、dense、sparse、融合、pipeline
+  ui/             Streamlit 客户端（api_client.py 是唯一后端入口）
+evaluation/       Golden 数据集与检索/答案/路由/消融评测
+demo-vault/      公开合成制度、工作流与案例
+docs/            架构、部署、产品策略与 ADR
+scripts/         验证、评测与数据摄入工具
+tests/           回归与契约测试（pytest）
+web/             Web 工作台
+obsidian-plugin/ Obsidian 客户端
+```
+
 ## 评测与可信边界
 
 ```bash
@@ -170,7 +212,7 @@ python scripts/run_routing_evaluation.py
 python scripts/run_answer_evaluation.py --live --strategy hybrid
 ```
 
-当前冻结集（`mindgraph_golden_v2.jsonl`，版本 `2.2.0`）包含 12 条人工编写的制度案例，覆盖版本替代、审批阈值、例外、跨制度问题、无答案和歧义。评测 citation F1、拒答正确性、版本有效性、必需事实、禁用事实、延迟、Token 与估算成本。
+当前冻结集（`mindgraph_golden_v2.jsonl`，版本 `2.2.0`）包含 54 条已批准案例，来源为合成 demo vault 与公开 handbook。覆盖版本替代、审批阈值、例外、跨制度问题、Graph-needed 对照、ACL 受限、无答案和歧义。检索评测 Recall@K、Precision@K、MRR 和 nDCG@K；答案评测 citation F1、拒答正确性、版本有效性、必需事实、禁用事实、ACL 泄漏、冲突识别准确率、延迟、Token 与估算成本。以上均为本地开发/回归指标，不代表生产基准。
 
 ### MindGraph 现在是什么
 
@@ -181,8 +223,7 @@ python scripts/run_answer_evaluation.py --live --strategy hybrid
 ### MindGraph 还不是什么
 
 - 完整的实体消歧和多跳知识图谱引擎
-- 经大规模 Benchmark 证明可用于生产的系统——当前 12 条仅够做回归
-- 云托管企业 SaaS
+- 云托管企业 SaaS，或经生产级基准认证的系统——当前 54 条案例仅用于本地开发/回归测试
 
 ## 项目状态
 
@@ -194,6 +235,24 @@ python scripts/run_answer_evaluation.py --live --strategy hybrid
 | Web、Obsidian 与只读 MCP | 更完整的 Ruff、mypy 与覆盖率门禁 | 多跳推理 |
 
 产品边界和完整路线见 [`docs/PRODUCT_STRATEGY.md`](docs/PRODUCT_STRATEGY.md)。
+
+## 常见问题
+
+**MindGraph 必须要模型 Provider 或 API Key 吗？**
+
+不需要。离线验证路径（路径 A）使用确定性的 Fake Embedding / Fake LLM；只有需要真实、可溯源的回答时，才在 `.env` 中配置模型 Provider。
+
+**为什么 MCP 只读？**
+
+MindGraph 把证据视为受治理的数据。可写操作（关系提议、证据反馈、评测写回）有意推迟到路线图中，避免 Agent 静默修改证据层。
+
+**MindGraph 与普通 RAG 有什么区别？**
+
+它在生成之前增加了治理环节：版本/生效日期过滤、ACL 权限执行、冲突拦截，以及带检索 trace 的引用。参见[为什么是 MindGraph](#为什么是-mindgraph) 中的典型失败场景。
+
+**评测数据来自哪里？**
+
+冻结 Golden 集（`2.2.0`，54 条）来源于公开合成 `demo-vault/` 与公开 handbook。指标是本地开发/回归测量，不代表生产基准。
 
 ## 文档
 

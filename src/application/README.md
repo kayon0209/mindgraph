@@ -1,3 +1,19 @@
-# Application conventions
+# 应用服务层约定（`src/application/`）
 
-Application services orchestrate domain contracts and infrastructure adapters. Routes call services; Streamlit calls routes. Services contain no Streamlit code and no HTTP response formatting.
+业务编排层：把领域契约（domain）与基础设施适配（infrastructure）组装成可复用的服务，供 API 路由与 UI 客户端调用。
+
+## 职责
+
+- 编排领域契约与基础设施适配器，实现对话、文档生命周期、图谱存储等业务能力
+- 作为唯一的业务逻辑入口，路由与 UI 都不直接触碰底层实现
+
+## 必须遵守的边界
+
+- 服务中**不得**包含 Streamlit 代码，也**不得**格式化 HTTP 响应
+- 调用链固定为：路由 / UI → 应用服务 → 领域 + 基础设施
+
+## 相关
+
+- 领域模型与接口：`src/domain/`
+- 基础设施适配：`src/infrastructure/`
+- Web 接入：`src/api/`、`src/ui/`

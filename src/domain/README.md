@@ -1,3 +1,19 @@
-# Domain conventions
+# 领域层约定（`src/domain/`）
 
-Domain code defines stable models, errors, and interfaces. It must not import FastAPI, Streamlit, SQLite, model SDKs, or retrieval implementations.
+领域核心：稳定、可复用的模型、错误与接口契约，是分层架构中最内层、依赖最少的部分。
+
+## 职责
+
+- 定义领域模型（文档、笔记、关系、检索契约等）、错误类型与接口
+- 作为应用服务与基础设施实现的共同契约基线
+
+## 必须遵守的边界
+
+- 领域代码**不得**导入 FastAPI、Streamlit、SQLite、模型 SDK 或检索实现
+- 依赖方向始终向内核收敛：基础设施 → 应用服务 → 领域
+
+## 相关
+
+- 应用服务：`src/application/`
+- 基础设施实现：`src/infrastructure/`
+- 架构总览：`docs/MindGraph-ARCH.md`

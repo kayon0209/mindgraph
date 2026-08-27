@@ -20,15 +20,17 @@
 </p>
 
 <p>
-  <a href="#quickstart">Quickstart</a> ·
   <a href="#why-mindgraph">Why MindGraph</a> ·
-  <a href="#mcp-for-ai-agents">MCP</a> ·
-  <a href="#how-it-works">Architecture</a> ·
+  <a href="#features">Features</a> ·
+  <a href="#tech-stack">Tech Stack</a> ·
+  <a href="#quickstart">Quickstart</a> ·
+  <a href="#usage-mcp">MCP</a> ·
+  <a href="#architecture">Architecture</a> ·
   <a href="#evaluation-and-boundaries">Evaluation</a> ·
-  <a href="./docs/PRODUCT_STRATEGY.md">Roadmap</a>
+  <a href="#faq">FAQ</a>
 </p>
 
-<img src="assets/hero-banner.jpg" alt="MindGraph" width="100%">
+<img src="assets/hero-banner.jpg" alt="MindGraph — Govern the evidence, then generate." width="100%">
 
 </div>
 
@@ -36,9 +38,9 @@ MindGraph turns a Markdown or Obsidian vault into a local evidence layer for peo
 
 The first vertical is policy-heavy knowledge such as expense, finance and compliance. The same evidence pipeline can support any Markdown knowledge base where freshness, permissions and traceability matter.
 
-## The failure MindGraph is built for
+## Why MindGraph
 
-**Question:** Which expense deadline applies on 2026-08-18: 30 days or 60 days?
+**The failure MindGraph is built for:** *Which expense deadline applies on 2026-08-18: 30 days or 60 days?*
 
 | Generic RAG | MindGraph |
 |---|---|
@@ -48,28 +50,49 @@ The first vertical is policy-heavy knowledge such as expense, finance and compli
 
 > **MindGraph's product principle: govern the evidence before generating the answer.**
 
-## Why MindGraph
+<div align="center">
 
-<table>
-<tr>
-<td width="25%" align="center"><b>Local-first</b><br><sub>SQLite and local indexes<br>Keep knowledge under your control</sub></td>
-<td width="25%" align="center"><b>Evidence-first</b><br><sub>Citations and retrieval traces<br>Return to the original source</sub></td>
-<td width="25%" align="center"><b>Version-aware</b><br><sub>Lifecycle and effective dates<br>Stop on conflicting evidence</sub></td>
-<td width="25%" align="center"><b>Agent-ready</b><br><sub>REST, SSE and MCP<br>Use from agent workflows</sub></td>
-</tr>
-</table>
+| | | | |
+|---|---|---|---|
+| **Local-first**<br><sub>SQLite and local indexes<br>Keep knowledge under your control</sub> | **Evidence-first**<br><sub>Citations and retrieval traces<br>Return to the original source</sub> | **Version-aware**<br><sub>Lifecycle and effective dates<br>Stop on conflicting evidence</sub> | **Agent-ready**<br><sub>REST, SSE and MCP<br>Use from agent workflows</sub> |
+
+</div>
+
+## Features
+
+### Retrieval & routing
 
 - **Hybrid retrieval:** BGE / FAISS dense search + BM25 sparse search + RRF fusion
 - **Adaptive routing:** selects an appropriate retrieval strategy from query intent
-- **Controlled graph expansion:** only human-confirmed relations can add evidence, and current graph gating keeps default graph disabled when ablation does not show a real gain
+- **Controlled graph expansion:** only human-confirmed relations can add evidence; graph gating keeps the default path disabled when ablation shows no real gain
+
+### Evidence & governance
+
 - **Grounded answers:** streaming responses with citations and retrieval traces
 - **Policy lifecycle:** stable `policy_key`, version, status and effective-date filtering
 - **Conflict-before-generation:** conflicting active versions stop the LLM call
 - **Governed access:** API key / OIDC, workspace / department ACLs and audit logs
-- **Evaluation ledger:** retrieval, answer trust, routing, graph gate, latency and cost in one history
+
+### Interfaces & evaluation
+
 - **Web and Obsidian clients:** ask, inspect evidence, review relations and compare runs
+- **Agent-ready APIs:** REST, SSE and a read-only MCP server
+- **Evaluation ledger:** retrieval, answer trust, routing, graph gate, latency and cost in one history
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Runtime | Python 3.11+ |
+| API | FastAPI (REST + SSE), MCP server |
+| Retrieval | BGE embeddings · FAISS (dense) · BM25 (sparse) · RRF fusion |
+| Storage | SQLite (WAL), versioned FAISS index |
+| Clients | Web workspace (Streamlit), Obsidian plugin |
+| Quality | pytest, Ruff, mypy (see `docs/DEPLOYMENT.md`) |
 
 ## Quickstart
+
+> **Prerequisite:** Python 3.11 or newer.
 
 ### Option A: verify the pipeline without keys
 
@@ -101,31 +124,7 @@ docker compose up --build
 | API | <http://127.0.0.1:8000> |
 | OpenAPI docs | <http://127.0.0.1:8000/api/docs> |
 
-## How it works
-
-```mermaid
-flowchart LR
-    A[Markdown / Obsidian] --> B[Parse, clean and govern]
-    B --> C[(SQLite WAL)]
-    B --> D[Versioned FAISS index]
-    Q[Person / AI agent] --> R[Adaptive retrieval router]
-    C --> R
-    D --> R
-    R --> F[Dense + Sparse + RRF]
-    F --> G{Evidence conflict?}
-    G -- Yes --> H[Stop and surface versions]
-    G -- No --> I[Confirmed relation expansion]
-    I --> J[LLM generation]
-    J --> K[Answer + Citation + Trace]
-```
-
-Status, effective-date, category and permission filters are shared by base retrieval and relation expansion. This prevents an archived document from re-entering a current answer through a graph edge.
-
-<div align="center">
-  <img src="assets/architecture.svg" alt="MindGraph architecture" width="92%">
-</div>
-
-## MCP for AI agents
+## Usage (MCP)
 
 MindGraph exposes a read-only MCP server with five tools:
 
@@ -162,6 +161,49 @@ Claude Desktop–style configuration:
 
 MCP is intentionally read-only today. Reviewed relation proposals, evidence feedback and evaluation-case write-back are on the roadmap.
 
+## Architecture
+
+```mermaid
+flowchart LR
+    A[Markdown / Obsidian] --> B[Parse, clean and govern]
+    B --> C[(SQLite WAL)]
+    B --> D[Versioned FAISS index]
+    Q[Person / AI agent] --> R[Adaptive retrieval router]
+    C --> R
+    D --> R
+    R --> F[Dense + Sparse + RRF]
+    F --> G{Evidence conflict?}
+    G -- Yes --> H[Stop and surface versions]
+    G -- No --> I[Confirmed relation expansion]
+    I --> J[LLM generation]
+    J --> K[Answer + Citation + Trace]
+```
+
+Status, effective-date, category and permission filters are shared by base retrieval and relation expansion. This prevents an archived document from re-entering a current answer through a graph edge.
+
+<div align="center">
+  <img src="assets/architecture.svg" alt="MindGraph architecture" width="92%">
+</div>
+
+## Repository layout
+
+```text
+src/
+  api/            FastAPI routes, auth, OIDC, middleware, MCP mount
+  application/    Application services (orchestration, chat, lifecycle)
+  domain/         Stable models, errors and interfaces
+  infrastructure/ Adapters: SQLite, parsers, model SDKs
+  retrieval/      Retrieval stages: embeddings, dense, sparse, fusion, pipeline
+  ui/             Streamlit client (api_client.py is the only backend entry)
+evaluation/       Golden dataset, retrieval/answer/routing/ablation evaluation
+demo-vault/       Public synthetic policies, workflows and cases
+docs/             Architecture, deployment, product strategy and ADRs
+scripts/          Validation, evaluation and ingestion utilities
+tests/            Regression and contract tests (pytest)
+web/              Web workspace
+obsidian-plugin/  Obsidian client
+```
+
 ## Evaluation and boundaries
 
 ```bash
@@ -170,7 +212,7 @@ python scripts/run_routing_evaluation.py
 python scripts/run_answer_evaluation.py --live --strategy hybrid
 ```
 
-The current frozen set (`mindgraph_golden_v2.jsonl`, version `2.2.0`) contains 12 hand-written policy cases covering replacement, thresholds, exceptions, cross-policy questions, no-answer cases and ambiguity. It scores citation F1, refusal correctness, version validity, required facts, forbidden facts, latency, tokens and estimated cost.
+The current frozen set (`mindgraph_golden_v2.jsonl`, version `2.2.0`) contains 54 approved cases derived from the synthetic demo vault and public handbooks. It covers replacement, thresholds, exceptions, cross-policy questions, graph-needed controls, ACL-restricted cases, no-answer cases and ambiguity. Retrieval reports Recall@K, Precision@K, MRR and nDCG@K; answer evaluation reports citation F1, refusal correctness, version validity, required facts, forbidden facts, ACL leakage, conflict accuracy, latency, tokens and estimated cost. These are local development/regression measurements, not production benchmark claims.
 
 ### What MindGraph is today
 
@@ -181,8 +223,7 @@ The current frozen set (`mindgraph_golden_v2.jsonl`, version `2.2.0`) contains 1
 ### What it is not yet
 
 - A complete entity-disambiguation and multi-hop knowledge-graph engine
-- Proven for production by a large benchmark—the current 12 cases are regression tests
-- A hosted enterprise SaaS
+- A hosted enterprise SaaS or a production-certified benchmark; the current 54 cases are local development/regression tests
 
 ## Project status
 
@@ -194,6 +235,24 @@ The current frozen set (`mindgraph_golden_v2.jsonl`, version `2.2.0`) contains 1
 | Web, Obsidian and read-only MCP | Stronger Ruff, mypy and coverage gates | Multi-hop reasoning |
 
 See [`docs/PRODUCT_STRATEGY.md`](docs/PRODUCT_STRATEGY.md) for the product boundary and roadmap.
+
+## FAQ
+
+**Does MindGraph require a model provider or API key?**
+
+No. The offline validation path (`Option A`) runs with deterministic fake embeddings and a fake LLM. You only configure a model provider in `.env` when you want real, grounded answers.
+
+**Why is MCP read-only?**
+
+MindGraph treats evidence as governed data. Writable operations (relation proposals, evidence feedback, evaluation write-back) are deliberately deferred to the roadmap so that an agent cannot silently modify the evidence layer.
+
+**How does MindGraph differ from a plain RAG pipeline?**
+
+It adds governance before generation: version/effective-date filters, ACL enforcement, conflict interception, and citations with retrieval traces. See [Why MindGraph](#why-mindgraph) for the failure scenario it addresses.
+
+**Where does the evaluation data come from?**
+
+The frozen golden set (`2.2.0`, 54 cases) is derived from the public synthetic `demo-vault/` and public handbooks. Metrics are local development/regression measurements, not production benchmark claims.
 
 ## Documentation
 
