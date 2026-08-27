@@ -181,7 +181,7 @@ def test_repository_v2_golden_dataset_is_valid_and_structurally_complete():
     """The checked-in V2 set remains an independently authored, typed fixture."""
     cases = load_golden_dataset()
 
-    assert len(cases) == 50
+    assert len(cases) == 54  # 50 + 4 Basecamp external_policy (approved 2026-08-27)
     assert {item["dataset_version"] for item in cases} == {"2.2.0"}
     assert {item["expected_behavior"] for item in cases} == {"answer", "abstain"}
     assert {item["split"] for item in cases} == {"development", "regression"}
@@ -219,6 +219,17 @@ def test_repository_v2_golden_dataset_is_valid_and_structurally_complete():
         item["gold_vault_paths"] if item["expected_behavior"] == "answer" else not item["gold_vault_paths"]
         for item in cases
     )
+    # 晋升门槛（机械校验）：approved 条目引用的原文必须存在于同步语料中，
+    # 防止评测 Recall 恒为 0 的无效条目混入 Golden。
+    knowledge_root = Path(__file__).resolve().parents[1] / "knowledge"
+    unreachable = [
+        (item["case_id"], path)
+        for item in cases
+        if item["expected_behavior"] == "answer"
+        for path in item["gold_vault_paths"]
+        if not (knowledge_root / path).is_file()
+    ]
+    assert not unreachable, f"golden entries reference missing vault files: {unreachable}"
 
 
 def test_candidate_dataset_contract_requires_pending_review_and_is_separate_from_golden():
