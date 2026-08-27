@@ -189,7 +189,7 @@ The current frozen set (`mindgraph_golden_v2.jsonl`, version `2.2.0`) contains 1
 | Now | Next | Later |
 |---|---|---|
 | Hybrid retrieval and adaptive routing | Structure-aware chunk inspection | Typed policy edges |
-| Version-conflict interception | 100+ layered evaluation cases | Entity-event dual graph |
+| Version-conflict interception | Golden set 50 → 60–80 layered cases | Entity-event dual graph |
 | ACL, OIDC and audit | Evidence feedback and writable MCP proposals | Community discovery |
 | Web, Obsidian and read-only MCP | Stronger Ruff, mypy and coverage gates | Multi-hop reasoning |
 

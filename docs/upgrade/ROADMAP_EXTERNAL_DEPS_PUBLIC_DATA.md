@@ -39,7 +39,7 @@
 
 ## 3. 建议推进顺序（把 6 项变成"5 Done + 1 诚实 Partial"）
 
-1. golden 推到 50–200：摄入 Mattermost/GitLab 公开 handbook（external_policy 管线已就位），人工标注。
+1. golden 推到 50–200：摄入 Mattermost/GitLab/Basecamp 公开 handbook（external_policy 管线已就位，三个 handbook 已入库），人工标注。
 2. Docker 起 Keycloak，接 OIDC，跑 JWK 轮换 + 失效签名拒绝 E2E。
 3. 加 OCR 步骤（Tesseract），用公开扫描 PDF 跑 layout/表格保真。
 4. 写连接器 ownership 迁移脚本，合成数据验证。

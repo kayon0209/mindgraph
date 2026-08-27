@@ -3,11 +3,11 @@
 ## Corpus
 
 - Knowledge root: `knowledge/`
-- Indexed public sources: Mattermost Handbook and GitLab Handbook
-- Basecamp: excluded because the staged GitHub HTML was an error page
-- Current FAISS index: `mg-20260827T065729Z-60e900bd`
-- Total indexed chunks: 266
-- Public handbook chunks: 185
+- Indexed public sources: Mattermost Handbook, GitLab Handbook, and Basecamp / 37signals Handbook
+- Basecamp source: clean raw Markdown fetched through the `api.github.com` contents API fallback and retained at `data-sources/handbooks/basecamp/benefits-and-perks.md`
+- Current FAISS index: `mg-20260827T074106Z-84956855`
+- Total indexed chunks: 303
+- Public handbook chunks: 222
 - Golden dataset: 50 cases, version `2.2.0`
 - Evaluation strategy: hybrid
 - Top-k: 5
@@ -17,8 +17,8 @@
 
 | Mode | Recall@5 | MRR | Precision@5 |
 |---|---:|---:|---:|
-| Graph off | 0.8889 | 0.8262 | 0.2333 |
-| Graph on | 0.8889 | 0.8262 | 0.2333 |
+| Graph off | 0.8889 | 0.8143 | 0.2333 |
+| Graph on | 0.8889 | 0.8143 | 0.2333 |
 
 The serialized results are:
 
@@ -47,7 +47,8 @@ Overall missed cases:
 
 ## Interpretation
 
-- The report is reproducible and generated against the local indexed corpus.
+- The report is reproducible and generated against the local indexed corpus after Basecamp was added.
 - It is not a production-quality benchmark because the 50 cases include development cases and the external subset is only four cases.
 - The graph switch produced no measurable difference on this corpus; Graph should remain opt-in.
+- Adding Basecamp increased the corpus to 303 chunks but did not alter the existing Mattermost external failure signal.
 - The external handbook results justify adding multilingual aliases or translated query variants before promoting the external corpus to a quality gate.

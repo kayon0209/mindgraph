@@ -189,7 +189,7 @@ python scripts/run_answer_evaluation.py --live --strategy hybrid
 | 已完成 | 下一步 | 后续探索 |
 |---|---|---|
 | Hybrid 检索与自适应路由 | 结构感知分片检查 | Typed policy edges |
-| 版本冲突生成前拦截 | 100+ 分层评测案例 | 实体—事件双图 |
+| 版本冲突生成前拦截 | Golden 集 50 → 60–80 条分层案例 | 实体—事件双图 |
 | ACL、OIDC 与审计 | 证据反馈与可写 MCP 提议 | 社区发现 |
 | Web、Obsidian 与只读 MCP | 更完整的 Ruff、mypy 与覆盖率门禁 | 多跳推理 |
 

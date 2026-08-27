@@ -46,7 +46,8 @@
 ```
 data-sources/handbooks/mattermost/how-to-get-paid.html   (602 KB, 真实内容)
 data-sources/handbooks/gitlab/expenses.html              (2.3 MB, 真实内容)
-data-sources/handbooks/basecamp/  (待下载 benefits-and-perks.md 等)
+data-sources/handbooks/basecamp/benefits-and-perks.md    (13.7 KB, 真实内容; 经 api.github.com contents API 获取的 clean markdown)
+data-sources/handbooks/basecamp/basecamp-benefits.html   (323 KB, GitHub blob 视图页)
 ```
 
 ---
@@ -162,9 +163,11 @@ export const options = {
 ```
 data-sources/
 ├── handbooks/
-│   ├── mattermost/how-to-get-paid.html   ✅ 602KB 真实（解锁 external_policy 4 条候选）
+│   ├── mattermost/how-to-get-paid.html   ✅ 602KB 真实（解锁 external_policy 4 条候选，已 approved）
 │   ├── gitlab/expenses.html              ✅ 2.3MB 真实
-│   └── basecamp/basecamp-benefits.html   ✅ 323KB 真实（GitHub blob 视图，含 Expense Account/Home Office/co-working）
+│   └── basecamp/
+│       ├── benefits-and-perks.md         ✅ 13.7KB 真实（经 api.github.com contents API 获取的 clean markdown）
+│       └── basecamp-benefits.html        ✅ 323KB 真实（GitHub blob 视图页）
 └── ocr/chinese-gov/
     ├── ziran-ziyuan-tingsheng-guiding.pdf ✅ 13页 带文字层（PDF文本提取测试）
     └── guowuyuan-gongbao-202524.pdf       ✅ 61页 带文字层（PDF文本提取测试）
