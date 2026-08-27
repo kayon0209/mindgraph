@@ -1,16 +1,19 @@
-"""本地 Embedding 模型（BAAI/bge-large-zh-v1.5），无需 API 调用。"""
+"""本地 Embedding 模型（与当前检索配置保持一致），无需 API 调用。"""
 from __future__ import annotations
 
+import logging
+import os
 from typing import List, Sequence, TYPE_CHECKING
 
 import numpy as np
 
+from retrieval.embeddings import DEFAULT_BGE_MODEL
+
 if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer
 
-# 使用中文效果最好的开源模型
-# 首次运行会自动下载（约 1.2GB）
-MODEL_NAME = "BAAI/bge-large-zh-v1.5"
+logger = logging.getLogger("mindgraph.embedding.local")
+MODEL_NAME = os.getenv("BGE_MODEL_NAME", DEFAULT_BGE_MODEL)
 
 # 全局缓存，避免重复加载
 _model = None
@@ -21,9 +24,12 @@ def _get_model():
     global _model
     if _model is None:
         from sentence_transformers import SentenceTransformer
-        print(f"正在加载本地 Embedding 模型: {MODEL_NAME}...")
+        logger.info("loading_local_embedding_model", extra={"model": MODEL_NAME})
         _model = SentenceTransformer(MODEL_NAME)
-        print(f"模型加载完成，维度: {_model.get_sentence_embedding_dimension()}")
+        logger.info(
+            "local_embedding_model_loaded",
+            extra={"model": MODEL_NAME, "dimension": _model.get_sentence_embedding_dimension()},
+        )
     return _model
 
 
