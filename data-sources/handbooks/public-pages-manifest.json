@@ -1,0 +1,62 @@
+[
+  {
+    "key": "mattermost-spend-company-money",
+    "title": "Mattermost Handbook - How to spend company money",
+    "org": "Mattermost",
+    "url": "https://handbook.mattermost.com/operations/finance/staff-member-expenses/how-to-spend-company-money.md",
+    "path": "data-sources/handbooks/mattermost/how-to-spend-company-money.md",
+    "license": "CC-BY-SA-4.0",
+    "bytes": 18857,
+    "sha256": "2e937204f7b52e0d58fe68d60ce82ee228cb803786f61f4cf851e8f2114e8a8b"
+  },
+  {
+    "key": "mattermost-corporate-card",
+    "title": "Mattermost Handbook - Corporate credit card policy",
+    "org": "Mattermost",
+    "url": "https://handbook.mattermost.com/operations/finance/staff-member-expenses/corporate-credit-card-policy.md",
+    "path": "data-sources/handbooks/mattermost/corporate-credit-card-policy.md",
+    "license": "CC-BY-SA-4.0",
+    "bytes": 3072,
+    "sha256": "bf3c1afb0d30e6c199645b3302359ae9125cdb9c78bef71a1acb7e4e99c296ff"
+  },
+  {
+    "key": "gitlab-travel-expense",
+    "title": "GitLab Handbook - Global Travel and Expense Policy",
+    "org": "GitLab",
+    "url": "https://handbook.gitlab.com/handbook/finance/expenses/",
+    "path": "data-sources/handbooks/gitlab/expenses-additional.html",
+    "license": "CC-BY-SA-4.0",
+    "bytes": 2389326,
+    "sha256": "80d6b05dbe29897044b8896a38cd067a1f17280368155ecb294ff6344020c8c9"
+  },
+  {
+    "key": "gitlab-remote-work",
+    "title": "GitLab Handbook - All-Remote Work",
+    "org": "GitLab",
+    "url": "https://handbook.gitlab.com/handbook/company/culture/all-remote/",
+    "path": "data-sources/handbooks/gitlab/all-remote.html",
+    "license": "CC-BY-SA-4.0",
+    "bytes": 2327774,
+    "sha256": "3ca8ab03234ffb07c882e148b0a3f344675d8fb38904f48013cd1df3557338d4"
+  },
+  {
+    "key": "basecamp-holidays",
+    "title": "Basecamp Handbook - Holidays",
+    "org": "Basecamp",
+    "url": "https://github.com/basecamp/handbook/blob/master/getting-started.md",
+    "path": "data-sources/handbooks/basecamp/holidays.md",
+    "license": "MIT",
+    "bytes": 3182,
+    "sha256": "85c289c06720331588ccb25df3be74a827f88d9135a8036fc19c5df8dac7ac53"
+  },
+  {
+    "key": "basecamp-remote-work",
+    "title": "Basecamp Handbook - Remote Work",
+    "org": "Basecamp",
+    "url": "https://github.com/basecamp/handbook/blob/master/how-we-work.md",
+    "path": "data-sources/handbooks/basecamp/remote-work.md",
+    "license": "MIT",
+    "bytes": 6608,
+    "sha256": "f2210e454b3cc2078edcbb93af3a442da11ba54bddea099f7011faf4d8083625"
+  }
+]

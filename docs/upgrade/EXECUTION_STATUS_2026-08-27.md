@@ -3,22 +3,18 @@
 ## Completed locally
 
 - Mattermost, GitLab, and Basecamp public handbook content converted to Markdown under `knowledge/external/public/`.
-  - Basecamp was fetched via the `api.github.com` contents API fallback (raw.githubusercontent.com DNS is unreachable
-    in this environment); raw file retained at `data-sources/handbooks/basecamp/benefits-and-perks.md` (13,718 bytes),
-    verified as clean markdown, not an HTML wrapper.
-- All three Markdown sources synced into the local SQLite notes table (`policy_status=active` for all three) and indexed in FAISS.
-- Current index: `mg-20260827T074106Z-84956855`; 303 chunks total, 222 public-handbook chunks.
-- Golden dataset contains 50 validated records, including four Mattermost public-source cases.
-- Public fact review and license ledger recorded in `docs/upgrade/PUBLIC_DATA_FACT_REVIEW_2026-08-27.md` and `data-sources/LICENSES.md`.
-- Reproducible retrieval report generated in `docs/upgrade/RETRIEVAL_PUBLIC_DATA_REPORT_2026-08-27.md`.
-- Overall local hybrid results: Recall@5 0.8889, MRR 0.8143, Precision@5 0.2333.
-- External Mattermost subset: Recall@5 0.25, MRR 0.25. This is a recorded failure signal; no quality claim is made.
-- Graph ON/OFF had no difference on this corpus: Recall@5 0.8889 and MRR 0.8143 in both modes.
+- Added six additional public pages: two Mattermost, two GitLab, and two Basecamp pages.
+- Public-page manifest with source URL, license, byte length, and SHA-256 is stored at `data-sources/handbooks/public-pages-manifest.json`.
+- All public sources synced into SQLite; 404 notes total, with six new pages pending then indexed successfully.
+- Current FAISS index: `mg-20260827T092533Z-db09b80a`; 581 chunks total, 500 public-handbook chunks.
+- Incremental build reused 472 embeddings and generated 109 new embeddings.
+- Frozen golden dataset remains 54 approved cases, version `2.2.0`.
+- Generated 10 new public-handbook candidate cases at `evaluation/datasets/public_handbook_candidates_v1.jsonl`; all are `validation_status=pending` and pass the candidate contract. They were not promoted to approved Golden.
+- Frozen local hybrid results after corpus expansion: Recall@5 0.8551, MRR 0.7717, Precision@5 0.2217.
+- Graph ON/OFF: Recall@5 0.8551 in both modes; MRR 0.7717 vs 0.7742. This is an observed local result, not a default-enable recommendation.
+- External approved subset is now 8 cases (Mattermost 4 + Basecamp 4), with Recall@5 0.50 in both graph modes.
+- Mattermost-only diagnostic: BM25 0/4, Dense 1/4, Hybrid 1/4. The low score cannot be attributed solely to the Chinese embedding model.
 - Full regression: 282 passed, 2 skipped. Critical Ruff checks passed.
-- `scripts/ingest_public_handbooks.py` made idempotent: regenerating preserves the existing `mindgraph_id` and emits
-  `status: active`, so re-running produces byte-identical files (verified `git diff` clean for gitlab/mattermost).
-  `scripts/fetch_basecamp_raw.py` retries raw.githubusercontent.com first, then falls back to the `api.github.com`
-  contents API.
 
 ## Not completed because local prerequisites are absent
 
@@ -26,11 +22,12 @@
 - Docker Desktop engine is not running, so Keycloak was not started and JWK rotation E2E was not executed.
 - k6 executable is not installed and no personal deployment URL was supplied, so deployment load testing was not executed.
 
-## Reproduction entry points (verified 2026-08-27)
+## Reproduction entry points
 
 ```text
-python scripts/fetch_basecamp_raw.py          # raw 优先，失败自动走 api.github.com 兜底
+python scripts/fetch_public_handbook_pages.py
 python scripts/ingest_public_handbooks.py
+python scripts/generate_public_candidates.py
 python scripts/ingest_knowledge.py
 python scripts/build_index.py
 python scripts/run_external_eval2.py

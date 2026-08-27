@@ -4,51 +4,51 @@
 
 - Knowledge root: `knowledge/`
 - Indexed public sources: Mattermost Handbook, GitLab Handbook, and Basecamp / 37signals Handbook
-- Basecamp source: clean raw Markdown fetched through the `api.github.com` contents API fallback and retained at `data-sources/handbooks/basecamp/benefits-and-perks.md`
-- Current FAISS index: `mg-20260827T074106Z-84956855`
-- Total indexed chunks: 303
-- Public handbook chunks: 222
-- Golden dataset: 50 cases, version `2.2.0`
+- Additional pages: two per publisher, captured with `scripts/fetch_public_handbook_pages.py`
+- Current FAISS index: `mg-20260827T092533Z-db09b80a`
+- Total indexed chunks: 581
+- Public handbook chunks: 500
+- Frozen Golden dataset: 54 approved cases, version `2.2.0`
+- New candidate dataset: 10 pending cases, version `2.3.0`; not included in frozen results
 - Evaluation strategy: hybrid
 - Top-k: 5
 - Embedding: local `BAAI/bge-small-zh-v1.5`, dimension 512
 
-## Results
+## Frozen Golden results after corpus expansion
 
 | Mode | Recall@5 | MRR | Precision@5 |
 |---|---:|---:|---:|
-| Graph off | 0.8889 | 0.8143 | 0.2333 |
-| Graph on | 0.8889 | 0.8143 | 0.2333 |
+| Graph off | 0.8551 | 0.7717 | 0.2217 |
+| Graph on | 0.8551 | 0.7742 | 0.2217 |
 
-The serialized results are:
+The corpus expansion changed the baseline from the previous 303-chunk run. Recall and precision decreased because more public chunks create additional retrieval competition. The files are:
 
 - `evaluation/results/retrieval_external_graph_off.json`
 - `evaluation/results/retrieval_external_graph_on.json`
 
-## Public Mattermost subset
+## Approved external subset
+
+The approved `external_policy` subset contains 8 cases: 4 Mattermost and 4 Basecamp.
 
 | Mode | Cases | Recall@5 | MRR |
 |---|---:|---:|---:|
-| Graph off | 4 | 0.2500 | 0.2500 |
-| Graph on | 4 | 0.2500 | 0.2500 |
+| Graph off | 8 | 0.5000 | not aggregated in console output |
+| Graph on | 8 | 0.5000 | not aggregated in console output |
 
-This low external-subset score is a useful failure signal, not a reason to claim success. Three of four Chinese queries did not retrieve the English Mattermost source in the current local embedding/query configuration. The ROW query retrieved it because it contains more distinctive entity terms.
+## Mattermost-only diagnostic
 
-## Failure classification
+| Strategy | Cases | Recall@5 | MRR | Precision@5 |
+|---|---:|---:|---:|---:|
+| BM25 | 4 | 0.0000 | 0.0000 | 0.0000 |
+| Dense | 4 | 0.2500 | 0.1250 | 0.0500 |
+| Hybrid | 4 | 0.2500 | 0.2500 | 0.0500 |
 
-Overall missed cases:
+BM25 also fails all four Mattermost cases. Therefore the low score is not proven to be caused only by the Chinese BGE model; Chinese-to-English lexical mismatch and query-to-chunk alignment are also plausible contributors. Multilingual embeddings or translated query variants remain reasonable next experiments, not completed fixes.
 
-- `MG-ENT-002`: version/supersession evidence not fully in Top-5
-- `MG-ENT-010`: case reasoning evidence not fully in Top-5
-- `cand-graph-5-38de0a2abc`: version relation query
-- `ext-mattermost-pay-usca-2026-08-27`
-- `ext-mattermost-pay-uk-2026-08-27`
-- `ext-mattermost-pay-de-2026-08-27`
+## Graph interpretation
 
-## Interpretation
+Graph ON/OFF does not show Recall@5 gain in this run, while MRR changes from 0.7717 to 0.7742. The database has 6 typed confirmed governance relations, but the graph corpus is still small. The result is a real local observation, not evidence that the graph is empty or that Graph has no possible value.
 
-- The report is reproducible and generated against the local indexed corpus after Basecamp was added.
-- It is not a production-quality benchmark because the 50 cases include development cases and the external subset is only four cases.
-- The graph switch produced no measurable difference on this corpus; Graph should remain opt-in.
-- Adding Basecamp increased the corpus to 303 chunks but did not alter the existing Mattermost external failure signal.
-- The external handbook results justify adding multilingual aliases or translated query variants before promoting the external corpus to a quality gate.
+## Candidate governance
+
+The 10 new public cases remain in `evaluation/datasets/public_handbook_candidates_v1.jsonl` with `validation_status=pending` and `source=generated_candidate`. Human source review is required before promotion to the approved Golden dataset.

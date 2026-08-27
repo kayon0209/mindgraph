@@ -16,6 +16,42 @@ SRC = {
         "https://handbook.mattermost.com/operations/finance/staff-member-expenses/how-to-get-paid",
         "Mattermost",
     ),
+    "mattermost-spend-company-money": (
+        Path("data-sources/handbooks/mattermost/how-to-spend-company-money.md"),
+        "Mattermost Handbook - How to spend company money",
+        "https://handbook.mattermost.com/operations/finance/staff-member-expenses/how-to-spend-company-money.md",
+        "Mattermost",
+    ),
+    "mattermost-corporate-card": (
+        Path("data-sources/handbooks/mattermost/corporate-credit-card-policy.md"),
+        "Mattermost Handbook - Corporate credit card policy",
+        "https://handbook.mattermost.com/operations/finance/staff-member-expenses/corporate-credit-card-policy.md",
+        "Mattermost",
+    ),
+    "gitlab-travel-expense": (
+        Path("data-sources/handbooks/gitlab/expenses-additional.html"),
+        "GitLab Handbook - Global Travel and Expense Policy (additional capture)",
+        "https://handbook.gitlab.com/handbook/finance/expenses/",
+        "GitLab",
+    ),
+    "gitlab-remote-work": (
+        Path("data-sources/handbooks/gitlab/all-remote.html"),
+        "GitLab Handbook - All-Remote Work",
+        "https://handbook.gitlab.com/handbook/company/culture/all-remote/",
+        "GitLab",
+    ),
+    "basecamp-holidays": (
+        Path("data-sources/handbooks/basecamp/holidays.md"),
+        "Basecamp Handbook - Holidays",
+        "https://github.com/basecamp/handbook/blob/master/holidays.md",
+        "Basecamp",
+    ),
+    "basecamp-remote-work": (
+        Path("data-sources/handbooks/basecamp/remote-work.md"),
+        "Basecamp Handbook - Remote Work",
+        "https://github.com/basecamp/handbook/blob/master/remote-work.md",
+        "Basecamp",
+    ),
     "gitlab": (
         Path("data-sources/handbooks/gitlab/expenses.html"),
         "GitLab Handbook - Expenses",

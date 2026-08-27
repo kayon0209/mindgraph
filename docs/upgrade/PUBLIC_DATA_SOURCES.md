@@ -48,6 +48,13 @@ data-sources/handbooks/mattermost/how-to-get-paid.html   (602 KB, 真实内容)
 data-sources/handbooks/gitlab/expenses.html              (2.3 MB, 真实内容)
 data-sources/handbooks/basecamp/benefits-and-perks.md    (13.7 KB, 真实内容; 经 api.github.com contents API 获取的 clean markdown)
 data-sources/handbooks/basecamp/basecamp-benefits.html   (323 KB, GitHub blob 视图页)
+data-sources/handbooks/mattermost/how-to-spend-company-money.md (18.4 KB, 官方 Markdown)
+data-sources/handbooks/mattermost/corporate-credit-card-policy.md (3.0 KB, 官方 Markdown)
+data-sources/handbooks/gitlab/expenses-additional.html (2.3 MB, 官方 HTML)
+data-sources/handbooks/gitlab/all-remote.html (2.2 MB, 官方 HTML)
+data-sources/handbooks/basecamp/holidays.md (3.1 KB, GitHub Contents API)
+data-sources/handbooks/basecamp/remote-work.md (6.5 KB, GitHub Contents API)
+data-sources/handbooks/public-pages-manifest.json (来源、许可证、字节数、SHA-256)
 ```
 
 ---
