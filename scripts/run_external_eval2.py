@@ -15,6 +15,10 @@ db.initialize()
 prov = BGEEmbeddingProvider()
 print(f"provider {prov.model_name} dim={prov.dimension}")
 rf.BGEEmbeddingProvider = lambda: prov
+# src/ 与仓库根同时在 sys.path 时，eval 的 `from src.retrieval.types import ...`
+# 会与管线的裸 `retrieval.types` 形成两套模块；统一为同一类对象，避免 isinstance 失配。
+import evaluation.mindgraph_retrieval_eval as _eval
+_eval.RetrievalTrace = __import__("retrieval.types", fromlist=["RetrievalTrace"]).RetrievalTrace
 from infrastructure.retrieval_factory import create_mindgraph_retrieval_pipeline
 index_root = Path(config.ROOT)/"data/retrieval_indexes"
 graph_store = MindGraphGraphStore(db)

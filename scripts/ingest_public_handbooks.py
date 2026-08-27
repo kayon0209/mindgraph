@@ -1,4 +1,8 @@
-"""Convert public handbook HTML to Markdown and place under knowledge/external/public/."""
+"""Convert public handbook HTML to Markdown and place under knowledge/external/public/.
+
+Idempotency: preserves existing mindgraph_id from the output file (if it already
+has one) and always emits status: active, so re-running is safe.
+"""
 import re
 import hashlib
 from pathlib import Path
@@ -28,7 +32,16 @@ SRC = {
 DST = Path("knowledge/external/public")
 DST.mkdir(parents=True, exist_ok=True)
 
-def html_to_md(html: str, title: str, url: str, org: str) -> str:
+
+def _existing_mid(out: Path) -> str | None:
+    """Extract mindgraph_id from an existing output file, if present."""
+    if not out.exists():
+        return None
+    m = re.search(r"mindgraph_id:\s*([0-9a-f]{32})", out.read_text(encoding="utf-8", errors="ignore"))
+    return m.group(1) if m else None
+
+
+def html_to_md(html: str, title: str, url: str, org: str, existing_id: str | None) -> str:
     soup = BeautifulSoup(html, "lxml")
     for tag in soup(["script", "style", "nav", "footer", "header", "noscript", "svg"]):
         tag.decompose()
@@ -45,7 +58,10 @@ def html_to_md(html: str, title: str, url: str, org: str) -> str:
     body = body.strip()
     if len(body) > 80000:
         body = body[:80000] + "\n\n...[truncated for indexing]..."
+
+    mid = existing_id or hashlib.sha256(body.encode()).hexdigest()[:32]
     front = f"""---
+mindgraph_id: {mid}
 title: "{title}"
 source_url: {url}
 source_org: {org}
@@ -53,6 +69,7 @@ license: "CC-BY-SA-4.0 (GitLab/Mattermost) / MIT (Basecamp) - see data-sources/L
 ingest_date: 2026-08-27
 ingest_tool: scripts/ingest_public_handbooks.py
 original_file: data-sources/handbooks/{org.lower()}/...
+status: active
 ---
 
 # {title}
@@ -63,8 +80,10 @@ original_file: data-sources/handbooks/{org.lower()}/...
 """
     return front + body + "\n"
 
-def md_front(title: str, url: str, org: str, orig: str, body: str) -> str:
-    mid = hashlib.sha256(body.encode()).hexdigest()[:32]
+
+def md_front(title: str, url: str, org: str, orig: str, body: str, existing_id: str | None) -> str:
+    mid = existing_id or hashlib.sha256(body.encode()).hexdigest()[:32]
+    orig_posix = str(Path(orig).as_posix())  # normalize backslashes on Windows
     return f"""---
 mindgraph_id: {mid}
 title: "{title}"
@@ -73,7 +92,8 @@ source_org: {org}
 license: "CC-BY-SA-4.0 (GitLab/Mattermost) / MIT (Basecamp) - see data-sources/LICENSES.md"
 ingest_date: 2026-08-27
 ingest_tool: scripts/ingest_public_handbooks.py
-original_file: {orig}
+original_file: {orig_posix}
+status: active
 ---
 
 # {title}
@@ -86,15 +106,17 @@ original_file: {orig}
 
 for key, (path, title, url, org) in SRC.items():
     text = path.read_text(encoding="utf-8", errors="ignore")
+    out = DST / f"{key}.md"
+    existing_id = _existing_mid(out)
+
     if path.suffix.lower() in (".md", ".markdown"):
-        # clean raw markdown source (e.g. Basecamp benefits-and-perks.md fetched via api.github.com)
         body = text.strip()
         if body.startswith("# "):
-            body = body.split("\n", 1)[1].strip()  # raw 自带 H1 由 front 标题承接
-        md = md_front(title, url, org, str(path), body) + body + "\n"
+            body = body.split("\n", 1)[1].strip()
+        md = md_front(title, url, org, str(path), body, existing_id) + body + "\n"
     else:
-        md = html_to_md(text, title, url, org)
-    out = DST / f"{key}.md"
+        md = html_to_md(text, title, url, org, existing_id)
+
     out.write_text(md, encoding="utf-8")
     print(f"{key} -> {out} len={len(md)} sha={hashlib.sha256(md.encode()).hexdigest()[:8]}")
 
