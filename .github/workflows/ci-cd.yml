@@ -33,7 +33,7 @@ jobs:
         run: ruff check src/ scripts/ tests/ --config pyproject.toml --select F821,F822,F823,E902
 
       - name: Mypy type check
-        run: mypy src/ --ignore-missing-imports --no-strict-optional || true
+        run: mypy src/ --ignore-missing-imports --no-strict-optional
 
   # ── Unit Tests ──
   test:
@@ -220,10 +220,10 @@ jobs:
           pip install bandit safety
 
       - name: Bandit security scan
-        run: bandit -r src/ -c pyproject.toml -f json -o bandit-report.json || true
+        run: bandit -r src/ -c pyproject.toml -f json -o bandit-report.json
 
       - name: Safety dependency scan
-        run: safety check --ignore=70612 || true
+        run: safety check --ignore=70612
 
       - name: Upload security reports
         if: always()

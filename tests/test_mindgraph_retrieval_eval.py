@@ -320,7 +320,7 @@ def test_metrics_and_stage_attribution():
     }
     result = evaluate_retrieval_cases(cases, lambda c: traces[c["case_id"]], top_k=2)
     rows = {row["case_id"]: row for row in result["details"]}
-    assert rows["final"]["metrics"] == {"recall_at_k": 0.5, "precision_at_k": 0.5, "mrr": 0.5}
+    assert rows["final"]["metrics"] == {"recall_at_k": 0.5, "precision_at_k": 0.5, "mrr": 0.5, "ndcg_at_k": 0.3869}
     assert rows["final"]["evidence_stages"] == {"a.md": "final", "b.md": "not_retrieved"}
     assert rows["final"]["failure_stage"] == "not_retrieved"
     assert rows["retrieved"]["evidence_stages"] == {"a.md": "retrieved_not_ranked"}
@@ -368,10 +368,52 @@ def test_precision_uses_k_for_short_results_and_mrr_uses_full_ranking():
     result = evaluate_retrieval_cases(cases, lambda value: traces[value["case_id"]], top_k=2)
     rows = {row["case_id"]: row for row in result["details"]}
 
-    assert rows["short"]["metrics"] == {"recall_at_k": 1.0, "precision_at_k": 0.5, "mrr": 1.0}
-    assert rows["beyond-k"]["metrics"] == {"recall_at_k": 0.0, "precision_at_k": 0.0, "mrr": 0.3333}
+    assert rows["short"]["metrics"] == {"recall_at_k": 1.0, "precision_at_k": 0.5, "mrr": 1.0, "ndcg_at_k": 1.0}
+    assert rows["beyond-k"]["metrics"] == {"recall_at_k": 0.0, "precision_at_k": 0.0, "mrr": 0.3333, "ndcg_at_k": 0.0}
     assert rows["beyond-k"]["evidence_stages"] == {"gold.md": "final"}
     assert rows["beyond-k"]["failure_stage"] == "ranked_not_final"
+
+
+def test_retrieval_report_records_observed_graph_activation():
+    graph_case = case("graph-case", paths=["linked.md"])
+    graph_case["graph_needed"] = True
+    graph_case["expected_relations"] = [{"source": "root", "target": "linked", "type": "related_to"}]
+    retrieval_trace = trace([], [], [], [], ["root.md", "linked.md"])
+    retrieval_trace.graph_enabled = True
+    retrieval_trace.graph_hops = 1
+    retrieval_trace.graph_links = [{"relation_id": "rel-1"}]
+    retrieval_trace.candidate_counts = {"final": 2, "graph_expanded": 1}
+
+    result = evaluate_retrieval_cases([graph_case], lambda _case: retrieval_trace, top_k=2)
+
+    assert result["details"][0]["graph"] == {
+        "enabled": True,
+        "hops": 1,
+        "expanded_candidates": 1,
+        "relation_ids": ["rel-1"],
+    }
+    assert result["graph_diagnostics"] == {
+        "enabled_cases": 1,
+        "activated_cases": 1,
+        "expanded_candidates": 1,
+        "activation_rate": 1.0,
+        "comparable_for_graph_gain": True,
+        "limitations": [],
+    }
+
+
+def test_graph_enabled_report_without_expansion_is_not_comparable_for_gain():
+    cases = [case("no-expansion", paths=["root.md"])]
+    retrieval_trace = trace([], [], [], [], ["root.md"])
+    retrieval_trace.graph_enabled = True
+    retrieval_trace.candidate_counts = {"final": 1, "graph_expanded": 0}
+
+    result = evaluate_retrieval_cases(cases, lambda _case: retrieval_trace, top_k=1)
+
+    assert result["graph_diagnostics"]["enabled_cases"] == 1
+    assert result["graph_diagnostics"]["activated_cases"] == 0
+    assert result["graph_diagnostics"]["comparable_for_graph_gain"] is False
+    assert result["graph_diagnostics"]["limitations"] == ["graph_enabled_but_no_expansion_observed"]
 
 
 def test_abstain_is_visible_but_not_scored_and_questions_are_opt_in():

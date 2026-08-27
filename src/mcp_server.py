@@ -39,6 +39,14 @@ MAX_LIST_LIMIT = 200
 MAX_SEARCH_TOP_K = 20
 
 
+class InvalidToolArguments(ValueError):
+    pass
+
+
+class MCPAuthenticationRequired(PermissionError):
+    pass
+
+
 def _utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -56,6 +64,7 @@ def _tools() -> list[dict[str, Any]]:
                     "department": {"type": "string"},
                     "limit": {"type": "integer", "default": 50, "minimum": 1, "maximum": MAX_LIST_LIMIT},
                 },
+                "additionalProperties": False,
             },
         },
         {
@@ -63,8 +72,9 @@ def _tools() -> list[dict[str, Any]]:
             "description": "获取单篇笔记详情（含 confirmed 关系）。越权访问返回 not_found。",
             "inputSchema": {
                 "type": "object",
-                "properties": {"note_id": {"type": "string"}},
+                "properties": {"note_id": {"type": "string", "minLength": 1}},
                 "required": ["note_id"],
+                "additionalProperties": False,
             },
         },
         {
@@ -73,17 +83,18 @@ def _tools() -> list[dict[str, Any]]:
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string"},
+                    "query": {"type": "string", "minLength": 1},
                     "top_k": {"type": "integer", "default": 5, "minimum": 1, "maximum": MAX_SEARCH_TOP_K},
                     "strategy": {"type": "string", "enum": ["dense", "bm25", "hybrid", "hybrid_rerank"]},
                 },
                 "required": ["query"],
+                "additionalProperties": False,
             },
         },
         {
             "name": "mindgraph_evaluation_overview",
             "description": "返回评测运行概览与最近结果（只读）。",
-            "inputSchema": {"type": "object", "properties": {}},
+            "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
         },
         {
             "name": "mindgraph_list_relations",
@@ -91,16 +102,54 @@ def _tools() -> list[dict[str, Any]]:
             "inputSchema": {
                 "type": "object",
                 "properties": {"limit": {"type": "integer", "default": 50, "minimum": 1, "maximum": MAX_LIST_LIMIT}},
+                "additionalProperties": False,
             },
         },
     ]
 
 
+def _validate_tool_arguments(name: object, arguments: object) -> tuple[str, dict[str, Any]]:
+    if not isinstance(name, str):
+        raise InvalidToolArguments
+    tool = next((item for item in _tools() if item["name"] == name), None)
+    if tool is None or not isinstance(arguments, dict):
+        raise InvalidToolArguments
+
+    schema = tool["inputSchema"]
+    properties = schema.get("properties", {})
+    required = schema.get("required", [])
+    if any(key not in arguments for key in required):
+        raise InvalidToolArguments
+    if schema.get("additionalProperties") is False and any(key not in properties for key in arguments):
+        raise InvalidToolArguments
+
+    for key, value in arguments.items():
+        rule = properties[key]
+        expected_type = rule.get("type")
+        if expected_type == "string":
+            if not isinstance(value, str):
+                raise InvalidToolArguments
+            if rule.get("minLength") and len(value.strip()) < int(rule["minLength"]):
+                raise InvalidToolArguments
+        elif expected_type == "integer":
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise InvalidToolArguments
+            if "minimum" in rule and value < int(rule["minimum"]):
+                raise InvalidToolArguments
+            if "maximum" in rule and value > int(rule["maximum"]):
+                raise InvalidToolArguments
+        if "enum" in rule and value not in rule["enum"]:
+            raise InvalidToolArguments
+    return name, arguments
+
+
 def _call_tool(name: str, arguments: dict[str, Any], principal: dict[str, Any] | None = None) -> dict[str, Any]:
     """Execute a named tool with ACL-aware scope and audit."""
+    if principal is None:
+        raise MCPAuthenticationRequired
     container = get_container()
     database = container.database
-    scope = build_access_scope(principal) if principal else None
+    scope = build_access_scope(principal)
     actor = (principal or {}).get("name") or (principal or {}).get("username") or "anonymous"
     request_id = uuid.uuid4().hex
 
@@ -262,21 +311,39 @@ def handle_jsonrpc(message: dict[str, Any], principal: dict[str, Any] | None = N
         return {"jsonrpc": JSONRPC_VERSION, "id": msg_id, "result": {"tools": _tools()}}
 
     if method == "tools/call":
-        tool_name = (message.get("params") or {}).get("name")
-        arguments = (message.get("params") or {}).get("arguments") or {}
+        params = message.get("params")
         try:
+            if principal is None:
+                raise MCPAuthenticationRequired
+            if not isinstance(params, dict):
+                raise InvalidToolArguments
+            raw_arguments = params.get("arguments", {})
+            tool_name, arguments = _validate_tool_arguments(params.get("name"), raw_arguments)
             result = _call_tool(tool_name, arguments, principal)
             return {
                 "jsonrpc": JSONRPC_VERSION,
                 "id": msg_id,
                 "result": {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, default=str)}]},
             }
-        except Exception as exc:
+        except MCPAuthenticationRequired:
+            return {
+                "jsonrpc": JSONRPC_VERSION,
+                "id": msg_id,
+                "error": {"code": -32001, "message": "authentication required"},
+            }
+        except InvalidToolArguments:
+            return {
+                "jsonrpc": JSONRPC_VERSION,
+                "id": msg_id,
+                "error": {"code": -32602, "message": "invalid tool arguments"},
+            }
+        except Exception:
+            tool_name = params.get("name") if isinstance(params, dict) else None
             logger.exception("mcp_tool_call_failed", extra={"tool": tool_name})
             return {
                 "jsonrpc": JSONRPC_VERSION,
                 "id": msg_id,
-                "error": {"code": -32603, "message": f"tool execution failed: {exc}"},
+                "error": {"code": -32603, "message": "tool execution failed"},
             }
 
     return {

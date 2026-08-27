@@ -11,6 +11,7 @@ from api.dependencies import override_container
 from api.main import app
 from application.vault_sync_service import VaultSyncService
 from infrastructure.database import ProductDatabase
+from mcp_server import handle_jsonrpc
 from retrieval.types import Chunk, RetrievalCandidate, RetrievalTrace
 
 
@@ -102,6 +103,24 @@ def _finance_principal() -> dict[str, object]:
     }
 
 
+def _admin_principal() -> dict[str, object]:
+    return {
+        "authenticated": True,
+        "name": "relation_reviewer",
+        "roles": ["read", "admin"],
+        "departments": ["finance"],
+    }
+
+
+def _insert_proposed_relation(database: ProductDatabase, relation_id: str = "rel-in-scope") -> None:
+    database.execute(
+        "INSERT INTO note_relations "
+        "(relation_id, source_note_id, target_note_id, relation_type, direction, status, evidence_chunk_id, confidence, proposed_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
+        (relation_id, "finance-note", "finance-note", "related_to", "outgoing", "proposed", "finance-note::0", 0.9, "2026-08-26T00:00:00Z"),
+    )
+
+
 def test_mcp_tools_list_exposes_readonly_tools(tmp_path: Path):
     _database, _vault = _bootstrap(tmp_path)
     original = auth.get_optional_principal
@@ -188,22 +207,35 @@ def test_mcp_search_audit_never_logs_question_body(tmp_path: Path):
         override_container(None)
 
 
-def test_resolve_relations_batch_enforces_per_relation_acl(tmp_path: Path):
-    """批量确认必须逐条 ACL 校验：越权关系被跳过且状态不变。"""
+def test_batch_confirmation_is_rejected(tmp_path: Path):
+    """人工确认必须逐条审阅，批量端点不得接受 confirm。"""
     database, _vault = _bootstrap(tmp_path)
-    now = "2026-08-26T00:00:00Z"
-    database.execute(
-        "INSERT INTO note_relations "
-        "(relation_id, source_note_id, target_note_id, relation_type, direction, status, evidence_chunk_id, confidence, proposed_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?)",
-        ("rel-in-scope", "finance-note", "finance-note", "related_to", "outgoing", "proposed", "finance-note::0", 0.9, now),
-    )
-    database.execute(
-        "INSERT INTO note_relations "
-        "(relation_id, source_note_id, target_note_id, relation_type, direction, status, evidence_chunk_id, confidence, proposed_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?)",
-        ("rel-cross-tenant", "finance-note", "hr-note", "related_to", "outgoing", "proposed", "finance-note::0", 0.9, now),
-    )
+    _insert_proposed_relation(database)
+    original = auth.get_optional_principal
+    original_auth_mode = auth.AUTH_MODE
+    auth.AUTH_MODE = "api_key"
+    auth.get_optional_principal = lambda _request: _admin_principal()
+    app.dependency_overrides[auth.get_required_principal] = lambda: _admin_principal()
+    client = TestClient(app, raise_server_exceptions=False)
+    try:
+        resp = client.post(
+            "/api/v1/mindgraph/relations/resolve-batch",
+            json={"ids": ["rel-in-scope"], "decision": "confirm", "reason": "逐条证据已核对"},
+        )
+        assert resp.status_code == 422
+        row = database.fetch_one("SELECT status FROM note_relations WHERE relation_id='rel-in-scope'")
+        assert row["status"] == "proposed"
+    finally:
+        auth.get_optional_principal = original
+        auth.AUTH_MODE = original_auth_mode
+        app.dependency_overrides.pop(auth.get_required_principal, None)
+        client.close()
+        override_container(None)
+
+
+def test_relation_resolution_requires_admin_role(tmp_path: Path):
+    database, _vault = _bootstrap(tmp_path)
+    _insert_proposed_relation(database)
     original = auth.get_optional_principal
     original_auth_mode = auth.AUTH_MODE
     auth.AUTH_MODE = "api_key"
@@ -212,26 +244,181 @@ def test_resolve_relations_batch_enforces_per_relation_acl(tmp_path: Path):
     client = TestClient(app, raise_server_exceptions=False)
     try:
         resp = client.post(
-            "/api/v1/mindgraph/relations/resolve-batch",
-            json={"ids": ["rel-in-scope", "rel-cross-tenant"], "decision": "confirm"},
+            "/api/v1/mindgraph/relations/rel-in-scope/resolve",
+            json={"decision": "confirm", "reason": "证据与关系类型一致"},
         )
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["processed"] == 1
-        assert body["skipped"] == 1
-
-        in_scope = database.fetch_one("SELECT status FROM note_relations WHERE relation_id='rel-in-scope'")
-        assert in_scope["status"] == "confirmed"
-        cross_tenant = database.fetch_one("SELECT status FROM note_relations WHERE relation_id='rel-cross-tenant'")
-        assert cross_tenant["status"] == "proposed"
-
-        denied_audit = database.fetch_all(
-            "SELECT reason FROM access_audit WHERE action='resolve_relation' AND resource='note_relations/rel-cross-tenant'"
-        )
-        assert any(row["reason"] == "out_of_scope_or_not_proposed" for row in denied_audit)
+        assert resp.status_code == 403
+        row = database.fetch_one("SELECT status FROM note_relations WHERE relation_id='rel-in-scope'")
+        assert row["status"] == "proposed"
     finally:
         auth.get_optional_principal = original
         auth.AUTH_MODE = original_auth_mode
         app.dependency_overrides.pop(auth.get_required_principal, None)
         client.close()
+        override_container(None)
+
+
+def test_relation_resolution_uses_authenticated_actor_and_records_reason(tmp_path: Path):
+    database, _vault = _bootstrap(tmp_path)
+    _insert_proposed_relation(database)
+    original = auth.get_optional_principal
+    original_auth_mode = auth.AUTH_MODE
+    auth.AUTH_MODE = "api_key"
+    auth.get_optional_principal = lambda _request: _admin_principal()
+    app.dependency_overrides[auth.get_required_principal] = lambda: _admin_principal()
+    client = TestClient(app, raise_server_exceptions=False)
+    try:
+        resp = client.post(
+            "/api/v1/mindgraph/relations/rel-in-scope/resolve",
+            json={
+                "decision": "reject",
+                "reason": "证据只说明相似性，不能支持业务关系",
+            },
+        )
+        assert resp.status_code == 200
+        row = database.fetch_one("SELECT status, resolved_by FROM note_relations WHERE relation_id='rel-in-scope'")
+        assert row == {"status": "rejected", "resolved_by": "relation_reviewer"}
+        audits = database.fetch_all(
+            "SELECT actor, metadata_json FROM access_audit WHERE action='resolve_relation' AND resource='note_relations/rel-in-scope'"
+        )
+        assert any(
+            audit["actor"] == "relation_reviewer"
+            and json.loads(audit["metadata_json"])["reason"] == "证据只说明相似性，不能支持业务关系"
+            for audit in audits
+        )
+    finally:
+        auth.get_optional_principal = original
+        auth.AUTH_MODE = original_auth_mode
+        app.dependency_overrides.pop(auth.get_required_principal, None)
+        client.close()
+        override_container(None)
+
+
+def test_relation_resolution_rejects_client_controlled_reviewer_identity(tmp_path: Path):
+    database, _vault = _bootstrap(tmp_path)
+    _insert_proposed_relation(database)
+    original = auth.get_optional_principal
+    original_auth_mode = auth.AUTH_MODE
+    auth.AUTH_MODE = "api_key"
+    auth.get_optional_principal = lambda _request: _admin_principal()
+    app.dependency_overrides[auth.get_required_principal] = lambda: _admin_principal()
+    client = TestClient(app, raise_server_exceptions=False)
+    try:
+        resp = client.post(
+            "/api/v1/mindgraph/relations/rel-in-scope/resolve",
+            json={
+                "decision": "confirm",
+                "reason": "证据与关系类型一致",
+                "resolved_by": "spoofed-client-value",
+            },
+        )
+        assert resp.status_code == 422
+        row = database.fetch_one("SELECT status, resolved_by FROM note_relations WHERE relation_id='rel-in-scope'")
+        assert row == {"status": "proposed", "resolved_by": None}
+    finally:
+        auth.get_optional_principal = original
+        auth.AUTH_MODE = original_auth_mode
+        app.dependency_overrides.pop(auth.get_required_principal, None)
+        client.close()
+        override_container(None)
+
+
+def test_relation_extraction_requires_admin_and_is_audited(tmp_path: Path):
+    database, _vault = _bootstrap(tmp_path)
+    extraction = SimpleNamespace(extract=lambda **_kwargs: {"ok": True, "created": 2, "dry_run": False})
+    override_container(SimpleNamespace(
+        database=database,
+        relation_extraction=extraction,
+        mindgraph_graph_store=SimpleNamespace(related_note_ids=lambda *_args, **_kwargs: [], note_titles=lambda _ids: {}),
+    ))
+    original = auth.get_optional_principal
+    original_auth_mode = auth.AUTH_MODE
+    auth.AUTH_MODE = "api_key"
+    client = TestClient(app, raise_server_exceptions=False)
+    try:
+        auth.get_optional_principal = lambda _request: _finance_principal()
+        app.dependency_overrides[auth.get_required_principal] = lambda: _finance_principal()
+        denied = client.post("/api/v1/mindgraph/relations/extract", json={"dry_run": False})
+        assert denied.status_code == 403
+
+        auth.get_optional_principal = lambda _request: _admin_principal()
+        app.dependency_overrides[auth.get_required_principal] = lambda: _admin_principal()
+        allowed = client.post("/api/v1/mindgraph/relations/extract", json={"dry_run": False})
+        assert allowed.status_code == 200
+        audits = database.fetch_all(
+            "SELECT actor, decision, metadata_json FROM access_audit WHERE action='extract_relations'"
+        )
+        assert any(
+            row["actor"] == "relation_reviewer"
+            and row["decision"] == "allow"
+            and json.loads(row["metadata_json"])["created"] == 2
+            for row in audits
+        )
+    finally:
+        auth.get_optional_principal = original
+        auth.AUTH_MODE = original_auth_mode
+        app.dependency_overrides.pop(auth.get_required_principal, None)
+        client.close()
+        override_container(None)
+
+
+def test_mcp_rejects_arguments_that_violate_declared_schema(tmp_path: Path):
+    _database, _vault = _bootstrap(tmp_path)
+    payloads = [
+        {"name": "mindgraph_search", "arguments": {"query": "", "top_k": 5}},
+        {"name": "mindgraph_search", "arguments": {"query": "报销", "top_k": 21}},
+        {"name": "mindgraph_search", "arguments": {"query": "报销", "top_k": "5"}},
+        {"name": "mindgraph_search", "arguments": {"query": "报销", "unexpected": True}},
+    ]
+    for index, params in enumerate(payloads):
+        response = handle_jsonrpc(
+            {"jsonrpc": "2.0", "id": index, "method": "tools/call", "params": params},
+            principal=_finance_principal(),
+        )
+        assert response is not None
+        assert response["error"] == {"code": -32602, "message": "invalid tool arguments"}
+    override_container(None)
+
+
+def test_mcp_internal_error_does_not_leak_exception_text(tmp_path: Path):
+    database, _vault = _bootstrap(tmp_path)
+    container = SimpleNamespace(
+        database=database,
+        mindgraph_pipeline=lambda **_kwargs: SimpleNamespace(
+            retrieve=lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("private-database-path"))
+        ),
+    )
+    override_container(container)
+    try:
+        response = handle_jsonrpc(
+            {
+                "jsonrpc": "2.0",
+                "id": "safe-error",
+                "method": "tools/call",
+                "params": {"name": "mindgraph_search", "arguments": {"query": "报销"}},
+            },
+            principal=_finance_principal(),
+        )
+        assert response is not None
+        assert response["error"] == {"code": -32603, "message": "tool execution failed"}
+        assert "private-database-path" not in json.dumps(response, ensure_ascii=False)
+    finally:
+        override_container(None)
+
+
+def test_mcp_stdio_style_call_without_principal_fails_closed(tmp_path: Path):
+    _database, _vault = _bootstrap(tmp_path)
+    try:
+        response = handle_jsonrpc(
+            {
+                "jsonrpc": "2.0",
+                "id": "anonymous-stdio",
+                "method": "tools/call",
+                "params": {"name": "mindgraph_list_notes", "arguments": {}},
+            },
+            principal=None,
+        )
+        assert response is not None
+        assert response["error"] == {"code": -32001, "message": "authentication required"}
+    finally:
         override_container(None)

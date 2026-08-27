@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from hashlib import sha256
 import json
+import math
 from pathlib import Path
 import re
 from typing import Any
@@ -238,10 +239,14 @@ def _metrics(gold: set[str], final_paths: list[str], top_k: int) -> dict[str, fl
     selected = final_paths[:top_k]
     hits = len(gold.intersection(selected))
     first = next((position for position, path in enumerate(final_paths, 1) if path in gold), None)
+    relevance = [1 if path in gold else 0 for path in selected]
+    dcg = sum(value / math.log2(index + 2) for index, value in enumerate(relevance))
+    ideal = sum(1 / math.log2(index + 2) for index in range(min(len(gold), top_k)))
     return {
         "recall_at_k": round(hits / len(gold), 4),
         "precision_at_k": round(hits / top_k, 4),
         "mrr": round(1.0 / first, 4) if first else 0.0,
+        "ndcg_at_k": round(dcg / ideal, 4) if ideal else 0.0,
     }
 
 
@@ -256,6 +261,9 @@ def evaluate_retrieval_cases(
     details: list[dict[str, Any]] = []
     scored: list[dict[str, Any]] = []
     counts = {"answer": 0, "abstain": 0}
+    graph_enabled_cases = 0
+    graph_activated_cases = 0
+    graph_expanded_candidates = 0
     for case in cases:
         behavior = case["expected_behavior"]
         counts[behavior] += 1
@@ -272,6 +280,24 @@ def evaluate_retrieval_cases(
             raise RuntimeError(f"case_id {case['case_id']!r}: retrieval failed") from exc
         if not isinstance(trace_value, RetrievalTrace):
             raise TypeError(f"case_id {case['case_id']!r}: retrieve must return RetrievalTrace")
+        graph_enabled = bool(trace_value.graph_enabled)
+        expanded_candidates = int(trace_value.candidate_counts.get("graph_expanded", 0) or 0)
+        relation_ids = sorted({
+            relation_id
+            for link in trace_value.graph_links
+            if isinstance(link, dict) and isinstance((relation_id := link.get("relation_id")), str)
+        })
+        detail["graph"] = {
+            "enabled": graph_enabled,
+            "hops": trace_value.graph_hops,
+            "expanded_candidates": expanded_candidates,
+            "relation_ids": relation_ids,
+        }
+        if graph_enabled:
+            graph_enabled_cases += 1
+            graph_expanded_candidates += expanded_candidates
+            if expanded_candidates > 0 or relation_ids:
+                graph_activated_cases += 1
         stage_paths = {name: _paths(getattr(trace_value, name)) for name in _STAGES}
         gold_paths = case["gold_vault_paths"]
         gold = set(gold_paths)
@@ -288,6 +314,30 @@ def evaluate_retrieval_cases(
             detail["failure_stage"] = min(loss_stages, key=_STAGE_ORDER.__getitem__)
         scored.append(detail)
         details.append(detail)
-    summary = {name: round(sum(row["metrics"][name] for row in scored) / len(scored), 4) if scored else None for name in ("recall_at_k", "precision_at_k", "mrr")}
+    summary = {
+        name: round(sum(row["metrics"][name] for row in scored) / len(scored), 4) if scored else None
+        for name in ("recall_at_k", "precision_at_k", "mrr", "ndcg_at_k")
+    }
     failures = [row for row in scored if row["metrics"]["recall_at_k"] < 1.0]
-    return {"evaluator_version": "mindgraph-retrieval-v1", "dataset_version": cases[0].get("dataset_version") if cases else None, "top_k": top_k, "counts": counts, "summary": summary, "details": details, "failed_cases": failures}
+    graph_limitations: list[str] = []
+    if graph_enabled_cases == 0:
+        graph_limitations.append("graph_not_enabled")
+    elif graph_activated_cases == 0:
+        graph_limitations.append("graph_enabled_but_no_expansion_observed")
+    return {
+        "evaluator_version": "mindgraph-retrieval-v2",
+        "dataset_version": cases[0].get("dataset_version") if cases else None,
+        "top_k": top_k,
+        "counts": counts,
+        "summary": summary,
+        "graph_diagnostics": {
+            "enabled_cases": graph_enabled_cases,
+            "activated_cases": graph_activated_cases,
+            "expanded_candidates": graph_expanded_candidates,
+            "activation_rate": round(graph_activated_cases / graph_enabled_cases, 4) if graph_enabled_cases else 0.0,
+            "comparable_for_graph_gain": graph_enabled_cases > 0 and graph_activated_cases > 0,
+            "limitations": graph_limitations,
+        },
+        "details": details,
+        "failed_cases": failures,
+    }

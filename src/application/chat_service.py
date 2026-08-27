@@ -57,6 +57,13 @@ class ChatService:
             request.question,
             requested_strategy=request.retrieval_strategy,
             graph_allowed=request.graph_enabled,
+            top_k=request.final_top_k,
+            filters={
+                "query_date": request.query_date,
+                "knowledge_categories": request.knowledge_categories or [],
+                "include_historical": request.include_historical,
+            },
+            query_type=None,
         )
         return decision, round((time.perf_counter() - started) * 1000, 3)
 
@@ -120,6 +127,7 @@ class ChatService:
         kwargs: dict[str, Any] = {}
         if access_scope and "access_scope" in parameters:
             kwargs["access_scope"] = access_scope
+        effective_query_date = (decision.filters or {}).get("effective_at") or request.query_date
         mode, variants, reason = self._merge_query_variants(decision, request)
 
         def retrieve_variant(query_text: str):
@@ -127,7 +135,7 @@ class ChatService:
                 if "query_date" not in parameters:
                     return pipeline.retrieve(query_text, decision.selected_strategy, **kwargs)
                 return pipeline.retrieve(
-                    query_text, decision.selected_strategy, request.query_date,
+                    query_text, decision.selected_strategy, effective_query_date,
                     request.knowledge_categories, request.include_historical, **kwargs,
                 )
             if "query_date" not in parameters:
@@ -136,7 +144,7 @@ class ChatService:
                     graph_enabled=decision.graph_enabled, **kwargs,
                 )
             return pipeline.retrieve(
-                query_text, decision.selected_strategy, request.query_date,
+                query_text, decision.selected_strategy, effective_query_date,
                 request.knowledge_categories, request.include_historical,
                 graph_enabled=decision.graph_enabled, **kwargs,
             )

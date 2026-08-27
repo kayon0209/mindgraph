@@ -104,9 +104,9 @@ export const api = {
   evaluations: () => request<EvaluationResponse>("/mindgraph/evaluation/ablation"),
   proposedRelations: () => request<ProposedRelationsResponse>("/mindgraph/relations/proposed"),
   confirmedRelations: () => request<ConfirmedRelationsResponse>("/mindgraph/relations/confirmed"),
-  resolveRelation: (id: string, decision: "confirm" | "reject") =>
+  resolveRelation: (id: string, decision: "confirm" | "reject", reason: string) =>
     request<{ ok: boolean; status: string }>(`/mindgraph/relations/${encodeURIComponent(id)}/resolve`, {
       method: "POST",
-      body: JSON.stringify({ decision, resolved_by: "mindgraph-web" }),
+      body: JSON.stringify({ decision, reason }),
     }),
 };

@@ -15,6 +15,8 @@ ANSWER_METRICS = (
     "version_validity",
     "required_fact_coverage",
     "forbidden_fact_avoidance",
+    "acl_leakage",
+    "conflict_accuracy",
 )
 INACTIVE_POLICY_STATUSES = {"archived", "expired", "superseded", "replaced"}
 
@@ -68,6 +70,14 @@ def evaluate_answer_case(case: dict[str, Any], prediction: dict[str, Any]) -> di
     if not refusal_correctness:
         failures.append("expected_abstention" if expected_behavior == "abstain" else "unexpected_refusal")
 
+    acl_context = case.get("acl_context") or {}
+    acl_restricted = bool(acl_context.get("denied_resources") or acl_context.get("denied_actions"))
+    acl_leakage = float(bool(prediction.get("citations")) if acl_restricted else False)
+    conflict_accuracy = float(
+        result_state == "conflicting_evidence"
+        if case.get("category") == "conflict" or case.get("query_type") == "conflict"
+        else False
+    )
     if expected_behavior == "abstain":
         return {
             "case_id": case["case_id"],
@@ -76,7 +86,9 @@ def evaluate_answer_case(case: dict[str, Any], prediction: dict[str, Any]) -> di
             "version_validity": None,
             "required_fact_coverage": None,
             "forbidden_fact_avoidance": None,
-            "failures": failures,
+            "acl_leakage": acl_leakage,
+            "conflict_accuracy": conflict_accuracy if case.get("category") == "conflict" else None,
+            "failures": failures + (["acl_leakage"] if acl_leakage else []),
         }
 
     citations = prediction.get("citations") or []
@@ -98,6 +110,10 @@ def evaluate_answer_case(case: dict[str, Any], prediction: dict[str, Any]) -> di
     if not forbidden_fact_avoidance:
         failures.append("forbidden_fact_present")
 
+    if acl_leakage:
+        failures.append("acl_leakage")
+    if (case.get("category") == "conflict" or case.get("query_type") == "conflict") and not conflict_accuracy:
+        failures.append("conflict_not_intercepted")
     return {
         "case_id": case["case_id"],
         "citation_correctness": citation_correctness,
@@ -105,6 +121,8 @@ def evaluate_answer_case(case: dict[str, Any], prediction: dict[str, Any]) -> di
         "version_validity": version_validity,
         "required_fact_coverage": required_fact_coverage,
         "forbidden_fact_avoidance": forbidden_fact_avoidance,
+        "acl_leakage": acl_leakage,
+        "conflict_accuracy": conflict_accuracy if case.get("category") == "conflict" or case.get("query_type") == "conflict" else None,
         "failures": failures,
     }
 
@@ -170,8 +188,10 @@ def _operational_metrics(predictions: list[dict[str, Any]]) -> dict[str, Any]:
     sample_size = len(predictions)
     sorted_latencies = sorted(latencies)
     p95_index = max(0, math.ceil(0.95 * len(sorted_latencies)) - 1)
+    p50_index = max(0, math.ceil(0.50 * len(sorted_latencies)) - 1)
     return {
         "mean_total_latency_ms": fmean(latencies) if latencies else None,
+        "p50_total_latency_ms": sorted_latencies[p50_index] if sorted_latencies else None,
         "p95_total_latency_ms": sorted_latencies[p95_index] if sorted_latencies else None,
         "latency_coverage": len(latencies) / sample_size if sample_size else 0.0,
         "mean_total_tokens": fmean(total_tokens) if total_tokens else None,

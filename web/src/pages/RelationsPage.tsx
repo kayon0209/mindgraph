@@ -14,6 +14,7 @@ export function RelationsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [resolving, setResolving] = useState<string | null>(null);
+  const [reviewReasons, setReviewReasons] = useState<Record<string, string>>({});
 
   const load = async () => {
     setLoading(true);
@@ -34,10 +35,20 @@ export function RelationsPage() {
   }, []);
 
   const resolve = async (relation: RelationItem, decision: "confirm" | "reject") => {
+    const reason = (reviewReasons[relation.id] || "").trim();
+    if (!reason) {
+      setError("确认或拒绝关系前必须填写审核原因。");
+      return;
+    }
     setResolving(relation.id);
     setError("");
     try {
-      await api.resolveRelation(relation.id, decision);
+      await api.resolveRelation(relation.id, decision, reason);
+      setReviewReasons((current) => {
+        const next = { ...current };
+        delete next[relation.id];
+        return next;
+      });
       await load();
     } catch (resolveError) {
       setError((resolveError as Error).message);
@@ -114,23 +125,36 @@ export function RelationsPage() {
                   {relation.conflict ? <span className="conflict-label"><AlertOctagon size={14} /> 已有确认边</span> : null}
                 </div>
                 {tab === "proposed" ? (
-                  <div className="relation-actions">
-                    <button
-                      className="button approve"
-                      disabled={resolving === relation.id}
-                      onClick={() => void resolve(relation, "confirm")}
-                      type="button"
-                    >
-                      <Check size={15} /> 确认
-                    </button>
-                    <button
-                      className="button reject"
-                      disabled={resolving === relation.id}
-                      onClick={() => void resolve(relation, "reject")}
-                      type="button"
-                    >
-                      <X size={15} /> 拒绝
-                    </button>
+                  <div className="relation-review-controls">
+                    <label>
+                      <span>审核原因</span>
+                      <textarea
+                        aria-label={`审核原因：${relation.source} → ${relation.target}`}
+                        maxLength={500}
+                        onChange={(event) => setReviewReasons((current) => ({ ...current, [relation.id]: event.target.value }))}
+                        placeholder="说明证据如何支持或不足以支持这条关系"
+                        rows={2}
+                        value={reviewReasons[relation.id] || ""}
+                      />
+                    </label>
+                    <div className="relation-actions">
+                      <button
+                        className="button approve"
+                        disabled={resolving === relation.id || !(reviewReasons[relation.id] || "").trim()}
+                        onClick={() => void resolve(relation, "confirm")}
+                        type="button"
+                      >
+                        <Check size={15} /> 确认
+                      </button>
+                      <button
+                        className="button reject"
+                        disabled={resolving === relation.id || !(reviewReasons[relation.id] || "").trim()}
+                        onClick={() => void resolve(relation, "reject")}
+                        type="button"
+                      >
+                        <X size={15} /> 拒绝
+                      </button>
+                    </div>
                   </div>
                 ) : (
                   <span className="confirmed-stamp">CONFIRMED</span>

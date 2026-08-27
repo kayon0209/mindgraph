@@ -41,7 +41,10 @@ def test_answer_case_scores_supported_current_answer() -> None:
         },
     )
 
-    assert result == {
+    assert {key: result[key] for key in (
+        "case_id", "citation_correctness", "refusal_correctness", "version_validity",
+        "required_fact_coverage", "forbidden_fact_avoidance", "failures",
+    )} == {
         "case_id": "current-policy",
         "citation_correctness": 1.0,
         "refusal_correctness": 1.0,
@@ -201,6 +204,8 @@ def test_summary_ignores_not_applicable_metrics_and_reports_failed_cases() -> No
         "version_validity": 1.0,
         "required_fact_coverage": 0.5,
         "forbidden_fact_avoidance": 1.0,
+        "acl_leakage": None,
+        "conflict_accuracy": None,
     }
     assert summary["sample_size"] == 2
     assert summary["failed_case_count"] == 2
@@ -283,7 +288,10 @@ def test_prediction_evaluation_aggregates_latency_tokens_and_cost_with_coverage(
         "version_validity": None,
         "required_fact_coverage": None,
         "forbidden_fact_avoidance": None,
+        "acl_leakage": 0.0,
+        "conflict_accuracy": None,
         "mean_total_latency_ms": 200.0,
+        "p50_total_latency_ms": 100.0,
         "p95_total_latency_ms": 300.0,
         "latency_coverage": 1.0,
         "mean_total_tokens": 80.0,

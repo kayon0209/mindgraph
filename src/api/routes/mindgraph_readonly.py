@@ -11,10 +11,10 @@ import logging
 from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, ConfigDict, Field
 
-from api.auth import resolve_access_scope, current_actor
+from api.auth import current_actor, get_required_principal, require_role, resolve_access_scope
 from api.dependencies import get_container
 from application.access_control import note_acl_matches, record_access_audit
 from application.mindgraph_graph_store import TYPED_RELATION_TYPES
@@ -436,19 +436,26 @@ def list_confirmed(request: Request, limit: int = Query(200, ge=1, le=500)):
 
 
 class ResolveBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
     decision: Literal["confirm", "reject"]
-    resolved_by: str = "user"
+    reason: str = Field(min_length=1, max_length=500)
 
 
 @router.post("/relations/{relation_id}/resolve")
-def resolve_relation(relation_id: str, body: ResolveBody, request: Request):
+def resolve_relation(
+    relation_id: str,
+    body: ResolveBody,
+    request: Request,
+    reviewer: dict = Depends(require_role("admin")),
+):
     """确认（confirm）或拒绝（reject）一条 proposed 关系（需对两端笔记有 ACL 权限）。
 
     confirm 后 status=confirmed，该关系进入 Graph RAG 检索路径。
     """
     db = get_container().database
     access_scope = resolve_access_scope(request)
-    actor = current_actor(request)
+    actor = reviewer.get("name") or reviewer.get("username") or "anonymous"
     row = db.fetch_one("SELECT relation_id, status, source_note_id, target_note_id FROM note_relations WHERE relation_id=?", (relation_id,))
     if not row:
         raise HTTPException(status_code=404, detail="relation not found")
@@ -473,30 +480,37 @@ def resolve_relation(relation_id: str, body: ResolveBody, request: Request):
     new_status = "confirmed" if body.decision == "confirm" else "rejected"
     db.execute(
         "UPDATE note_relations SET status=?, resolved_at=?, resolved_by=? WHERE relation_id=?",
-        (new_status, _now_iso(), body.resolved_by, relation_id),
+        (new_status, _now_iso(), actor, relation_id),
     )
-    record_access_audit(db, actor=actor, action="resolve_relation", resource=f"note_relations/{relation_id}", decision="allow", metadata={"new_status": new_status})
+    record_access_audit(
+        db,
+        actor=actor,
+        action="resolve_relation",
+        resource=f"note_relations/{relation_id}",
+        decision="allow",
+        metadata={"new_status": new_status, "reason": body.reason},
+    )
     return {"ok": True, "relation_id": relation_id, "status": new_status}
 
 
 class ResolveBatchBody(BaseModel):
-    ids: list[str]
-    decision: Literal["confirm", "reject"]
-    resolved_by: str = "user"
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    ids: list[str] = Field(min_length=1, max_length=200)
+    decision: Literal["reject"]
+    reason: str = Field(min_length=1, max_length=500)
 
 
 @router.post("/relations/resolve-batch")
-def resolve_relations_batch(body: ResolveBatchBody, request: Request):
-    """批量确认 / 拒绝若干 proposed 关系（Human-in-the-loop）。
-
-    用于「一键确认高置信度候选」等场景；仅作用于传入的 relation_id 列表。
-    返回成功处理的数量与跳过的无效 id。
-    """
-    if not body.ids:
-        raise HTTPException(status_code=400, detail="ids 不能为空")
+def resolve_relations_batch(
+    body: ResolveBatchBody,
+    request: Request,
+    reviewer: dict = Depends(require_role("admin")),
+):
+    """批量拒绝 proposed 关系；确认必须逐条核对证据并调用单条端点。"""
     db = get_container().database
     access_scope = resolve_access_scope(request)
-    actor = current_actor(request)
+    actor = reviewer.get("name") or reviewer.get("username") or "anonymous"
     placeholders = ",".join("?" for _ in body.ids)
     rows = db.fetch_all(
         f"""SELECT r.relation_id, r.status, r.relation_type, r.evidence_chunk_id, r.evidence_span,
@@ -522,14 +536,21 @@ def resolve_relations_batch(body: ResolveBatchBody, request: Request):
             permitted.append(row["relation_id"])
         else:
             denied.append(row["relation_id"])
-    new_status = "confirmed" if body.decision == "confirm" else "rejected"
+    new_status = "rejected"
     ts = _now_iso()
     for rid in permitted:
         db.execute(
             "UPDATE note_relations SET status=?, resolved_at=?, resolved_by=? WHERE relation_id=?",
-            (new_status, ts, body.resolved_by, rid),
+            (new_status, ts, actor, rid),
         )
-        record_access_audit(db, actor=actor, action="resolve_relation", resource=f"note_relations/{rid}", decision="allow", metadata={"new_status": new_status, "batch": True})
+        record_access_audit(
+            db,
+            actor=actor,
+            action="resolve_relation",
+            resource=f"note_relations/{rid}",
+            decision="allow",
+            metadata={"new_status": new_status, "batch": True, "reason": body.reason},
+        )
     for rid in denied:
         record_access_audit(db, actor=actor, action="resolve_relation", resource=f"note_relations/{rid}", decision="deny", reason="out_of_scope_or_not_proposed", metadata={"batch": True})
     return {"ok": True, "processed": len(permitted), "skipped": len(body.ids) - len(permitted), "status": new_status}
@@ -545,7 +566,11 @@ class ExtractBody(BaseModel):
 
 
 @router.post("/relations/extract")
-def extract_relations(body: ExtractBody):
+def extract_relations(
+    body: ExtractBody,
+    principal: dict = Depends(get_required_principal),
+    reviewer: dict = Depends(require_role("admin")),
+):
     """自动抽取候选关系（Human-in-the-loop：仅写 proposed）。
 
     - 默认 method='embedding'：基于离线 BGE 笔记语义相似度发现候选，无需 LLM；
@@ -553,7 +578,9 @@ def extract_relations(body: ExtractBody):
     - dry_run=True：只预测不落库。
     已存在（任意状态/任一方向）的 pair 自动去重，避免重复写入。
     """
-    svc = get_container().relation_extraction
+    container = get_container()
+    svc = container.relation_extraction
+    actor = reviewer.get("name") or reviewer.get("username") or "anonymous"
     result = svc.extract(
         method=body.method,
         top_k=body.top_k,
@@ -563,5 +590,27 @@ def extract_relations(body: ExtractBody):
         dry_run=body.dry_run,
     )
     if not result.get("ok", True):
+        record_access_audit(
+            container.database,
+            actor=actor,
+            action="extract_relations",
+            resource="note_relations/proposed",
+            decision="deny",
+            reason=result.get("reason", "extract_failed"),
+            metadata={"method": body.method, "dry_run": body.dry_run, "use_llm": body.use_llm},
+        )
         raise HTTPException(status_code=409, detail=result.get("reason", "extract_failed"))
+    record_access_audit(
+        container.database,
+        actor=actor,
+        action="extract_relations",
+        resource="note_relations/proposed",
+        decision="allow",
+        metadata={
+            "method": body.method,
+            "dry_run": body.dry_run,
+            "use_llm": body.use_llm,
+            "created": int(result.get("created", 0) or 0),
+        },
+    )
     return result

@@ -1,6 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { parseSseFrames } from "./api";
+import { api, parseSseFrames } from "./api";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("parseSseFrames", () => {
   it("parses complete events and preserves an incomplete tail", () => {
@@ -29,5 +33,24 @@ describe("parseSseFrames", () => {
 
     expect(result.events[0].event).toBe("completed");
     expect(result.events[0].data.request_id).toBe("r1");
+  });
+});
+
+describe("relation review API", () => {
+  it("sends a review reason without a client-controlled reviewer identity", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ ok: true, status: "confirmed" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await api.resolveRelation("rel-1", "confirm", "证据与关系类型一致");
+
+    const request = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(JSON.parse(String(request.body))).toEqual({
+      decision: "confirm",
+      reason: "证据与关系类型一致",
+    });
   });
 });

@@ -1691,6 +1691,31 @@ h2,
   gap: 7px;
 }
 
+.relation-review-controls {
+  display: grid;
+  gap: 8px;
+  min-width: 230px;
+}
+
+.relation-review-controls label {
+  display: grid;
+  gap: 5px;
+  color: #77736a;
+  font-size: 9px;
+}
+
+.relation-review-controls textarea {
+  width: 100%;
+  min-height: 54px;
+  padding: 8px 9px;
+  resize: vertical;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  font-size: 10px;
+}
+
 .confirmed-stamp {
   padding: 6px 8px;
   color: var(--moss);
