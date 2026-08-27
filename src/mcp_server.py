@@ -199,7 +199,7 @@ def _call_tool(name: str, arguments: dict[str, Any], principal: dict[str, Any] |
                 "authority_level": candidate.chunk.metadata.get("ai_access_level"),
                 "vault_path": candidate.chunk.metadata.get("vault_path"),
             })
-        _audit("mcp_search", "search", "allow", {"query": query[:60], "top_k": top_k, "strategy": strategy})
+        _audit("mcp_search", "search", "allow", {"query_len": len(query), "top_k": top_k, "strategy": strategy})
         return {"query": query, "strategy": strategy, "citations": citations, "graph_enabled": False}
 
     if name == "mindgraph_evaluation_overview":

@@ -62,8 +62,57 @@ class ChatService:
 
     def _merge_query_variants(self, decision: RetrievalRouteDecision, request: ChatRequest) -> tuple[str, tuple[str, ...], str]:
         plan = self.query_understanding.plan(request.question, decision)
-        variants = tuple(dict.fromkeys((decision.search_query, *plan.variants, request.question)))
+        planned = plan.variants or (decision.search_query,)
+        variants = tuple(dict.fromkeys(item for item in planned if item and item.strip()))
         return plan.mode, variants, plan.reasons[0] if plan.reasons else "no_query_understanding_required"
+
+    @staticmethod
+    def _merge_candidates(candidate_groups: Iterable[list[Any]], limit: int) -> list[Any]:
+        merged: dict[str, Any] = {}
+        for group in candidate_groups:
+            for candidate in group:
+                chunk_id = candidate.chunk.chunk_id
+                current = merged.get(chunk_id)
+                if current is None:
+                    merged[chunk_id] = candidate
+                    continue
+                current_score = max(
+                    value for value in (
+                        current.reranker_score, current.rrf_score,
+                        current.dense_score, current.sparse_score, current.original_score,
+                    ) if value is not None
+                ) if any(value is not None for value in (
+                    current.reranker_score, current.rrf_score,
+                    current.dense_score, current.sparse_score, current.original_score,
+                )) else 0.0
+                candidate_score = max(
+                    value for value in (
+                        candidate.reranker_score, candidate.rrf_score,
+                        candidate.dense_score, candidate.sparse_score, candidate.original_score,
+                    ) if value is not None
+                ) if any(value is not None for value in (
+                    candidate.reranker_score, candidate.rrf_score,
+                    candidate.dense_score, candidate.sparse_score, candidate.original_score,
+                )) else 0.0
+                if candidate_score > current_score:
+                    merged[chunk_id] = candidate
+        output = sorted(
+            merged.values(),
+            key=lambda item: (
+                max(value for value in (
+                    item.reranker_score, item.rrf_score,
+                    item.dense_score, item.sparse_score, item.original_score,
+                ) if value is not None) if any(value is not None for value in (
+                    item.reranker_score, item.rrf_score,
+                    item.dense_score, item.sparse_score, item.original_score,
+                )) else 0.0,
+                item.chunk.chunk_id,
+            ),
+            reverse=True,
+        )
+        for rank, candidate in enumerate(output[:limit], 1):
+            candidate.final_rank = rank
+        return output[:limit]
 
     def _retrieve(self, request: ChatRequest, decision: RetrievalRouteDecision, routing_ms: float, access_scope: dict | None = None):
         pipeline = self.pipeline_factory(request.final_top_k)
@@ -72,29 +121,45 @@ class ChatService:
         if access_scope and "access_scope" in parameters:
             kwargs["access_scope"] = access_scope
         mode, variants, reason = self._merge_query_variants(decision, request)
-        query_text = variants[0]
-        if "graph_enabled" not in parameters:
-            # 普通检索管线不支持图谱扩展，忽略该参数
-            if "query_date" not in parameters:
-                trace = pipeline.retrieve(query_text, decision.selected_strategy, **kwargs)
-            else:
-                trace = pipeline.retrieve(
+
+        def retrieve_variant(query_text: str):
+            if "graph_enabled" not in parameters:
+                if "query_date" not in parameters:
+                    return pipeline.retrieve(query_text, decision.selected_strategy, **kwargs)
+                return pipeline.retrieve(
                     query_text, decision.selected_strategy, request.query_date,
                     request.knowledge_categories, request.include_historical, **kwargs,
                 )
-        elif "query_date" not in parameters:
-            trace = pipeline.retrieve(
-                query_text,
-                decision.selected_strategy,
-                graph_enabled=decision.graph_enabled,
-                **kwargs,
-            )
-        else:
-            trace = pipeline.retrieve(
+            if "query_date" not in parameters:
+                return pipeline.retrieve(
+                    query_text, decision.selected_strategy,
+                    graph_enabled=decision.graph_enabled, **kwargs,
+                )
+            return pipeline.retrieve(
                 query_text, decision.selected_strategy, request.query_date,
                 request.knowledge_categories, request.include_historical,
                 graph_enabled=decision.graph_enabled, **kwargs,
             )
+
+        traces = [retrieve_variant(query_text) for query_text in variants]
+        trace = traces[0]
+        if len(traces) > 1:
+            trace.dense_results = self._merge_candidates((item.dense_results for item in traces), len(trace.dense_results))
+            trace.sparse_results = self._merge_candidates((item.sparse_results for item in traces), len(trace.sparse_results))
+            trace.fused_results = self._merge_candidates((item.fused_results for item in traces), len(trace.fused_results))
+            trace.reranked_results = self._merge_candidates((item.reranked_results for item in traces), len(trace.reranked_results))
+            trace.final_selected_chunks = self._merge_candidates(
+                (item.final_selected_chunks for item in traces),
+                len(trace.final_selected_chunks),
+            )
+            trace.candidate_counts = {
+                "dense": len(trace.dense_results),
+                "sparse": len(trace.sparse_results),
+                "fused": len(trace.fused_results),
+                "reranked": len(trace.reranked_results),
+                "final": len(trace.final_selected_chunks),
+            }
+            trace.latency_ms["variant_count"] = float(len(variants))
         trace.query_variants = list(variants)
         trace.original_query = request.question
         trace.warnings.append(f"query_understanding:{mode}:{reason}")

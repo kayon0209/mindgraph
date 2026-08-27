@@ -50,16 +50,41 @@ class BM25Retriever:
             score += inverse_document_frequency * frequency * (self.k1 + 1) / denominator
         return score
 
-    def search(self, query: str, top_k: int, access_scope: dict | None = None) -> tuple[list[RetrievalCandidate], dict[str, float]]:
+    def search(
+        self,
+        query: str,
+        top_k: int,
+        access_scope: dict | None = None,
+        query_date: str | None = None,
+        categories: list[str] | None = None,
+        include_historical: bool = False,
+    ) -> tuple[list[RetrievalCandidate], dict[str, float]]:
         if top_k <= 0 or not query.strip() or not self.chunks:
             return [], {"bm25_retrieval_ms": 0.0}
         start = time.perf_counter()
         query_tokens = tokenize_zh(query)
         from application.access_control import chunk_acl_matches
+        from datetime import date
+
+        target_date = date.fromisoformat(query_date) if query_date else date.today()
+
+        def visible(index: int) -> bool:
+            metadata = self.chunks[index].metadata
+            if access_scope is not None and not chunk_acl_matches(metadata, access_scope):
+                return False
+            status = metadata.get("document_status") or metadata.get("policy_status")
+            if not include_historical and status and status != "active":
+                return False
+            if categories and metadata.get("knowledge_category") not in categories:
+                return False
+            effective = metadata.get("effective_date") or metadata.get("effective_from")
+            expiration = metadata.get("expiration_date") or metadata.get("effective_to")
+            return not (effective and date.fromisoformat(effective) > target_date) and not (
+                expiration and date.fromisoformat(expiration) < target_date and not include_historical
+            )
 
         ranked = sorted(
-            ((self._score(query_tokens, index), index) for index in range(len(self.chunks))
-             if access_scope is None or chunk_acl_matches(self.chunks[index].metadata, access_scope)),
+            ((self._score(query_tokens, index), index) for index in range(len(self.chunks)) if visible(index)),
             key=lambda item: (-item[0], self.chunks[item[1]].chunk_id),
         )[:top_k]
         elapsed = (time.perf_counter() - start) * 1000

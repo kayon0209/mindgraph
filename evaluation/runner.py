@@ -25,7 +25,10 @@ from evaluation.ablation_runner import run as run_ablation_report
 from evaluation.answer_eval import evaluate_answer_predictions
 from evaluation.manifest import build_manifest, to_json
 from evaluation.mindgraph_retrieval_eval import DEFAULT_DATASET_PATH, evaluate_retrieval_cases, load_golden_dataset
-from src.retrieval.types import Chunk, RetrievalCandidate, RetrievalTrace
+try:
+    from src.retrieval.types import Chunk, RetrievalCandidate, RetrievalTrace
+except ModuleNotFoundError:
+    from retrieval.types import Chunk, RetrievalCandidate, RetrievalTrace
 from evaluation.routing_eval import evaluate_routing_cases
 
 DEFAULT_MANIFEST_DIR = PROJECT_ROOT / "evaluation" / "results" / "manifests"

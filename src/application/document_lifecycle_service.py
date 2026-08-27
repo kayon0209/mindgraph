@@ -53,10 +53,19 @@ class DocumentLifecycleService:
         source.write_bytes(data)
         try:
             parsed = parser.parse(data, filename); chunks = self.chunker.chunk(parsed)
-            diagnostics = {"parser": parsed.parser_name, "parser_version": parsed.parser_version,
-                "elements": len(parsed.elements), "chunks": len(chunks), "pages": parsed.metadata.get("page_count"),
-                "tables": sum(item.element_type == "table" for item in parsed.elements), "warnings": parsed.warnings,
-                "ocr_required_pages": parsed.ocr_required_pages, "status": "partial" if parsed.warnings else "success"}
+            ocr_required_pages = list(parsed.ocr_required_pages)
+            if ocr_required_pages:
+                diagnostics = {"parser": parsed.parser_name, "parser_version": parsed.parser_version,
+                    "elements": len(parsed.elements), "chunks": len(chunks), "pages": parsed.metadata.get("page_count"),
+                    "tables": sum(item.element_type == "table" for item in parsed.elements), "warnings": parsed.warnings,
+                    "ocr_required_pages": ocr_required_pages,
+                    "status": "ocr_required", "failure_reason": "OCR is required before indexing"}
+                status = "parse_failed"
+            else:
+                diagnostics = {"parser": parsed.parser_name, "parser_version": parsed.parser_version,
+                    "elements": len(parsed.elements), "chunks": len(chunks), "pages": parsed.metadata.get("page_count"),
+                    "tables": sum(item.element_type == "table" for item in parsed.elements), "warnings": parsed.warnings,
+                    "ocr_required_pages": [], "status": "success"}
             (target_dir / "parsed.json").write_text(parsed.model_dump_json(indent=2), encoding="utf-8")
             (target_dir / "chunks.json").write_text(json.dumps([item.model_dump(mode="json") for item in chunks], ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception as exc:

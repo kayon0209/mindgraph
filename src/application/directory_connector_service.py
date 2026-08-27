@@ -26,7 +26,7 @@ from infrastructure.database import ProductDatabase
 logger = logging.getLogger("mindgraph.connectors.directory")
 
 CONNECTOR_TYPE = "markdown_directory"
-SUPPORTED_SUFFIXES = {".md", ".markdown"}
+SUPPORTED_SUFFIXES = {".md", ".markdown", ".html", ".htm"}
 
 
 def _utc_iso() -> str:
@@ -138,7 +138,7 @@ class DirectoryConnectorService:
     ) -> dict[str, Any]:
         """同步一个本地 Markdown 目录。
 
-        - 扫描 source_path 下所有 .md / .markdown 文件；
+        - 扫描 source_path 下所有 .md / .markdown / .html / .htm 文件；
         - 复用 VaultSyncService 做增量 upsert + 剪枝；
         - workspace/department: frontmatter 优先，否则用参数或目录结构推断；
         - 同步后若 trigger_index=True，触发索引构建；

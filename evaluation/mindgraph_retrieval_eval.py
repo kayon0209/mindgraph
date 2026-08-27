@@ -9,7 +9,10 @@ from pathlib import Path
 import re
 from typing import Any
 
-from src.retrieval.types import RetrievalTrace
+try:
+    from src.retrieval.types import RetrievalTrace
+except ModuleNotFoundError:
+    from retrieval.types import RetrievalTrace
 
 DEFAULT_DATASET_PATH = Path(__file__).resolve().parent / "datasets" / "mindgraph_golden_v2.jsonl"
 DEFAULT_CANDIDATE_DATASET_PATH = Path(__file__).resolve().parent / "datasets" / "mindgraph_candidates_v2.jsonl"

@@ -1,0 +1,98 @@
+---
+mindgraph_id: 4d4192a014d141768449639eb98643e2
+title: "Mattermost Handbook - How to get paid"
+source_url: https://handbook.mattermost.com/operations/finance/staff-member-expenses/how-to-get-paid
+source_org: Mattermost
+license: "CC-BY-SA-4.0 (GitLab/Mattermost) / MIT (Basecamp) - see data-sources/LICENSES.md"
+ingest_date: 2026-08-27
+ingest_tool: scripts/ingest_public_handbooks.py
+original_file: data-sources/handbooks/mattermost/...
+status: active
+---
+
+# Mattermost Handbook - How to get paid
+
+> Source: https://handbook.mattermost.com/operations/finance/staff-member-expenses/how-to-get-paid
+> Ingested: 2026-08-27 | Original HTML preserved at data-sources/handbooks/
+
+For the complete documentation index, see [llms.txt](https://handbook.mattermost.com/llms.txt). This page is also available as [Markdown](https://handbook.mattermost.com/operations/finance/staff-member-expenses/how-to-get-paid.md).
+
+**Effective date** : October 2, 2025
+
+### Payments made by Mattermost
+
+#### United States & Canada
+
+If you're a staff member located in the United States or Canada, payroll is made through Rippling via direct deposit bi-monthly on the 15th and on the last business day of each month. Your expense reimbursements will be made through Airbase under the Mattermost, Inc. policy in the form of an ACH or wire payment (for international bank accounts). You'll be required to register your banking information to be able to receive an ACH or wire payment in Airbase. We do not support any other type of expense reimbursement for United States or Canadian staff members at this time. You'll receive your expense reimbursement no later than 15th and at end of each month.
+
+If you're a vendor, refer to the [Vendor Onboarding](https://handbook.mattermost.com/operations/finance/onboarding/how-to-on-board-as-a-vendor) section for guidance on registering so you can get paid.
+
+#### United Kingdom
+
+If you're a staff member located in the United Kingdom, payroll is made through Rippling via direct deposit on a monthly basis (at the end of the month). Expense reimbursements are also made through Airbase under the Mattermost, Inc. policy in the form of an ACH or wire payment (for international bank accounts). You'll be required to register your banking information to be able to receive an ACH or wire payment in Airbase. We do not support any other type of expense reimbursement for United Kingdom at this time. For additional information on expense reimbursement policy, please refer to the [how to submit a reimbursement request](https://handbook.mattermost.com/operations/finance/purchasing/airbase/how-to-submit-a-reimbursement-request) section of the Handbook.
+
+#### Germany
+
+If you're a staff member located in Germany, payroll is made through Vistra, our German Accountants, via direct deposit on a monthly basis (at the end of the month). Expense reimbursements are also made through Airbase under the Mattermost, Inc. policy in the form of an ACH or wire payment (for international bank accounts). You'll be required to register your banking information to be able to receive an ACH or wire payment in Airbase. We do not support any other type of expense reimbursement for Germany at this time. For additional information on expense reimbursement policy, please refer to the [how to submit a reimbursement request](https://handbook.mattermost.com/operations/finance/purchasing/airbase/how-to-submit-a-reimbursement-request) section of the Handbook.
+
+#### Rest of World (ROW)
+
+If you're a vendor or a contractor located outside the United States, Canada, United Kingdom and Germany, Mattermost requires a primary banking institution as a method of payment. You will get paid via Airbase for invoice processing, expense reimbursement, and payment. The currency in which payment is made is based on the currency stated within the agreement signed with Mattermost. For additional information on expense reimbursement policy, please refer to the [how to submit a reimbursement request](https://handbook.mattermost.com/operations/finance/purchasing/airbase/how-to-submit-a-reimbursement-request) section of the Handbook.
+
+**Primary banking institution**
+
+The person or legal entity the bank account is registered to must be in the name of the contracting individual/entity.
+
+_Example 1_ : A staff member named John Smith is located in Spain. He signed a consulting agreement with Mattermost, Inc. under his surname. John Smith must have the following banking institution setup:
+
+  * The bank account is located in Spain
+
+  * The bank account is his name or other known surname
+
+ _Example 2_ : A staff member named John Smith is located in Spain. He signed a consulting agreement with Mattermost, Inc. under his LLC titled Better Coding. John Smith must have the following banking institution setup:
+
+  * The bank account is located in Spain
+
+  * The bank account is in the name of Better Coding, LLC
+
+If you provide information for your banking institution, your invoice and/or expense reimbursements will be made through TransferWise. As noted above, Mattermost requires banking information from a primary banking institution to be able to make reimbursements through TransferWise. Approved expense reports are reimbursed either by the 15th or the end of each month.
+
+## Payment registration with Mattermost
+
+### Banking registration
+
+Refer to the [Vendor Onboarding](https://handbook.mattermost.com/operations/finance/onboarding/how-to-on-board-as-a-vendor) section for guidance on registering so you can get paid.
+
+### Primary payment reimbursement facilities
+
+  * Silicon Valley Bank
+
+  * Airbase
+
+### Facilities not accepted at this time
+
+Due to data privacy concerns, lack of an unqualified opinion on the internal controls of the institution, and/or acting as a separate/intermediary banking facility, we currently do not support the following facilities:
+
+  * Paypal
+
+  * Venmo
+
+  * XE
+
+  * WorldRemit
+
+  * OFX
+
+  * InstaREM
+
+  * Currencies Direct
+
+  * Worldfirst
+
+  * All other facilities that are not primary at this time
+
+[PreviousHow to convert currencies](/operations/finance/staff-member-expenses/currency-exchange-table)[NextArrange a Bounty Program](/operations/finance/how-to-arrange-a-bounty-program)
+
+Last updated 10 months ago
+
+Was this helpful?

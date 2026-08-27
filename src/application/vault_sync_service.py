@@ -22,7 +22,7 @@ import uuid
 from infrastructure.database import ProductDatabase
 from infrastructure.markdown_frontmatter import inject_mindgraph_id, parse_frontmatter
 
-SUPPORTED_SUFFIXES = {".md", ".markdown"}
+SUPPORTED_SUFFIXES = {".md", ".markdown", ".html", ".htm"}
 ACCESS_LEVELS = {"excluded", "local_only", "redacted_cloud", "cloud_allowed"}
 POLICY_STATUSES = {"draft", "active", "expired", "superseded", "archived"}
 

@@ -154,7 +154,9 @@ class MindGraphIndexService:
                         "expiration_date": note.get("effective_to"),
                         "document_status": note.get("policy_status", "unspecified"),
                         "knowledge_category": category,
-                        "origin": "mindgraph",
+                        "origin": note.get("source_id") or "mindgraph",
+                        "source_id": note.get("source_id"),
+                        "source_path": note.get("source_path"),
                     },
                 ))
                 idx += 1

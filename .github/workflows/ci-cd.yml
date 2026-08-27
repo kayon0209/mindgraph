@@ -70,6 +70,13 @@ jobs:
             --junitxml=test-results.xml \
             -v
 
+      - name: Validate Golden and candidate dataset contracts
+        env:
+          ENVIRONMENT: development
+          AUTH_MODE: "off"
+        run: |
+          python -c "from evaluation.mindgraph_retrieval_eval import load_golden_dataset, load_candidate_dataset; assert len(load_golden_dataset()) >= 30; load_candidate_dataset()"
+
       - name: Run no-key offline demo smoke test
         if: matrix.python-version == '3.12'
         run: python scripts/validate_mindgraph_offline.py

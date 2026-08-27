@@ -77,7 +77,15 @@ class FAISSDenseRetriever:
             raise IncompatibleIndexError("FAISS row count does not match chunk metadata")
         self._metadata = metadata
 
-    def search(self, query: str, top_k: int, access_scope: dict[str, Any] | None = None) -> tuple[list[RetrievalCandidate], dict[str, float]]:
+    def search(
+        self,
+        query: str,
+        top_k: int,
+        access_scope: dict[str, Any] | None = None,
+        query_date: str | None = None,
+        categories: list[str] | None = None,
+        include_historical: bool = False,
+    ) -> tuple[list[RetrievalCandidate], dict[str, float]]:
         if top_k <= 0 or not query.strip():
             return [], {"query_embedding_ms": 0.0, "dense_retrieval_ms": 0.0}
         if self._index is None:
@@ -94,13 +102,27 @@ class FAISSDenseRetriever:
         scores, positions = self._index.search(vector, search_k)
         retrieval_ms = (time.perf_counter() - start) * 1000
         from application.access_control import chunk_acl_matches
+        from datetime import date
 
+        target_date = date.fromisoformat(query_date) if query_date else date.today()
         results = []
         for score, position in zip(scores[0], positions[0]):
             if position < 0:
                 continue
             chunk = self._chunks[int(position)]
-            if access_scope is not None and not chunk_acl_matches(chunk.metadata, access_scope):
+            metadata = chunk.metadata
+            if access_scope is not None and not chunk_acl_matches(metadata, access_scope):
+                continue
+            status = metadata.get("document_status") or metadata.get("policy_status")
+            if not include_historical and status and status != "active":
+                continue
+            if categories and metadata.get("knowledge_category") not in categories:
+                continue
+            effective = metadata.get("effective_date") or metadata.get("effective_from")
+            expiration = metadata.get("expiration_date") or metadata.get("effective_to")
+            if effective and date.fromisoformat(effective) > target_date:
+                continue
+            if expiration and date.fromisoformat(expiration) < target_date and not include_historical:
                 continue
             results.append(RetrievalCandidate(chunk=chunk, dense_score=float(score), dense_rank=len(results) + 1))
             if len(results) >= top_k:

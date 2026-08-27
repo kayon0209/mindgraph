@@ -14,7 +14,7 @@ from retrieval.types import Chunk, RetrievalCandidate, RetrievalTrace
         ("《费用报销管理办法》里如何定义业务招待？", "exact_title", "bm25", False, "explicit_document_title"),
         ("无发票费用有什么例外，和票据制度冲突时怎么办？", "exception_or_conflict", "hybrid_rerank", True, "exception_or_conflict_terms"),
         ("客户晚餐和差旅餐补能同时报销吗？", "cross_policy", "hybrid_rerank", True, "cross_policy_terms"),
-        ("费用报销管理办法 V2 中，超过 5000 元需要谁审批？", "structured_fallback", "hybrid", False, "structured_clause_store_unavailable"),
+        ("费用报销管理办法 V2 中，超过 5000 元需要谁审批？", "structured_fallback", "hybrid", False, "structured_clause_query_selected"),
     ],
 )
 def test_auto_router_uses_only_real_supported_retrieval_paths(

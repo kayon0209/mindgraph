@@ -181,7 +181,7 @@ def test_repository_v2_golden_dataset_is_valid_and_structurally_complete():
     """The checked-in V2 set remains an independently authored, typed fixture."""
     cases = load_golden_dataset()
 
-    assert len(cases) == 12
+    assert len(cases) == 50
     assert {item["dataset_version"] for item in cases} == {"2.2.0"}
     assert {item["expected_behavior"] for item in cases} == {"answer", "abstain"}
     assert {item["split"] for item in cases} == {"development", "regression"}
@@ -192,8 +192,29 @@ def test_repository_v2_golden_dataset_is_valid_and_structurally_complete():
         "cross_policy",
         "no_answer",
         "ambiguity",
+        "graph_needed",
+        "graph_control",
     }
-    assert all(item["label_source"] == "human-authored-from-demo-vault" for item in cases)
+    assert {item["query_type"] for item in cases} >= {
+        "exact_fact",
+        "multi_condition",
+        "versioned_policy",
+        "no_answer",
+        "exception",
+        "conflict",
+        "acl_restricted",
+        "synonym_abbrev",
+        "graph_needed",
+        "graph_control",
+    }
+    assert all(
+        item["label_source"] in {
+            "human-authored-from-demo-vault",
+            "human-validated-from-demo-vault",
+            "human-validated-from-data-source",
+        }
+        for item in cases
+    )
     assert all(
         item["gold_vault_paths"] if item["expected_behavior"] == "answer" else not item["gold_vault_paths"]
         for item in cases

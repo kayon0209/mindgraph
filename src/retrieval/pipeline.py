@@ -38,11 +38,26 @@ class RetrievalPipeline:
         self.final_top_k = final_top_k
 
     @staticmethod
-    def _search(retriever, query: str, top_k: int, access_scope: dict | None):
+    def _search(
+        retriever,
+        query: str,
+        top_k: int,
+        access_scope: dict | None,
+        query_date: str | None = None,
+        categories: list[str] | None = None,
+        include_historical: bool = False,
+    ):
         parameters = inspect.signature(retriever.search).parameters
-        if "access_scope" in parameters:
-            return retriever.search(query, top_k, access_scope=access_scope)
-        return retriever.search(query, top_k)
+        kwargs = {}
+        for name, value in (
+            ("access_scope", access_scope),
+            ("query_date", query_date),
+            ("categories", categories),
+            ("include_historical", include_historical),
+        ):
+            if name in parameters:
+                kwargs[name] = value
+        return retriever.search(query, top_k, **kwargs)
 
     @staticmethod
     def _base_score(candidate) -> float:
@@ -125,12 +140,18 @@ class RetrievalPipeline:
         trace.applied_filters = {"query_date": query_date, "knowledge_categories": categories or [], "include_historical": include_historical, "access_scope": access_scope}
         dense_results, sparse_results = [], []
         if strategy in {"dense", "hybrid", "hybrid_rerank"}:
-            dense_results, timings = self._search(self.dense, query, self.candidate_count, access_scope)
+            dense_results, timings = self._search(
+                self.dense, query, self.candidate_count, access_scope,
+                query_date, categories, include_historical,
+            )
             dense_results = self._filter_by_access(dense_results, access_scope, trace)
             trace.latency_ms.update(timings)
             trace.dense_results = dense_results
         if strategy in {"bm25", "hybrid", "hybrid_rerank"}:
-            sparse_results, timings = self._search(self.sparse, query, self.candidate_count, access_scope)
+            sparse_results, timings = self._search(
+                self.sparse, query, self.candidate_count, access_scope,
+                query_date, categories, include_historical,
+            )
             sparse_results = self._filter_by_access(sparse_results, access_scope, trace)
             trace.latency_ms.update(timings)
             trace.sparse_results = sparse_results

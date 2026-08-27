@@ -18,7 +18,7 @@ class ParserRegistry:
         raise ValueError(f"Unsupported document type: {file_type or 'none'}")
 
     def parse(self, data: bytes, filename: str): return self.get(filename).parse(data, filename)
-    def supported_extensions(self): return sorted({ext for parser in self.parsers for ext in ("md", "txt", "pdf", "docx", "xlsx") if parser.supports(ext)})
+    def supported_extensions(self): return sorted({ext for parser in self.parsers for ext in ("md", "txt", "html", "htm", "pdf", "docx", "xlsx") if parser.supports(ext)})
 
 
 default_parser_registry = ParserRegistry([TextParser(True), TextParser(False), PDFParser(), DOCXParser(), XLSXParser()])

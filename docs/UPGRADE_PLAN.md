@@ -1,6 +1,6 @@
 # MindGraph 升级计划（Roadmap / Upgrade Plan）
 
-> **状态说明**：`Partial` 表示已有代码入口，但尚未满足端到端验收、迁移或完整 CI 条件；只有全部验收通过后才可改为 `Done`。RAG 质量以“正确、完整、可追溯且不越权的证据”为准，而不是以回答是否流畅为准。
+> **状态说明**：`Partial` 表示已有代码入口，但尚未满足端到端验收、迁移或完整 CI 条件；只有全部验收通过后才可改为 `Done`。RAG 质量以“正确、完整、可追溯且不越权的证据”为准，而不是以回答是否流畅为准。当前本地可自动验收项已落地；真实企业 IdP、生产源迁移和脱敏真实问题集仍属于外部验收依赖。
 
 ## 优先级与执行顺序
 
@@ -12,14 +12,14 @@
 
 | ID | 升级项 | 优先级 | 状态 | 核心缺口 / 交付标准 |
 |----|--------|:---:|:---:|----|
-| UG-003 | 多租户 / 权限前置过滤 | **P1** | **Partial** | ACL 历史数据回填；未授权 chunk 不得进入融合、重排或模型上下文 |
-| UG-004 | 企业连接器 source ownership | **P1** | **Partial** | 建立正式来源归属、完成迁移和 source-aware prune，外部源仍不可改写 |
-| UG-007 | 检索质量评测与证据可观测性 | **P1** | Planned | 真实问题集、期望证据、Recall@k / 引用正确率 / 拒答正确率和 CI 回归门禁 |
-| UG-001 | 鲁棒文档 ingestion（layout-aware） | P2 | **Partial** | 执行 OCR；按语义结构、表头、单位、页码和来源构建可独立回答的 chunk |
-| UG-002 | Query 理解与多查询召回 | P2 | **Partial** | 各 query variant 分别检索，合并去重并以元数据/ACL 预过滤后排序 |
-| UG-008 | 知识治理与生命周期过滤 | P2 | Planned | 过期、草稿、冲突、重复资料在入库和召回两端均可识别、过滤和审计 |
-| UG-005 | MCP 只读工具 + 隐私审计 | P2 | **Partial** | async handler 不阻塞事件循环；问题文本审计服从统一隐私策略 |
-| UG-006 | SSO / OIDC 企业验收 | P2 | **Partial** | 已完成 discovery/JWK client 缓存；仍需真实非生产 IdP 的端到端验收 |
+| UG-003 | 多租户 / 权限前置过滤 | **P1** | **Partial** | ACL 历史数据回填；未授权 chunk 不得进入融合、重排或模型上下文（本地检索前置过滤已完成） |
+| UG-004 | 企业连接器 source ownership | **P1** | **Partial** | 建立正式来源归属、完成迁移和 source-aware prune，外部源仍不可改写（连接器隔离与失败零删除已完成） |
+| UG-007 | 检索质量评测与证据可观测性 | **P1** | **Partial** | Golden 50 条、trace 与确定性 CI 数据契约门禁已完成；真实 50–200 条脱敏问题集的业务代表性和质量基线仍待接入 |
+| UG-001 | 鲁棒文档 ingestion（layout-aware） | P2 | **Partial** | 已完成布局解析、表格保真和 OCR-required 阻断；真实 OCR 引擎执行与扫描 PDF fixture 仍待接入 |
+| UG-002 | Query 理解与多查询召回 | P2 | **Partial** | variant 独立检索、合并去重和 trace 已完成；真实问题集上的召回增益与预算校准仍待完成 |
+| UG-008 | 知识治理与生命周期过滤 | P2 | **Partial** | active/过期/版本/冲突检索过滤已完成；重复资料识别、治理动作审计和入库阻断仍待完成 |
+| UG-005 | MCP 只读工具 + 隐私审计 | P2 | **Partial** | HTTP handler 线程池边界、批量隔离和默认不记录问题正文已完成；并发取消与生产隐私策略仍待验收 |
+| UG-006 | SSO / OIDC 企业验收 | P2 | **Partial** | discovery/JWK 缓存与离线契约已完成；真实非生产 IdP 的轮换与错误场景仍待验收 |
 
 ---
 
@@ -41,7 +41,7 @@
 - 企业认证模式下缺失、无效或失败的凭据返回 401，不再降级为匿名；
 - `AUTH_MODE=demo` 的匿名主体使用 public-only scope，`AUTH_MODE=off` 是唯一显式 ACL bypass。
 
-**剩余工作**：按“frontmatter 显式 ACL > 受控目录默认 ACL > 显式 public 标记”回填历史 notes；无法可靠判定的记录默认 private 并输出待治理清单。在 dense、BM25 和 MindGraph 适配层按 workspace、department、allow/deny、状态和有效期预过滤，再融合和重排；trace 仅记录排除计数与原因，不记录私有正文。
+**剩余工作**：按“frontmatter 显式 ACL > 受控目录默认 ACL > 显式 public 标记”回填历史 notes；无法可靠判定的记录默认 private 并输出待治理清单。在 dense、BM25 和 MindGraph 适配层按 workspace、department、allow/deny、状态和有效期预过滤，再融合和重排；trace 仅记录排除计数与原因，不记录私有正文。当前仓库已完成本地数据源的 ACL 回填和前置过滤验证；生产历史 notes 治理清单仍需在目标数据上执行。
 
 **验收**：无权限 chunk 不出现在 dense/sparse/fusion/rerank/LLM context 任一阶段；回填可重复、可审计、可回滚；最终 `_filter_by_access` 仍作为防御纵深。
 
@@ -88,7 +88,7 @@
 
 ---
 
-## UG-007：检索质量评测与证据可观测性（P1，Planned）
+## UG-007：检索质量评测与证据可观测性（P1，Partial）
 
 **实施范围**：建立 50–200 条脱敏的真实高频问题集；每题记录期望文档、章节/chunk、版本/有效期、权限主体，以及应拒答或应标记冲突的情形。报告 Recall@k、MRR、引用正确率、版本正确率、拒答正确率、ACL 泄露数、重复候选率、延迟与 token 使用量；`RetrievalTrace` 输出 variants、候选数、预过滤原因、融合/重排变化和最终引用 ID。
 
