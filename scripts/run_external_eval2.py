@@ -8,7 +8,7 @@ from infrastructure.database import ProductDatabase
 from application.mindgraph_graph_store import MindGraphGraphStore
 import infrastructure.retrieval_factory as rf
 from retrieval.embeddings import BGEEmbeddingProvider
-from evaluation.mindgraph_retrieval_eval import load_golden_dataset, evaluate_retrieval_cases
+from evaluation.mindgraph_retrieval_eval import dataset_sha256, load_golden_dataset, evaluate_retrieval_cases
 
 db = ProductDatabase(Path(config.ROOT)/"data/product/product.sqlite3")
 db.initialize()
@@ -23,13 +23,14 @@ from infrastructure.retrieval_factory import create_mindgraph_retrieval_pipeline
 index_root = Path(config.ROOT)/"data/retrieval_indexes"
 graph_store = MindGraphGraphStore(db)
 cases = load_golden_dataset()
+golden_digest = dataset_sha256(_eval.DEFAULT_DATASET_PATH)
 print(f"golden {len(cases)}")
 for ge in [False, True]:
     pipeline = create_mindgraph_retrieval_pipeline(index_root, graph_store, final_top_k=5, graph_enabled=ge)
     print(f"\n=== graph_enabled={ge} dense_chunks={len(pipeline.base.dense.chunks)} ===")
     def retrieve(case):
         return pipeline.retrieve(case["question"], "hybrid")
-    report = evaluate_retrieval_cases(cases, retrieve, top_k=5)
+    report = evaluate_retrieval_cases(cases, retrieve, top_k=5, dataset_digest=golden_digest)
     print(f" recall@5={report['summary']['recall_at_k']} mrr={report['summary']['mrr']} prec={report['summary']['precision_at_k']}")
     failed = [f["case_id"] for f in report["failed_cases"][:15]]
     print(f" failed {len(report['failed_cases'])}: {failed}")
@@ -42,5 +43,10 @@ ext = [c for c in cases if c["query_type"]=="external_policy"]
 print(f"\n--- external subset {len(ext)} ---")
 for ge in [False,True]:
     pipeline = create_mindgraph_retrieval_pipeline(index_root, graph_store, final_top_k=5, graph_enabled=ge)
-    report = evaluate_retrieval_cases(ext, lambda case: pipeline.retrieve(case["question"],"hybrid"), top_k=5)
+    report = evaluate_retrieval_cases(
+        ext,
+        lambda case: pipeline.retrieve(case["question"], "hybrid"),
+        top_k=5,
+        dataset_digest=golden_digest,
+    )
     print(f" ge={ge} recall={report['summary']['recall_at_k']} details {[d['metrics'] for d in report['details']]}")

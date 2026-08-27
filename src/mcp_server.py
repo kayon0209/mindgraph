@@ -260,10 +260,9 @@ def _call_tool(name: str, arguments: dict[str, Any], principal: dict[str, Any] |
         limit = min(max(int(arguments.get("limit", 50)), 1), MAX_LIST_LIMIT)
         rows = database.fetch_all(
             "SELECT relation_id, source_note_id, target_note_id, relation_type, confidence "
-            "FROM note_relations WHERE status='confirmed' ORDER BY confidence DESC LIMIT ?",
-            (limit,),
+            "FROM note_relations WHERE status='confirmed' ORDER BY confidence DESC",
         )
-        note_ids = [r["source_note_id"] for r in rows] + [r["target_note_id"] for r in rows]
+        note_ids = sorted({r["source_note_id"] for r in rows} | {r["target_note_id"] for r in rows})
         note_rows = {}
         if note_ids:
             placeholders = ",".join("?" for _ in note_ids)
@@ -285,6 +284,8 @@ def _call_tool(name: str, arguments: dict[str, Any], principal: dict[str, Any] |
                 "type": r["relation_type"],
                 "confidence": r["confidence"],
             })
+            if len(items) >= limit:
+                break
         _audit("mcp_list_relations", "note_relations/confirmed", "allow", {"count": len(items)})
         return {"relations": items}
 

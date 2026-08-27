@@ -77,6 +77,22 @@ def test_graph_store_returns_typed_relations_and_rejects_invalid_hops(relation_r
         store.related_note_ids(["n1"], status="draft")
 
 
+def test_graph_store_enforces_per_hop_limits_and_cycle_protection(relation_rows):
+    rows = [
+        dict(relation_rows[0], relation_id=f"rel-{target}", target_note_id=target)
+        for target in ("n2", "n3", "n4")
+    ]
+    rows.append(dict(relation_rows[0], relation_id="rel-cycle", source_note_id="n2", target_note_id="n1"))
+    store = MindGraphGraphStore(_FakeDb(rows))
+
+    relations = store.related_note_ids(["n1"], hops=2, max_edges_per_hop=2, max_nodes_per_hop=2)
+
+    assert len([item for item in relations if item["hop"] == 1]) == 2
+    assert all(item["target_note_id"] != "n1" for item in relations)
+    with pytest.raises(ValueError, match="max_edges_per_hop must be a positive integer"):
+        store.related_note_ids(["n1"], max_edges_per_hop=0)
+
+
 def test_graph_store_traverses_incoming_relations_and_normalizes_direction(relation_rows):
     """命中笔记是 target 时，关系通过 incoming 方向反向发现，并归一化为「命中→目标」。"""
     store = MindGraphGraphStore(_FakeDb(relation_rows))
@@ -166,3 +182,19 @@ def test_pipeline_keeps_relation_when_span_falls_back_for_unresolved_chunk(relat
 
     assert trace.candidate_counts["graph_expanded"] == 1
     assert any("graph_evidence_chunk_unresolved:ghost-chunk" in warning for warning in trace.warnings)
+
+
+def test_pipeline_falls_back_to_base_results_when_graph_store_fails():
+    class FailingGraphStore:
+        def related_note_ids(self, *_args, **_kwargs):
+            raise RuntimeError("graph unavailable")
+
+    base_chunk = Chunk("chunk-0", "root", "doc-1", 0, None, {"mindgraph_id": "n1"})
+    pipeline = MindGraphRetrievalPipeline(_BasePipeline([base_chunk]), FailingGraphStore(), graph_enabled=True)
+
+    trace = pipeline.retrieve("q", "hybrid", graph_enabled=True)
+
+    assert [item.chunk.chunk_id for item in trace.final_selected_chunks] == ["chunk-0"]
+    assert trace.graph_links == []
+    assert trace.candidate_counts["graph_expanded"] == 0
+    assert "graph_expansion_failed:RuntimeError" in trace.warnings

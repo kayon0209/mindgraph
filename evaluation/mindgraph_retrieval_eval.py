@@ -10,6 +10,8 @@ from pathlib import Path
 import re
 from typing import Any
 
+from jsonschema import Draft202012Validator, FormatChecker
+
 try:
     from src.retrieval.types import RetrievalTrace
 except ModuleNotFoundError:
@@ -17,6 +19,7 @@ except ModuleNotFoundError:
 
 DEFAULT_DATASET_PATH = Path(__file__).resolve().parent / "datasets" / "mindgraph_golden_v2.jsonl"
 DEFAULT_CANDIDATE_DATASET_PATH = Path(__file__).resolve().parent / "datasets" / "mindgraph_candidates_v2.jsonl"
+GOLDEN_SCHEMA_PATH = Path(__file__).resolve().parent / "datasets" / "mindgraph_golden_v2.schema.json"
 _REQUIRED_FIELDS = (
     "case_id",
     "question",
@@ -28,12 +31,25 @@ _REQUIRED_FIELDS = (
     "forbidden_facts",
     "dataset_version",
     "label_source",
+    "query_type",
+    "difficulty",
+    "expected_route",
+    "graph_needed",
+    "acl_context",
+    "source",
+    "validation_status",
+    "notes",
 )
 _STAGES = ("dense_results", "sparse_results", "fused_results", "reranked_results", "final_selected_chunks")
 _STAGE_ORDER = {"not_retrieved": 0, "retrieved_not_ranked": 1, "ranked_not_final": 2, "final": 3}
 _APPROVED_STATUS = "approved"
 _PENDING_STATUS = "pending"
 _CANDIDATE_SOURCE = "generated_candidate"
+
+
+def _golden_schema_validator() -> Draft202012Validator:
+    schema = json.loads(GOLDEN_SCHEMA_PATH.read_text(encoding="utf-8"))
+    return Draft202012Validator(schema, format_checker=FormatChecker())
 
 
 def _jsonl_records(path: str | Path) -> list[dict[str, Any]]:
@@ -174,7 +190,17 @@ def _validate_case_contract(cases: Iterable[dict[str, Any]], *, kind: str) -> li
 
 
 def validate_golden_cases(cases: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    return _validate_case_contract(cases, kind="golden")
+    validated = _validate_case_contract(cases, kind="golden")
+    validator = _golden_schema_validator()
+    for index, case in enumerate(validated, 1):
+        public_case = {key: value for key, value in case.items() if not key.startswith("_")}
+        error = next(iter(validator.iter_errors(public_case)), None)
+        if error is not None:
+            field = ".".join(str(part) for part in error.absolute_path) or "record"
+            raise ValueError(
+                f"case_id {case['case_id']!r} (index {index}) violates golden schema at {field}: {error.message}"
+            )
+    return validated
 
 
 def validate_candidate_cases(cases: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -250,9 +276,22 @@ def _metrics(gold: set[str], final_paths: list[str], top_k: int) -> dict[str, fl
     }
 
 
+def _percentile(values: list[float], percentile: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * percentile
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return round(ordered[lower], 4)
+    weight = position - lower
+    return round(ordered[lower] * (1 - weight) + ordered[upper] * weight, 4)
+
+
 def evaluate_retrieval_cases(
     cases: list[dict[str, Any]], retrieve: Callable[[dict[str, Any]], RetrievalTrace], *,
-    top_k: int = 5, include_questions: bool = False,
+    top_k: int = 5, include_questions: bool = False, dataset_digest: str | None = None,
 ) -> dict[str, Any]:
     """Evaluate traces without invoking retrieval, models, network, or persistence."""
     if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k < 1:
@@ -264,6 +303,7 @@ def evaluate_retrieval_cases(
     graph_enabled_cases = 0
     graph_activated_cases = 0
     graph_expanded_candidates = 0
+    total_latencies_ms: list[float] = []
     for case in cases:
         behavior = case["expected_behavior"]
         counts[behavior] += 1
@@ -293,6 +333,10 @@ def evaluate_retrieval_cases(
             "expanded_candidates": expanded_candidates,
             "relation_ids": relation_ids,
         }
+        total_latency = trace_value.latency_ms.get("total_retrieval_ms")
+        if isinstance(total_latency, int | float) and not isinstance(total_latency, bool):
+            total_latencies_ms.append(float(total_latency))
+            detail["total_retrieval_ms"] = round(float(total_latency), 4)
         if graph_enabled:
             graph_enabled_cases += 1
             graph_expanded_candidates += expanded_candidates
@@ -318,6 +362,8 @@ def evaluate_retrieval_cases(
         name: round(sum(row["metrics"][name] for row in scored) / len(scored), 4) if scored else None
         for name in ("recall_at_k", "precision_at_k", "mrr", "ndcg_at_k")
     }
+    summary["p50_retrieval_ms"] = _percentile(total_latencies_ms, 0.50)
+    summary["p95_retrieval_ms"] = _percentile(total_latencies_ms, 0.95)
     failures = [row for row in scored if row["metrics"]["recall_at_k"] < 1.0]
     graph_limitations: list[str] = []
     if graph_enabled_cases == 0:
@@ -327,6 +373,8 @@ def evaluate_retrieval_cases(
     return {
         "evaluator_version": "mindgraph-retrieval-v2",
         "dataset_version": cases[0].get("dataset_version") if cases else None,
+        "dataset_sha256": dataset_digest,
+        "sample_size": len(cases),
         "top_k": top_k,
         "counts": counts,
         "summary": summary,

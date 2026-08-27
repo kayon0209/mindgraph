@@ -1,4 +1,4 @@
-import { FormEvent, useRef, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   ArrowUp,
@@ -18,7 +18,13 @@ import { routeDecisionView } from "../lib/route-decision";
 import type { AnswerResult, Citation, ChatRequest, RetrievalTrace, RouteDecision, StreamEvent } from "../types";
 import { PageHeader } from "../components/Primitives";
 
-type Turn = { id: string; question: string; answer: string; state: "streaming" | "complete" | "error" };
+type Turn = { id: string; question: string; answer: string; state: "streaming" | "complete" | "error"; errorDetail?: string };
+
+const ERROR_MESSAGES: Record<string, string> = {
+  retrieval_unavailable: "检索服务暂不可用，请稍后重试。",
+  provider_error: "生成模型暂时不可用，可先查看引用原文。",
+  stream_error: "回答连接中断，请重试。",
+};
 type StepState = "waiting" | "running" | "done" | "warning";
 
 const QUICK_QUESTIONS = [
@@ -50,6 +56,26 @@ export function ChatPage() {
   const [steps, setSteps] = useState(INITIAL_STEPS);
   const [running, setRunning] = useState(false);
   const controller = useRef<AbortController | null>(null);
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
+
+  useEffect(() => {
+    const saved = window.localStorage.getItem("mindgraph.chat.turns");
+    if (saved) {
+      try {
+        setTurns(JSON.parse(saved) as Turn[]);
+      } catch {
+        window.localStorage.removeItem("mindgraph.chat.turns");
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (turns.length) window.localStorage.setItem("mindgraph.chat.turns", JSON.stringify(turns));
+  }, [turns]);
+
+  useEffect(() => {
+    if (!turns.length) composerRef.current?.focus();
+  }, [turns.length]);
 
   const updateTurn = (id: string, patch: Partial<Turn>) => {
     setTurns((current) => current.map((turn) => (turn.id === id ? { ...turn, ...patch } : turn)));
@@ -104,23 +130,29 @@ export function ChatPage() {
       }));
     }
     if (event.event === "error") {
+      const code = typeof data.code === "string" ? data.code : "stream_error";
       updateTurn(turnId, {
-        answer: typeof data.message === "string" ? data.message : "请求失败，请检查服务日志。",
+        answer: ERROR_MESSAGES[code] || "请求暂时失败，请稍后重试。",
+        errorDetail: typeof data.detail === "string" ? data.detail : undefined,
         state: "error",
       });
+      setResultState(code);
+      setSteps((current) => ({ ...current, retrieval: "warning" }));
     }
   };
 
   const conflictItems = policyConflictItems(trace);
   const routeView = routeDecision ? routeDecisionView(routeDecision) : null;
 
-  const submit = async (event?: FormEvent, preset?: string) => {
+  const submit = async (event?: FormEvent, preset?: string, retryId?: string) => {
     event?.preventDefault();
     const finalQuestion = (preset ?? question).trim();
     if (!finalQuestion || running) return;
 
-    const id = crypto.randomUUID();
-    setTurns((current) => [...current, { id, question: finalQuestion, answer: "", state: "streaming" }]);
+    const id = retryId || crypto.randomUUID();
+    setTurns((current) => retryId
+      ? current.map((turn) => turn.id === retryId ? { ...turn, answer: "", errorDetail: undefined, state: "streaming" } : turn)
+      : [...current, { id, question: finalQuestion, answer: "", state: "streaming" }]);
     setQuestion("");
     setCitations([]);
     setTrace(null);
@@ -145,8 +177,8 @@ export function ChatPage() {
       );
     } catch (error) {
       if ((error as Error).name !== "AbortError") {
-        updateTurn(id, { answer: `连接失败：${(error as Error).message}`, state: "error" });
-        setResultState("system_error");
+        updateTurn(id, { answer: "回答连接中断，请重试。", errorDetail: (error as Error).message, state: "error" });
+        setResultState("stream_error");
       }
     } finally {
       setRunning(false);
@@ -157,7 +189,7 @@ export function ChatPage() {
   return (
     <div className="page chat-page">
       <PageHeader
-        eyebrow="Decision evidence / 01"
+        eyebrow="可信问答 / 01"
         title="先给结论，再交付证据"
         description="面向制度判断，不追求聊天感。每个回答都必须留下来源、版本与检索轨迹。"
       />
@@ -166,18 +198,18 @@ export function ChatPage() {
         <section className="conversation-panel">
           <div className="query-controls">
             <label>
-              <span>检索策略</span>
-              <select value={strategy} onChange={(event) => setStrategy(event.target.value as ChatRequest["retrieval_strategy"])}>
-                <option value="auto">Auto · 推荐</option>
-                <option value="hybrid">Hybrid</option>
-                <option value="hybrid_rerank">Hybrid + Rerank</option>
-                <option value="dense">Dense</option>
-                <option value="bm25">BM25</option>
+              <span>检索方式</span>
+              <select aria-label="检索方式" value={strategy} onChange={(event) => setStrategy(event.target.value as ChatRequest["retrieval_strategy"])}>
+                <option value="auto">自动匹配（推荐）</option>
+                <option value="hybrid">混合检索</option>
+                <option value="hybrid_rerank">混合检索 + 精排</option>
+                <option value="dense">语义检索</option>
+                <option value="bm25">关键词检索</option>
               </select>
             </label>
             <label>
-              <span>证据数量</span>
-              <select value={topK} onChange={(event) => setTopK(Number(event.target.value))}>
+              <span>引用数量</span>
+              <select aria-label="引用数量" value={topK} onChange={(event) => setTopK(Number(event.target.value))}>
                 {[3, 5, 8, 10].map((value) => (
                   <option key={value} value={value}>
                     Top {value}
@@ -227,6 +259,14 @@ export function ChatPage() {
                       {turn.state === "streaming" ? <LoaderCircle className="spin" size={16} /> : null}
                     </div>
                     <p>{turn.answer || "正在核对制度与证据……"}</p>
+                    {turn.state === "error" ? (
+                      <div className="answer-actions">
+                        <button className="button secondary" onClick={() => void submit(undefined, turn.question, turn.id)} type="button">
+                          <RotateCcw size={15} /> 重试
+                        </button>
+                        {turn.errorDetail ? <details className="technical-details"><summary>查看技术详情</summary><code>{turn.errorDetail}</code></details> : null}
+                      </div>
+                    ) : null}
                   </div>
                 </article>
               ))
@@ -235,6 +275,7 @@ export function ChatPage() {
 
           <form className="question-composer" onSubmit={(event) => void submit(event)}>
             <textarea
+              ref={composerRef}
               aria-label="制度问题"
               maxLength={2000}
               onChange={(event) => setQuestion(event.target.value)}
@@ -265,7 +306,7 @@ export function ChatPage() {
 
         <aside className="evidence-rail">
           <div className="rail-heading">
-            <p className="eyebrow">Evidence chain</p>
+            <p className="eyebrow">证据链</p>
             <h2>证据链轨道</h2>
           </div>
 
@@ -279,7 +320,7 @@ export function ChatPage() {
             <div className="rail-section-title">
               <Gauge size={16} />
               <strong>检索路由</strong>
-              <span>{routeDecision ? (routeDecision.mode === "adaptive" ? "AUTO" : "MAN") : "—"}</span>
+              <span>{routeDecision ? (routeDecision.mode === "adaptive" ? "自动" : "手动") : "—"}</span>
             </div>
             {routeView ? (
               <div className="route-decision-card">
@@ -289,15 +330,13 @@ export function ChatPage() {
                 </div>
                 <p>{routeView.graphLabel}</p>
                 <ul>{routeView.reasonLabels.map((reason) => <li key={reason}>{reason}</li>)}</ul>
-                <small>成本 {routeView.costTierLabel} · 延迟 {routeView.latencyTierLabel}</small>
+                <small>检索路径：{routeView.strategyLabel}</small>
                 <div className="route-decision-tags">
                   <span>{routeView.costTierLabel}</span>
                   <span>{routeView.latencyTierLabel}</span>
                   {routeView.degraded ? <span>已降级</span> : null}
                 </div>
-                {trace?.stage_latency_ms.routing_ms !== undefined ? (
-                  <small>路由耗时 {trace.stage_latency_ms.routing_ms.toFixed(3)} ms</small>
-                ) : null}
+
               </div>
             ) : (
               <p className="rail-placeholder">提交问题后，系统会说明为何选择当前检索成本与证据路径。</p>

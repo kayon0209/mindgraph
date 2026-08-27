@@ -27,6 +27,14 @@ def case(case_id="A", behavior="answer", paths=None, question="q"):
         "forbidden_facts": [],
         "dataset_version": "test-v1",
         "label_source": "human-authored-test-fixture",
+        "query_type": "exact_fact",
+        "difficulty": "easy",
+        "expected_route": "factual",
+        "graph_needed": False,
+        "acl_context": {},
+        "source": "human-authored-test-fixture",
+        "validation_status": "approved",
+        "notes": "test fixture",
     }
 
 
@@ -45,6 +53,8 @@ def candidate_case(case_id="C", behavior="answer", paths=None, question="q"):
         "label_source": "generated-candidate-test-fixture",
         "source": "generated_candidate",
         "validation_status": "pending",
+        "difficulty": "easy",
+        "notes": "test fixture",
         "expected_route": "hybrid",
         "graph_needed": False,
         "acl_context": {"roles": ["employee"]},
@@ -182,7 +192,7 @@ def test_repository_v2_golden_dataset_is_valid_and_structurally_complete():
     cases = load_golden_dataset()
 
     assert len(cases) == 54  # 50 + 4 Basecamp external_policy (approved 2026-08-27)
-    assert {item["dataset_version"] for item in cases} == {"2.2.0"}
+    assert {item["dataset_version"] for item in cases} == {"2.3.0"}
     assert {item["expected_behavior"] for item in cases} == {"answer", "abstain"}
     assert {item["split"] for item in cases} == {"development", "regression"}
     assert {item["category"] for item in cases} >= {
@@ -232,6 +242,16 @@ def test_repository_v2_golden_dataset_is_valid_and_structurally_complete():
     assert not unreachable, f"golden entries reference missing vault files: {unreachable}"
 
 
+def test_repository_v2_golden_records_conform_to_published_schema():
+    import jsonschema
+
+    schema_path = Path(__file__).resolve().parents[1] / "evaluation" / "datasets" / "mindgraph_golden_v2.schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    assert schema["additionalProperties"] is False
+    for item in load_golden_dataset():
+        jsonschema.validate(item, schema)
+
+
 def test_candidate_dataset_contract_requires_pending_review_and_is_separate_from_golden():
     candidate_cases = [candidate_case("C-1"), candidate_case("C-2", behavior="abstain", paths=[])]
     validated = validate_candidate_cases(candidate_cases)
@@ -252,7 +272,7 @@ def test_candidate_dataset_contract_requires_pending_review_and_is_separate_from
         bad["graph_needed"] = True
         validate_candidate_cases([bad])
 
-    with pytest.raises(ValueError, match=r"require validation_status='pending'"):
+    with pytest.raises(ValueError, match=r"missing required field.*validation_status"):
         bad = candidate_case("C-6")
         bad.pop("validation_status")
         validate_candidate_cases([bad])
@@ -271,6 +291,17 @@ def test_dataset_sha256_is_deterministic_and_stable(tmp_path: Path):
     h2 = dataset_sha256(path)
     assert h1 == h2
     assert len(h1) == 64
+
+
+def test_retrieval_report_carries_dataset_snapshot_identity():
+    retrieval_trace = trace([], [], [], [], ["gold.md"])
+    retrieval_trace.latency_ms = {"total_retrieval_ms": 12.5}
+    report = evaluate_retrieval_cases([case("snapshot")], lambda _case: retrieval_trace, dataset_digest="a" * 64)
+
+    assert report["dataset_sha256"] == "a" * 64
+    assert report["sample_size"] == 1
+    assert report["summary"]["p50_retrieval_ms"] == 12.5
+    assert report["summary"]["p95_retrieval_ms"] == 12.5
 
 
 def test_load_candidate_dataset_from_path(tmp_path: Path):
@@ -301,7 +332,7 @@ def test_candidate_with_graph_needed_requires_expected_relations(tmp_path: Path)
 def test_candidate_without_query_type_is_rejected(tmp_path: Path):
     bad = candidate_case("C-9")
     bad.pop("query_type")
-    with pytest.raises(ValueError, match=r"require a non-empty query_type"):
+    with pytest.raises(ValueError, match=r"missing required field.*query_type"):
         validate_candidate_cases([bad])
 
 
@@ -377,7 +408,9 @@ def test_precision_uses_k_for_short_results_and_mrr_uses_full_ranking():
 def test_retrieval_report_records_observed_graph_activation():
     graph_case = case("graph-case", paths=["linked.md"])
     graph_case["graph_needed"] = True
-    graph_case["expected_relations"] = [{"source": "root", "target": "linked", "type": "related_to"}]
+    graph_case["expected_relations"] = [
+        {"source_path": "root.md", "target_path": "linked.md", "relation_type": "related_to"}
+    ]
     retrieval_trace = trace([], [], [], [], ["root.md", "linked.md"])
     retrieval_trace.graph_enabled = True
     retrieval_trace.graph_hops = 1

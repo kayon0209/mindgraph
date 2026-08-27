@@ -207,6 +207,67 @@ def test_mcp_search_audit_never_logs_question_body(tmp_path: Path):
         override_container(None)
 
 
+def test_mcp_relation_limit_is_applied_after_acl_filtering(tmp_path: Path):
+    database, _vault = _bootstrap(tmp_path)
+    for relation_id, note_id, confidence in (
+        ("rel-hidden", "hr-note", 0.99),
+        ("rel-visible", "finance-note", 0.50),
+    ):
+        database.execute(
+            "INSERT INTO note_relations "
+            "(relation_id, source_note_id, target_note_id, relation_type, direction, status, evidence_chunk_id, confidence, proposed_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (relation_id, note_id, note_id, "related_to", "outgoing", "confirmed", f"{note_id}::0", confidence, "2026-08-26T00:00:00Z"),
+        )
+    try:
+        response = handle_jsonrpc(
+            {
+                "jsonrpc": "2.0",
+                "id": "relations",
+                "method": "tools/call",
+                "params": {"name": "mindgraph_list_relations", "arguments": {"limit": 1}},
+            },
+            principal=_finance_principal(),
+        )
+        body = json.loads(response["result"]["content"][0]["text"])
+        assert [item["id"] for item in body["relations"]] == ["rel-visible"]
+    finally:
+        override_container(None)
+
+
+def test_evaluation_dashboard_exposes_dataset_version_and_category_metrics(tmp_path: Path):
+    database, _vault = _bootstrap(tmp_path)
+    database.execute(
+        "INSERT INTO evaluation_runs "
+        "(run_id,status,dataset_name,dataset_version,retrieval_strategy,configuration_json,summary_metrics_json,"
+        "category_metrics_json,failed_cases_json,result_files_json,progress_messages_json) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            "run-category",
+            "completed",
+            "mindgraph_golden_v2",
+            "2.3.0",
+            "hybrid",
+            "{}",
+            '{"recall_at_5":0.8}',
+            '{"exception":{"recall_at_5":0.5,"sample_size":2}}',
+            "[]",
+            "[]",
+            "[]",
+        ),
+    )
+    client = TestClient(app, raise_server_exceptions=False)
+    try:
+        response = client.get("/api/v1/mindgraph/evaluation/ablation")
+        assert response.status_code == 200
+        run = response.json()["runs"][0]
+        assert run["dataset_version"] == "2.3.0"
+        assert run["category_metrics"]["exception"]["sample_size"] == 2
+    finally:
+        client.close()
+        override_container(None)
+
+
 def test_batch_confirmation_is_rejected(tmp_path: Path):
     """人工确认必须逐条审阅，批量端点不得接受 confirm。"""
     database, _vault = _bootstrap(tmp_path)

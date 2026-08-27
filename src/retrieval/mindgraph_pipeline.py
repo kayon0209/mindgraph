@@ -35,12 +35,16 @@ class MindGraphRetrievalPipeline:
         graph_enabled: bool = False,
         max_graph_chunks: int = 4,
         max_graph_hops: int = DEFAULT_GRAPH_HOPS,
+        max_graph_edges_per_hop: int = 50,
+        max_graph_nodes_per_hop: int = 20,
     ) -> None:
         self.base = base
         self.graph_store = graph_store
         self.graph_enabled = graph_enabled
         self.max_graph_chunks = max_graph_chunks
         self.max_graph_hops = max_graph_hops
+        self.max_graph_edges_per_hop = max_graph_edges_per_hop
+        self.max_graph_nodes_per_hop = max_graph_nodes_per_hop
 
     @property
     def dense(self):
@@ -137,6 +141,10 @@ class MindGraphRetrievalPipeline:
             relation_kwargs["access_scope"] = access_scope
         if "as_of" in parameters:
             relation_kwargs["as_of"] = trace.applied_filters.get("query_date") if trace.applied_filters else None
+        if "max_edges_per_hop" in parameters:
+            relation_kwargs["max_edges_per_hop"] = self.max_graph_edges_per_hop
+        if "max_nodes_per_hop" in parameters:
+            relation_kwargs["max_nodes_per_hop"] = self.max_graph_nodes_per_hop
         relations = relation_method(hit_notes, **relation_kwargs)
         if not relations:
             trace.candidate_counts = {

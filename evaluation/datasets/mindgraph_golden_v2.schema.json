@@ -15,6 +15,14 @@
     "forbidden_facts",
     "dataset_version",
     "label_source"
+    ,"query_type"
+    ,"difficulty"
+    ,"expected_route"
+    ,"graph_needed"
+    ,"acl_context"
+    ,"source"
+    ,"validation_status"
+    ,"notes"
   ],
   "properties": {
     "case_id": {"type": "string", "pattern": "\\S"},
@@ -36,7 +44,39 @@
       "items": {"type": "string", "pattern": "\\S"}
     },
     "dataset_version": {"type": "string", "pattern": "\\S"},
-    "label_source": {"type": "string", "pattern": "\\S"}
+    "label_source": {"type": "string", "pattern": "\\S"},
+    "query_type": {"type": "string", "pattern": "\\S"},
+    "difficulty": {"enum": ["easy", "medium", "hard"]},
+    "expected_route": {"type": "string", "pattern": "\\S"},
+    "graph_needed": {"type": "boolean"},
+    "acl_context": {"type": "object"},
+    "source": {"type": "string", "pattern": "\\S"},
+    "validation_status": {"const": "approved"},
+    "notes": {"type": "string"},
+    "evaluation_date": {"type": "string", "format": "date"},
+    "historical_vault_paths": {
+      "type": "array",
+      "items": {"type": "string", "pattern": "\\S"},
+      "uniqueItems": true
+    },
+    "query_translations": {
+      "type": "array",
+      "items": {"type": "string", "pattern": "\\S"},
+      "minItems": 1
+    },
+    "expected_relations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["source_path", "target_path", "relation_type"],
+        "properties": {
+          "source_path": {"type": "string", "pattern": "\\S"},
+          "target_path": {"type": "string", "pattern": "\\S"},
+          "relation_type": {"type": "string", "pattern": "\\S"}
+        },
+        "additionalProperties": false
+      }
+    }
   },
   "allOf": [
     {
@@ -53,5 +93,5 @@
       "then": {"properties": {"gold_vault_paths": {"maxItems": 0}}}
     }
   ],
-  "additionalProperties": true
+  "additionalProperties": false
 }

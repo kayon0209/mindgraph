@@ -33,6 +33,8 @@ GOVERNANCE_RELATION_TYPES = {
 }
 DEFAULT_RELATION_HOPS = 1
 MAX_RELATION_HOPS = 2
+DEFAULT_MAX_EDGES_PER_HOP = 50
+DEFAULT_MAX_NODES_PER_HOP = 20
 
 
 class MindGraphGraphStore:
@@ -47,6 +49,8 @@ class MindGraphGraphStore:
         hops: int = 1,
         access_scope: dict[str, Any] | None = None,
         as_of: str | None = None,
+        max_edges_per_hop: int = DEFAULT_MAX_EDGES_PER_HOP,
+        max_nodes_per_hop: int = DEFAULT_MAX_NODES_PER_HOP,
     ) -> list[dict[str, Any]]:
         ids = list(note_ids)
         if not ids:
@@ -55,6 +59,12 @@ class MindGraphGraphStore:
             raise ValueError(f"hops must be between 1 and {MAX_RELATION_HOPS}")
         if status not in RELATION_STATUSES:
             raise ValueError(f"unsupported relation status: {status}")
+        for name, value in (
+            ("max_edges_per_hop", max_edges_per_hop),
+            ("max_nodes_per_hop", max_nodes_per_hop),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"{name} must be a positive integer")
 
         target_date = date.fromisoformat(as_of).isoformat() if as_of else date.today().isoformat()
         seen: set[str] = set(ids)
@@ -85,7 +95,10 @@ class MindGraphGraphStore:
                 (*sorted(frontier), *sorted(frontier), status),
             )
             next_frontier: set[str] = set()
+            accepted_edges = 0
             for row in rows:
+                if accepted_edges >= max_edges_per_hop or len(next_frontier) >= max_nodes_per_hop:
+                    break
                 if row.get("relation_type") not in TYPED_RELATION_TYPES:
                     continue
                 if not self._relation_is_effective(row, target_date):
@@ -112,6 +125,7 @@ class MindGraphGraphStore:
                 seen.add(to_id)
                 next_frontier.add(to_id)
                 results.append(relation)
+                accepted_edges += 1
             frontier = next_frontier
         return results
 

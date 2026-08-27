@@ -302,8 +302,9 @@ def evaluation_ablation(request: Request):
     indexed_notes = idx["notes"]
 
     run_rows = db.fetch_all(
-        """SELECT run_id, status, dataset_name, retrieval_strategy, chat_model,
-                  started_at, finished_at, summary_metrics_json
+        """SELECT run_id, status, dataset_name, dataset_version, retrieval_strategy, chat_model,
+                  started_at, finished_at, summary_metrics_json, category_metrics_json,
+                  failed_cases_json, result_files_json, progress_messages_json, error
            FROM evaluation_runs ORDER BY started_at DESC LIMIT 20"""
     )
     runs = []
@@ -312,16 +313,38 @@ def evaluation_ablation(request: Request):
             metrics = json.loads(r["summary_metrics_json"]) if r["summary_metrics_json"] else {}
         except Exception:
             metrics = {}
+        try:
+            category_metrics = json.loads(r["category_metrics_json"]) if r["category_metrics_json"] else {}
+        except Exception:
+            category_metrics = {}
+        try:
+            failed_cases = json.loads(r["failed_cases_json"]) if r["failed_cases_json"] else []
+        except Exception:
+            failed_cases = []
+        try:
+            result_files = json.loads(r["result_files_json"]) if r["result_files_json"] else []
+        except Exception:
+            result_files = []
+        try:
+            progress_messages = json.loads(r["progress_messages_json"]) if r["progress_messages_json"] else []
+        except Exception:
+            progress_messages = []
         runs.append(
             {
                 "run_id": r["run_id"],
                 "status": r["status"],
                 "dataset": r["dataset_name"],
+                "dataset_version": r["dataset_version"],
                 "strategy": r["retrieval_strategy"],
                 "model": r["chat_model"],
                 "started_at": r["started_at"],
                 "finished_at": r["finished_at"],
                 "metrics": metrics,
+                "category_metrics": category_metrics,
+                "failed_cases": failed_cases,
+                "result_files": result_files,
+                "progress_messages": progress_messages,
+                "error": r["error"],
             }
         )
     record_access_audit(db, actor=actor, action="evaluation_ablation", resource="evaluation/ablation", decision="allow", metadata={"notes_total": notes_total, "scope_user": (access_scope or {}).get("user")})

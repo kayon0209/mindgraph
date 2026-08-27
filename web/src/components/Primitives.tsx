@@ -37,6 +37,7 @@ const STATUS_LABELS: Record<string, string> = {
   rejected: "已拒绝",
   healthy: "健康",
   proposed: "待审核",
+  unknown: "未知",
 };
 
 export function StatusPill({ value }: { value: string }) {
@@ -68,12 +69,25 @@ export function EmptyState({ title, detail }: { title: string; detail: string })
   );
 }
 
-export function ErrorState({ message, onRetry }: { message: string; onRetry?: () => void }) {
+const ERROR_MESSAGES: Record<string, string> = {
+  retrieval_unavailable: "检索服务暂不可用，请稍后重试。",
+  provider_error: "生成模型暂时不可用，可先查看引用原文。",
+  stream_error: "回答连接中断，请重试。",
+};
+
+export function ErrorState({ message, detail, onRetry }: { message: string; detail?: string; onRetry?: () => void }) {
+  const friendlyMessage = ERROR_MESSAGES[message] || message;
   return (
-    <div className="state-panel error-state">
+    <div className="state-panel error-state" role="alert">
       <AlertTriangle size={24} />
-      <strong>数据读取失败</strong>
-      <p>{message}</p>
+      <strong>暂时无法完成</strong>
+      <p>{friendlyMessage}</p>
+      {detail ? (
+        <details className="technical-details">
+          <summary>查看技术详情</summary>
+          <code>{detail}</code>
+        </details>
+      ) : null}
       {onRetry ? (
         <button className="button secondary" onClick={onRetry} type="button">
           重试

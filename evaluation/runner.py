@@ -24,12 +24,18 @@ from application.adaptive_retrieval_router import AdaptiveRetrievalRouter
 from evaluation.ablation_runner import run as run_ablation_report
 from evaluation.answer_eval import evaluate_answer_predictions
 from evaluation.manifest import build_manifest, to_json
-from evaluation.mindgraph_retrieval_eval import DEFAULT_DATASET_PATH, evaluate_retrieval_cases, load_golden_dataset
+from evaluation.mindgraph_retrieval_eval import (
+    DEFAULT_DATASET_PATH,
+    dataset_sha256,
+    evaluate_retrieval_cases,
+    load_golden_dataset,
+)
 try:
     from src.retrieval.types import Chunk, RetrievalCandidate, RetrievalTrace
 except ModuleNotFoundError:
     from retrieval.types import Chunk, RetrievalCandidate, RetrievalTrace
 from evaluation.routing_eval import evaluate_routing_cases
+from evaluation.threshold_runner import run as run_threshold_report
 
 DEFAULT_MANIFEST_DIR = PROJECT_ROOT / "evaluation" / "results" / "manifests"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "evaluation" / "results" / "unified"
@@ -62,6 +68,7 @@ def _routing_run(dataset: Path) -> dict[str, Any]:
         dataset_version=cases[0]["dataset_version"] if cases else None,
         configuration={"dataset": dataset.name, "evaluator": "deterministic-routing-v1"},
         evaluator_version="deterministic-routing-v1",
+        model={"embedder": "not_used", "reranker": "not_used", "llm": "not_used"},
     )
     summary = evaluate_routing_cases(cases, AdaptiveRetrievalRouter())
     return {"manifest": manifest, "summary": summary, "dataset_version": cases[0]["dataset_version"] if cases else None}
@@ -77,6 +84,7 @@ def _answer_run(dataset: Path, predictions: Path) -> dict[str, Any]:
         dataset_version=cases[0]["dataset_version"] if cases else None,
         configuration={"dataset": dataset.name, "predictions": predictions.name, "evaluator": "deterministic-answer-v1"},
         evaluator_version="deterministic-answer-v1",
+        model={"embedder": "not_used", "reranker": "not_used", "llm": "predictions_input"},
     )
     summary = evaluate_answer_predictions(cases, prediction_rows)
     return {"manifest": manifest, "summary": summary, "dataset_version": cases[0]["dataset_version"] if cases else None}
@@ -93,6 +101,7 @@ def _ablation_run(source: Path) -> dict[str, Any]:
         dataset_version=payload.get("dataset_version"),
         configuration={"source": source.name, "evaluator": "ablation-ledger-v1"},
         evaluator_version="ablation-ledger-v1",
+        model={"embedder": "source_ledger", "reranker": "source_ledger", "llm": "not_used"},
     )
     return {"manifest": manifest, "payload": payload, "dataset_version": payload.get("dataset_version")}
 
@@ -179,9 +188,69 @@ def _retrieval_run(*, dataset: Path, trace_source: Path | None, top_k: int) -> d
         configuration={"dataset": dataset.name, "trace_source": source_path.name, "top_k": top_k, "evaluator": "mindgraph-retrieval-v1"},
         evaluator_version="mindgraph-retrieval-v1",
         index=source.get("index_metadata"),
+        model={
+            "embedder": (source.get("index_metadata") or {}).get("embedding_model_name") or "unknown_from_trace",
+            "reranker": (source.get("index_metadata") or {}).get("reranker_model_name") or "not_used",
+            "llm": "not_used",
+        },
     )
-    report = evaluate_retrieval_cases(cases, retrieve, top_k=top_k)
+    report = evaluate_retrieval_cases(cases, retrieve, top_k=top_k, dataset_digest=dataset_sha256(dataset))
     return {"manifest": manifest, "summary": report, "dataset_version": cases[0]["dataset_version"] if cases else None}
+
+
+def _threshold_run(source: Path, thresholds: list[float]) -> dict[str, Any]:
+    if not source.is_file():
+        raise FileNotFoundError(f"threshold source file not found: {source}")
+    source_payload = json.loads(source.read_text(encoding="utf-8"))
+    details = source_payload.get("details", {}).get("hybrid", [])
+    payload = {
+        "source": str(source),
+        "sample_size": len(details),
+        "thresholds": thresholds,
+        "results": run_threshold_report(source, thresholds),
+        "limitation": "Existing non-holdout retrieval cases; no production threshold is inferred",
+    }
+    manifest = build_manifest(
+        root=PROJECT_ROOT,
+        suite="threshold",
+        dataset=source,
+        dataset_version=source_payload.get("dataset_version"),
+        configuration={"source": source.name, "thresholds": thresholds, "evaluator": "threshold-governance-v1"},
+        evaluator_version="threshold-governance-v1",
+        index=source_payload.get("index_metadata"),
+        model={"embedder": "source_ledger", "reranker": "source_ledger", "llm": "not_used"},
+    )
+    return {"manifest": manifest, "payload": payload, "dataset_version": source_payload.get("dataset_version")}
+
+
+def _enrich_manifest(result: dict[str, Any]) -> None:
+    manifest = result["manifest"]
+    suite = manifest["suite"]
+    payload = result.get("summary") or result.get("payload") or {}
+    if isinstance(payload, dict):
+        total = payload.get("sample_size")
+        if total is None and isinstance(payload.get("counts"), dict):
+            total = sum(value for value in payload["counts"].values() if isinstance(value, int))
+    else:
+        total = None
+    total = int(total or 0)
+    skipped = 0
+    if suite == "retrieval" and isinstance(payload, dict):
+        skipped = int((payload.get("counts") or {}).get("abstain", 0))
+    manifest["execution"] = {
+        "status": "completed",
+        "total": total,
+        "succeeded": max(total - skipped, 0),
+        "failed": 0,
+        "skipped": skipped,
+    }
+    metric_source = payload.get("summary", payload.get("metrics", {})) if isinstance(payload, dict) else {}
+    if not isinstance(metric_source, dict):
+        metric_source = {}
+    manifest["performance"] = {
+        "p50_ms": metric_source.get("p50_retrieval_ms", metric_source.get("p50_ms")),
+        "p95_ms": metric_source.get("p95_retrieval_ms", metric_source.get("p95_ms")),
+    }
 
 
 def run_suite(
@@ -192,6 +261,7 @@ def run_suite(
     trace_source: Path | None = None,
     source: Path | None = None,
     top_k: int = 5,
+    thresholds: list[float] | None = None,
     manifest_dir: Path | None = None,
     output_dir: Path | None = None,
 ) -> dict[str, Any]:
@@ -209,9 +279,13 @@ def run_suite(
         result = _ablation_run(ablation_source)
     elif suite == "retrieval":
         result = _retrieval_run(dataset=dataset, trace_source=trace_source, top_k=top_k)
+    elif suite == "threshold":
+        result = _threshold_run(source or dataset, thresholds or [0.02, 0.025, 0.03])
     else:
         raise ValueError(f"unsupported suite: {suite}")
 
+    _enrich_manifest(result)
+    manifest_data = result["manifest"]
     artifacts = _write_artifacts(
         result["manifest"],
         {key: value for key, value in result.items() if key != "manifest"},
@@ -220,17 +294,19 @@ def run_suite(
         suite=suite,
     )
     result.update(artifacts)
+    result["manifest_data"] = manifest_data
     return result
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Unified MindGraph offline evaluation runner")
-    parser.add_argument("--suite", required=True, choices=["retrieval", "routing", "answer", "ablation"])
+    parser.add_argument("--suite", required=True, choices=["retrieval", "routing", "answer", "ablation", "threshold"])
     parser.add_argument("--dataset", default=str(DEFAULT_DATASET_PATH))
     parser.add_argument("--predictions")
     parser.add_argument("--trace-source", default=str(DEFAULT_ABLATION_SOURCE))
     parser.add_argument("--source", default=str(DEFAULT_ABLATION_SOURCE))
     parser.add_argument("--top-k", type=int, default=5)
+    parser.add_argument("--thresholds", default="0.02,0.025,0.03")
     parser.add_argument("--manifest-dir", default=str(DEFAULT_MANIFEST_DIR))
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     args = parser.parse_args()
@@ -242,6 +318,7 @@ def main() -> None:
         trace_source=Path(args.trace_source) if args.trace_source else None,
         source=Path(args.source) if args.source else None,
         top_k=args.top_k,
+        thresholds=[float(value) for value in args.thresholds.split(",")],
         manifest_dir=Path(args.manifest_dir),
         output_dir=Path(args.output_dir),
     )

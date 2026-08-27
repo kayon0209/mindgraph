@@ -1,14 +1,17 @@
 # MindGraph Golden Dataset Card
 
 - Dataset: `evaluation/datasets/mindgraph_golden_v2.jsonl`
-- Version: `2.2.0`
-- Current size: 12 approved human-authored cases
-- Source: public synthetic `demo-vault/`
+- Version: `2.3.0`
+- Current size: 54 approved cases
+- Canonical SHA-256: `4e5f2d1ef452833e564405e1388aee05faf10447fe685268990b024fa58ec8b6`
+- Source: public synthetic `demo-vault/` plus documented public handbook sources
 - Runtime/database independence: required
 - Splits: `development` and `regression`
 - Legacy snapshot: `evaluation/datasets/mindgraph_golden.jsonl`（`2.1.0`）仅供遗留消融入口引用，不作为新样本评审基线
 
-The dataset covers versioning, supersession, approvals, limits, exceptions, cross-policy cases, case reasoning, no-answer, and ambiguity. It is suitable for deterministic contract and regression checks, but its current size is not sufficient for statistical claims or a production Graph gate.
+The dataset covers versioning, supersession, approvals, limits, exceptions, cross-policy cases, case reasoning, no-answer, and ambiguity. It is suitable for deterministic contract and regression checks, but it remains below the 60–80 target and does not meet the planned per-category minimums. It is not sufficient for statistical claims or a production Graph gate.
+
+Version `2.3.0` identifies the checked-in 54-case snapshot. Historical commits used `2.2.0` for 12-, 50-, and 54-case snapshots, so version-only historical results remain ambiguous; use the dataset SHA-256 to attribute every new run.
 
 ## Label rules
 
@@ -19,4 +22,4 @@ The dataset covers versioning, supersession, approvals, limits, exceptions, cros
 
 ## Release condition
 
-The Phase 1 target is at least 30 approved cases before advancing, with a preferred target of 60–80 and coverage across ACL-restricted, graph-needed, graph-not-needed, conflict, versioned, no-answer, and synonym/abbreviation cases. Until then, reports must explicitly show the sample size and avoid threshold or significance claims.
+The Phase 1 target is 60–80 approved cases with the planned minimum coverage across ACL-restricted, graph-needed, graph-not-needed, conflict, versioned, no-answer, and synonym/abbreviation cases. Until then, reports must explicitly show the version, sample size, SHA-256 and coverage gaps, and must avoid threshold or significance claims.

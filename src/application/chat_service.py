@@ -380,8 +380,13 @@ class ChatService:
         yield event("retrieval_started", {"strategy": decision.selected_strategy})
         try:
             trace = self._retrieve(request, decision, routing_ms, access_scope=access_scope)
-        except Exception:
-            yield event("error", {"code": "retrieval_unavailable", "message": "Retrieval is unavailable"})
+        except Exception as exc:
+            logger.exception("mindgraph_retrieval_unavailable", extra={"request_id": request_id})
+            yield event("error", {
+                "code": "retrieval_unavailable",
+                "message": "检索服务暂不可用，请稍后重试。",
+                "detail": f"{type(exc).__name__}: {exc}",
+            })
             return
         yield event("retrieval_completed", {
             "actual_strategy": trace.actual_strategy,
