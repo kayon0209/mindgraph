@@ -164,7 +164,7 @@ class MindGraphGraphStore:
 
     @staticmethod
     def _relation_visible(row: Any, access_scope: dict[str, Any]) -> bool:
-        if not access_scope:
+        if access_scope is None:
             return True
         from application.access_control import note_acl_matches
 

@@ -195,6 +195,43 @@ def test_chunk_acl_matches_uses_metadata():
     assert chunk_acl_matches(hr_chunk, dept_only_scope) is False
 
 
+def test_empty_scope_is_public_only_and_only_none_bypasses_acl():
+    private = {"workspace": "corp", "department": "finance", "acl_json": "{}", "acl_public": False}
+    public = {"workspace": "corp", "department": "finance", "acl_json": "{}", "acl_public": True}
+
+    assert note_acl_matches(private, None) is True
+    assert chunk_acl_matches(private, None) is True
+    assert note_acl_matches(private, {}) is False
+    assert chunk_acl_matches(private, {}) is False
+    assert note_acl_matches(public, {}) is True
+    assert chunk_acl_matches(public, {}) is True
+
+
+def test_retrieval_pipeline_empty_scope_keeps_only_public_chunks():
+    private_chunk = Chunk(
+        chunk_id="private::0", text="内部制度", document_id="private", chunk_index=0, section_path=None,
+        metadata={"workspace": "corp", "department": "finance", "acl_json": "{}", "acl_public": False,
+                  "document_status": "active"},
+    )
+    public_chunk = Chunk(
+        chunk_id="public::0", text="公开制度", document_id="public", chunk_index=0, section_path=None,
+        metadata={"workspace": "corp", "department": "finance", "acl_json": "{}", "acl_public": True,
+                  "document_status": "active"},
+    )
+    pipeline = RetrievalPipeline(
+        dense=SimpleNamespace(metadata={}), sparse=SimpleNamespace(), fusion=SimpleNamespace(), reranker=None,
+    )
+    trace = RetrievalTrace(query="q", requested_strategy="hybrid", actual_strategy="hybrid")
+
+    visible = pipeline._filter_by_access(
+        [RetrievalCandidate(chunk=private_chunk), RetrievalCandidate(chunk=public_chunk)],
+        {},
+        trace,
+    )
+
+    assert [candidate.chunk.chunk_id for candidate in visible] == ["public::0"]
+
+
 def test_retrieval_pipeline_filter_by_access_drops_out_of_scope_chunks():
     finance_chunk = Chunk(
         chunk_id="fin::0", text="报销", document_id="fin", chunk_index=0, section_path=None,

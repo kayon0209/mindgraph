@@ -8,6 +8,12 @@ export function completionGenerationState(
     : "done";
 }
 
+export function completionViewState(
+  result: Pick<AnswerResult, "result_state">,
+): AnswerResult["result_state"] {
+  return result.result_state;
+}
+
 export function policyConflictItems(trace: RetrievalTrace | null) {
   return (trace?.policy_conflicts ?? []).flatMap((conflict) =>
     conflict.versions.map((version) => ({

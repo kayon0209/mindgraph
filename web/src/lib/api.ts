@@ -57,8 +57,12 @@ export function parseSseFrames(input: string): { events: StreamEvent[]; remainde
       if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
     }
     if (!dataLines.length) continue;
-    const parsed = JSON.parse(dataLines.join("\n")) as StreamEvent;
-    events.push({ ...parsed, event: parsed.event || eventName });
+    try {
+      const parsed = JSON.parse(dataLines.join("\n")) as StreamEvent;
+      events.push({ ...parsed, event: parsed.event || eventName });
+    } catch {
+      // A malformed complete frame must not discard later valid SSE events.
+    }
   }
   return { events, remainder };
 }

@@ -43,7 +43,7 @@ class PolicyConflictService:
                 ORDER BY policy_key, effective_from, document_version, note_id""",
             (*keys, *statuses, target_date, target_date),
         )
-        if access_scope:
+        if access_scope is not None:
             from application.access_control import note_acl_matches
             rows = [row for row in rows if note_acl_matches(row, access_scope)]
         grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)

@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 
 import { streamChat } from "../lib/api";
-import { completionGenerationState, policyConflictItems } from "../lib/policy-conflicts";
+import { completionGenerationState, completionViewState, policyConflictItems } from "../lib/policy-conflicts";
 import { routeDecisionView } from "../lib/route-decision";
 import type { AnswerResult, Citation, ChatRequest, RetrievalTrace, RouteDecision, StreamEvent } from "../types";
 import { PageHeader } from "../components/Primitives";
@@ -96,6 +96,7 @@ export function ChatPage() {
       setCitations(result.citations || []);
       setTrace(result.retrieval_trace || null);
       setRouteDecision(result.retrieval_trace?.route_decision || null);
+      setResultState(completionViewState(result));
       setSteps((current) => ({
         scope: current.scope === "running" ? "done" : current.scope,
         retrieval: result.retrieval_trace ? "done" : current.retrieval,

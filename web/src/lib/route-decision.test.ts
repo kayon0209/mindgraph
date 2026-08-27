@@ -12,14 +12,14 @@ describe("adaptive route decision presentation", () => {
       requested_strategy: "auto",
       selected_strategy: "hybrid",
       graph_enabled: false,
-      reasons: ["structured_clause_store_unavailable"],
+      reasons: ["structured_clause_query_selected", "router_fallback", "version_constraint"],
     };
 
     expect(routeDecisionView(decision)).toEqual({
       routeLabel: "结构化能力回退",
       strategyLabel: "Hybrid",
       graphLabel: "无需关系扩展",
-      reasonLabels: ["条款级结构化存储尚未完成，使用 Hybrid 回退"],
+      reasonLabels: ["检测到结构化条款条件，选择 Hybrid 检索", "路由置信不足，回退到 Hybrid", "检测到版本或生效日期约束"],
       costTierLabel: "中等成本",
       latencyTierLabel: "中等延迟",
       degraded: false,

@@ -124,7 +124,7 @@ def build_access_scope(principal: dict[str, Any] | None) -> dict[str, Any] | Non
 
 
 def note_acl_matches(note: dict[str, Any], access_scope: dict[str, Any] | None) -> bool:
-    if not access_scope:
+    if access_scope is None:
         return True
     if "*" in access_scope.get("allow", []):
         return True
@@ -166,7 +166,7 @@ def note_acl_matches(note: dict[str, Any], access_scope: dict[str, Any] | None) 
 
 
 def chunk_acl_matches(metadata: dict[str, Any], access_scope: dict[str, Any] | None) -> bool:
-    if not access_scope:
+    if access_scope is None:
         return True
     if "*" in access_scope.get("allow", []):
         return True

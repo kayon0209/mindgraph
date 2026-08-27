@@ -47,7 +47,7 @@ BM25 also fails all four Mattermost cases. Therefore the low score is not proven
 
 ## Graph interpretation
 
-Graph ON/OFF does not show Recall@5 gain in this run, while MRR changes from 0.7717 to 0.7742. The database has 6 typed confirmed governance relations, but the graph corpus is still small. The result is a real local observation, not evidence that the graph is empty or that Graph has no possible value.
+Graph ON/OFF does not show Recall@5 gain in this run, while MRR changes from 0.7717 to 0.7742. The OFF report records zero Graph-enabled cases. The ON report enables Graph for all 46 answer cases, observes expansion in 35 cases, and adds 73 candidates (activation rate 0.7609). The database has 6 typed confirmed governance relations, so the same small set of relations is activated broadly. These results prove the switch executed, but they do not satisfy the Phase 5 release gate: the required seven-subset matrix, citation/ACL checks, and latency/cost gate are still absent.
 
 ## Candidate governance
 

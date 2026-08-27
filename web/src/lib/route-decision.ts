@@ -24,7 +24,9 @@ const REASON_LABELS: Record<string, string> = {
   explicit_document_title: "检测到明确制度标题，优先精确词项检索",
   exception_or_conflict_terms: "检测到例外或冲突核对需求",
   cross_policy_terms: "检测到跨制度组合判断需求",
-  structured_clause_store_unavailable: "条款级结构化存储尚未完成，使用 Hybrid 回退",
+  structured_clause_query_selected: "检测到结构化条款条件，选择 Hybrid 检索",
+  router_fallback: "路由置信不足，回退到 Hybrid",
+  version_constraint: "检测到版本或生效日期约束",
   graph_expansion_disabled_by_request: "本次请求已关闭关系扩展",
   compound_question_requires_decomposition: "复合问题，建议拆解后再检索",
 };

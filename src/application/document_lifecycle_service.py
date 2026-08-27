@@ -110,7 +110,7 @@ class DocumentLifecycleService:
         if category: clauses.append("knowledge_category=?"); params.append(category)
         sql = "SELECT * FROM document_versions" + (" WHERE " + " AND ".join(clauses) if clauses else "") + " ORDER BY logical_document_id,created_at DESC"
         rows = [self._row(row) for row in self.database.fetch_all(sql, tuple(params))]
-        if access_scope:
+        if access_scope is not None:
             rows = [row for row in rows if note_acl_matches(row.model_dump(mode="python"), access_scope)]
         return rows
 

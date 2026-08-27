@@ -105,7 +105,7 @@ class RetrievalPipeline:
         - 无 access_scope（单用户 / demo / 旧版调用）→ 不裁剪；
         - 有 access_scope → 拒绝无 ACL 元数据的 chunk，仅保留显式命中的。
         """
-        if not access_scope:
+        if access_scope is None:
             return candidates
         from application.access_control import chunk_acl_matches
 

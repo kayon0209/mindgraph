@@ -283,7 +283,7 @@ def evaluation_ablation(request: Request):
         row = db.fetch_one(sql, params)
         return row["c"] if row else 0
 
-    if access_scope:
+    if access_scope is not None:
         notes_rows = db.fetch_all("SELECT note_id, workspace, department, acl_json, acl_public FROM notes")
         visible_ids = {r["note_id"] for r in notes_rows if note_acl_matches(r, access_scope)}
         notes_total = len(visible_ids)

@@ -34,6 +34,17 @@ describe("parseSseFrames", () => {
     expect(result.events[0].event).toBe("completed");
     expect(result.events[0].data.request_id).toBe("r1");
   });
+
+  it("skips a malformed complete frame and continues with later events", () => {
+    const result = parseSseFrames([
+      'event: answer_delta\ndata: {"event":"answer_delta","data":{"text":"前"}}',
+      'event: answer_delta\ndata: {not-json}',
+      'event: answer_delta\ndata: {"event":"answer_delta","data":{"text":"后"}}',
+      "",
+    ].join("\n\n"));
+
+    expect(result.events.map((event) => event.data.text)).toEqual(["前", "后"]);
+  });
 });
 
 describe("relation review API", () => {

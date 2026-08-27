@@ -79,7 +79,7 @@ def _get_jwks_client(force: bool = False) -> Any | None:
 def validate_id_token(token: str) -> dict[str, Any] | None:
     """校验 OIDC ID/Access Token，返回 claims dict；失败返回 None。
 
-    使用 PyJWT（已随 zhipuai 安装；若不可用则整个 OIDC 功能降级）。
+    使用项目直接声明的 PyJWT 依赖；缺失时认证失败，不降级为匿名访问。
     """
     settings = get_settings()
     if not settings.OIDC_ENABLED or not settings.OIDC_ISSUER_URL:

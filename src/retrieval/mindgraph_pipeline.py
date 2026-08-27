@@ -283,7 +283,7 @@ class MindGraphRetrievalPipeline:
         if expiration and date.fromisoformat(expiration) < target_date and not filters.get("include_historical", False):
             return False
         access_scope = filters.get("access_scope")
-        if access_scope:
+        if access_scope is not None:
             from application.access_control import chunk_acl_matches
             if not chunk_acl_matches(metadata, access_scope):
                 return False

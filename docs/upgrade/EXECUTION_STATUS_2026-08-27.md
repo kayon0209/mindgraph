@@ -11,7 +11,7 @@
 - Frozen golden dataset remains 54 approved cases, version `2.2.0`.
 - Generated 10 new public-handbook candidate cases at `evaluation/datasets/public_handbook_candidates_v1.jsonl`; all are `validation_status=pending` and pass the candidate contract. They were not promoted to approved Golden.
 - Frozen local hybrid results after corpus expansion: Recall@5 0.8551, MRR 0.7717, Precision@5 0.2217.
-- Graph ON/OFF: Recall@5 0.8551 in both modes; MRR 0.7717 vs 0.7742. This is an observed local result, not a default-enable recommendation.
+- Graph ON/OFF: Recall@5 0.8551 in both modes; MRR 0.7717 vs 0.7742. The ON run enabled Graph for all 46 answer cases, observed expansion in 35 cases, and added 73 candidates (activation rate 0.7609). This is an observed local result, not a completed stratified Phase 5 gate or a default-enable recommendation.
 - External approved subset is now 8 cases (Mattermost 4 + Basecamp 4), with Recall@5 0.50 in both graph modes.
 - Mattermost-only diagnostic: BM25 0/4, Dense 1/4, Hybrid 1/4. The low score cannot be attributed solely to the Chinese embedding model.
 - Full regression: 282 passed, 2 skipped. Critical Ruff checks passed.

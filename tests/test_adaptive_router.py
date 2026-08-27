@@ -77,8 +77,14 @@ class _CapturingPipeline:
         categories=None,
         include_historical=False,
         graph_enabled=None,
+        access_scope=None,
     ):
-        self.calls.append({"strategy": strategy, "graph_enabled": graph_enabled})
+        self.calls.append({
+            "strategy": strategy,
+            "graph_enabled": graph_enabled,
+            "query_date": query_date,
+            "access_scope": access_scope,
+        })
         chunk = Chunk("policy::0", "三十日内提交。", "policy", 0, "时限", {"title": "费用制度"})
         return RetrievalTrace(
             query=query,
@@ -108,7 +114,7 @@ def test_chat_resolves_auto_before_retrieval_and_exposes_the_decision(tmp_path) 
 
     result = service.answer(ChatRequest(question="差旅费最晚多久提交？"))
 
-    assert pipeline.calls == [{"strategy": "hybrid", "graph_enabled": False}]
+    assert pipeline.calls == [{"strategy": "hybrid", "graph_enabled": False, "query_date": None, "access_scope": None}]
     assert result.requested_strategy == "auto"
     assert result.actual_strategy == "hybrid"
     assert result.retrieval_trace is not None
@@ -130,5 +136,60 @@ def test_stream_announces_route_before_retrieval_starts(tmp_path) -> None:
     assert names.index("retrieval_routed") < names.index("retrieval_started")
     assert routed["selected_strategy"] == "hybrid_rerank"
     assert routed["graph_enabled"] is False
-    assert pipeline.calls == [{"strategy": "hybrid_rerank", "graph_enabled": False}]
+    assert pipeline.calls == [{"strategy": "hybrid_rerank", "graph_enabled": False, "query_date": None, "access_scope": None}]
+
+
+def test_exact_title_rewrite_preserves_the_requested_clause_semantics() -> None:
+    decision = AdaptiveRetrievalRouter().decide(
+        "《费用报销管理办法》中如何定义业务目的？",
+        requested_strategy="auto",
+        graph_allowed=False,
+    )
+
+    assert decision.route == "exact_title"
+    assert "费用报销管理办法" in decision.search_query
+    assert "业务目的" in decision.search_query
+
+
+def test_multiple_question_marks_do_not_force_clarification_without_missing_context() -> None:
+    decision = AdaptiveRetrievalRouter().decide(
+        "报销需要发票吗？电子发票可以吗？",
+        requested_strategy="auto",
+        graph_allowed=False,
+    )
+
+    assert decision.route == "factual"
+    assert decision.selected_strategy == "hybrid"
+
+
+def test_version_question_infers_effective_date_and_applies_it_to_retrieval(tmp_path) -> None:
+    question = "2026年7月1日之后西安出差住宿上限是多少？"
+    decision = AdaptiveRetrievalRouter().decide(
+        question,
+        requested_strategy="auto",
+        graph_allowed=False,
+        query_type="versioned_policy",
+    )
+
+    assert decision.filters["effective_at"] == "2026-07-01"
+    assert "version_constraint" in decision.reasons
+
+    database = ProductDatabase(tmp_path / "product.sqlite3")
+    database.initialize()
+    pipeline = _CapturingPipeline()
+    service = ChatService(database, lambda _top_k: pipeline, _Provider())
+    service.answer(ChatRequest(question=question))
+
+    assert pipeline.calls == [{"strategy": "hybrid", "graph_enabled": False, "query_date": "2026-07-01", "access_scope": None}]
+
+
+def test_empty_access_scope_is_forwarded_for_fail_closed_retrieval(tmp_path) -> None:
+    database = ProductDatabase(tmp_path / "product.sqlite3")
+    database.initialize()
+    pipeline = _CapturingPipeline()
+    service = ChatService(database, lambda _top_k: pipeline, _Provider())
+
+    service.answer(ChatRequest(question="差旅费最晚多久提交？"), access_scope={})
+
+    assert pipeline.calls[0]["access_scope"] == {}
 

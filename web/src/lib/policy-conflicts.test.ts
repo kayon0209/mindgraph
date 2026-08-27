@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { completionGenerationState, policyConflictItems } from "./policy-conflicts";
+import * as policyPresentation from "./policy-conflicts";
 import type { AnswerResult, RetrievalTrace } from "../types";
 
 
@@ -44,12 +44,23 @@ const trace: RetrievalTrace = {
 
 describe("policy conflict presentation", () => {
   it("keeps deterministic conflict refusal in a warning state", () => {
-    expect(completionGenerationState({ result_state: "conflicting_evidence", degraded: false } as AnswerResult)).toBe("warning");
-    expect(completionGenerationState({ result_state: "answered", degraded: false } as AnswerResult)).toBe("done");
+    expect(policyPresentation.completionGenerationState({ result_state: "conflicting_evidence", degraded: false } as AnswerResult)).toBe("warning");
+    expect(policyPresentation.completionGenerationState({ result_state: "answered", degraded: false } as AnswerResult)).toBe("done");
+  });
+
+  it("preserves the backend terminal result state for the empty-evidence UI", () => {
+    const completionViewState = (policyPresentation as unknown as {
+      completionViewState: (result: Pick<AnswerResult, "result_state">) => string;
+    }).completionViewState;
+
+    expect(completionViewState({ result_state: "out_of_scope" })).toBe("out_of_scope");
+    expect(completionViewState({ result_state: "insufficient_evidence" })).toBe("insufficient_evidence");
+    expect(completionViewState({ result_state: "conflicting_evidence" })).toBe("conflicting_evidence");
+    expect(completionViewState({ result_state: "system_error" })).toBe("system_error");
   });
 
   it("flattens every conflicting version without hiding its effective period", () => {
-    expect(policyConflictItems(trace)).toEqual([
+    expect(policyPresentation.policyConflictItems(trace)).toEqual([
       {
         key: "expense.general-v2",
         policyKey: "expense.general",
