@@ -55,7 +55,8 @@ class BGEEmbeddingProvider:
     def model_revision(self) -> str | None:
         model = self._load()
         if self._loaded_from_local:
-            return "local:" + hashlib.md5(self._local_path.encode("utf-8")).hexdigest()[:12]
+            # 仅用作本地模型路径指纹（非安全用途），显式标注 usedforsecurity=False
+            return "local:" + hashlib.md5(self._local_path.encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
         transformer = model[0]
         commit_hash = getattr(getattr(transformer, "auto_model", None).config, "_commit_hash", None)
         return self._requested_revision or commit_hash

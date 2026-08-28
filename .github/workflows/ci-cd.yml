@@ -74,6 +74,9 @@ jobs:
         env:
           ENVIRONMENT: development
           AUTH_MODE: "off"
+          # evaluation 模块经 src.retrieval 命名空间包间接导入 infrastructure/*，
+          # 需要把 src/ 加入 PYTHONPATH（pytest 由 conftest 注入，此裸 python 步骤需显式声明）
+          PYTHONPATH: ${{ github.workspace }}/src
         run: |
           python -c "from evaluation.mindgraph_retrieval_eval import load_golden_dataset, load_candidate_dataset; assert len(load_golden_dataset()) >= 30; load_candidate_dataset()"
 
@@ -217,7 +220,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install bandit safety
+          # 固定版本：bandit 1.9.x 起 B608/B324 检测行为变化，未固定会导致门禁漂移
+          pip install bandit==1.9.4 safety==3.8.1
 
       - name: Bandit security scan
         run: bandit -r src/ -c pyproject.toml -f json -o bandit-report.json

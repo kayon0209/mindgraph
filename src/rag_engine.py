@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -19,6 +20,8 @@ from config import (
 )
 from embedder import embed_texts, embed_query, get_backend_type
 from vector_store import VectorStoreClient
+
+logger = logging.getLogger("mindgraph.rag")
 
 
 @dataclass
@@ -113,8 +116,8 @@ def build_index(api_key: str, *, force: bool = False) -> Dict[str, Any]:
     if force or COLLECTION_NAME in names:
         try:
             client_db.delete_collection(COLLECTION_NAME)
-        except Exception:
-            pass
+        except Exception:  # 尽力删除旧集合，失败时继续重建
+            logger.debug("delete_collection_failed", exc_info=True)
 
     collection = client_db.get_or_create_collection(name=COLLECTION_NAME)
 

@@ -135,7 +135,7 @@ class DocumentLifecycleService:
         clauses, params = [], []
         if status: clauses.append("status=?"); params.append(status)
         if category: clauses.append("knowledge_category=?"); params.append(category)
-        sql = "SELECT * FROM document_versions" + (" WHERE " + " AND ".join(clauses) if clauses else "") + " ORDER BY logical_document_id,created_at DESC"
+        sql = "SELECT * FROM document_versions" + (" WHERE " + " AND ".join(clauses) if clauses else "") + " ORDER BY logical_document_id,created_at DESC"  # nosec B608 -- clauses 仅为常量 'status=?'/'knowledge_category=?'
         rows = [self._row(row) for row in self.database.fetch_all(sql, tuple(params))]
         if access_scope is not None:
             rows = [row for row in rows if note_acl_matches(row.model_dump(mode="python"), access_scope)]
@@ -150,7 +150,7 @@ class DocumentLifecycleService:
         statuses = ("active", "replaced", "expired") if include_historical else ("active",)
         placeholders = ",".join("?" for _ in statuses)
         rows = self.database.fetch_all(
-            f"SELECT * FROM document_versions WHERE status IN ({placeholders}) AND (? IS NULL OR effective_date IS NULL OR effective_date<=?) AND (? IS NULL OR expiration_date IS NULL OR expiration_date>=?)",
+            f"SELECT * FROM document_versions WHERE status IN ({placeholders}) AND (? IS NULL OR effective_date IS NULL OR effective_date<=?) AND (? IS NULL OR expiration_date IS NULL OR expiration_date>=?)",  # nosec B608 -- placeholders 由常量元组 statuses 生成，仅含 '?'
             (*statuses, as_of, as_of, as_of, as_of),
         )
         output = []

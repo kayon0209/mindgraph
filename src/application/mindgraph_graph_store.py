@@ -37,6 +37,26 @@ MAX_RELATION_HOPS = 2
 DEFAULT_MAX_EDGES_PER_HOP = 50
 DEFAULT_MAX_NODES_PER_HOP = 20
 
+# 静态 SQL 片段（不含任何用户输入）；WHERE 中的 IN 列表仅拼接常量 '?' 占位符，
+# 抽取为常量以便 bandit nosec 精确标注（B608 误报抑制）。
+_RELATION_JOIN_SELECT = (
+    "SELECT r.relation_id, r.source_note_id, r.target_note_id, r.relation_type, r.direction, "
+    "r.status, r.evidence_chunk_id, r.confidence, r.model_version, r.prompt_version, "
+    "r.proposed_at, r.resolved_at, r.resolved_by, "
+    "r.evidence_span, r.evidence_section, r.source_document_version, "
+    "r.effective_from, r.effective_to, r.extraction_method, "
+    "s.workspace AS source_workspace, s.department AS source_department, "
+    "s.acl_json AS source_acl_json, s.acl_public AS source_acl_public, "
+    "t.workspace AS target_workspace, t.department AS target_department, "
+    "t.acl_json AS target_acl_json, t.acl_public AS target_acl_public, "
+    "s.document_version AS source_note_version, t.document_version AS target_note_version, "
+    "s.effective_from AS source_note_effective_from, s.effective_to AS source_note_effective_to, "
+    "t.effective_from AS target_note_effective_from, t.effective_to AS target_note_effective_to "
+    "FROM note_relations r "
+    "JOIN notes s ON s.note_id = r.source_note_id "
+    "JOIN notes t ON t.note_id = r.target_note_id "
+)
+
 
 class MindGraphGraphStore:
     def __init__(self, db: Any) -> None:
@@ -79,23 +99,7 @@ class MindGraphGraphStore:
                 break
             placeholders = ",".join("?" * len(frontier))
             rows = self.db.fetch_all(
-                f"""SELECT r.relation_id, r.source_note_id, r.target_note_id, r.relation_type, r.direction,
-                           r.status, r.evidence_chunk_id, r.confidence, r.model_version, r.prompt_version,
-                           r.proposed_at, r.resolved_at, r.resolved_by,
-                           r.evidence_span, r.evidence_section, r.source_document_version,
-                           r.effective_from, r.effective_to, r.extraction_method,
-                           s.workspace AS source_workspace, s.department AS source_department,
-                           s.acl_json AS source_acl_json, s.acl_public AS source_acl_public,
-                           t.workspace AS target_workspace, t.department AS target_department,
-                           t.acl_json AS target_acl_json, t.acl_public AS target_acl_public,
-                           s.document_version AS source_note_version, t.document_version AS target_note_version,
-                           s.effective_from AS source_note_effective_from, s.effective_to AS source_note_effective_to,
-                           t.effective_from AS target_note_effective_from, t.effective_to AS target_note_effective_to
-                    FROM note_relations r
-                    JOIN notes s ON s.note_id = r.source_note_id
-                    JOIN notes t ON t.note_id = r.target_note_id
-                    WHERE (r.source_note_id IN ({placeholders}) OR r.target_note_id IN ({placeholders}))
-                      AND r.status=?""",
+                _RELATION_JOIN_SELECT + f"WHERE (r.source_note_id IN ({placeholders}) OR r.target_note_id IN ({placeholders})) AND r.status=?",  # nosec B608 -- placeholders 仅由常量 '?' 拼接
                 (*sorted(frontier), *sorted(frontier), status),
             )
             next_frontier: set[str] = set()
@@ -139,7 +143,7 @@ class MindGraphGraphStore:
             return {}
         placeholders = ",".join("?" * len(ids))
         rows = self.db.fetch_all(
-            f"SELECT note_id, title FROM notes WHERE note_id IN ({placeholders})",
+            f"SELECT note_id, title FROM notes WHERE note_id IN ({placeholders})",  # nosec B608 -- placeholders 仅由常量 '?' 拼接
             tuple(ids),
         )
         return {r["note_id"]: r["title"] for r in rows}

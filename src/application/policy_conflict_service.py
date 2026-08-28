@@ -9,6 +9,19 @@ from infrastructure.database import ProductDatabase
 
 HISTORICAL_STATUSES = ("active", "archived", "expired", "superseded")
 
+# 静态 SQL 片段（不含任何用户输入）；WHERE 中的 IN 列表仅拼接常量 '?' 占位符，
+# 抽取为常量以便 bandit nosec 精确标注（B608 误报抑制）。
+_POLICY_NOTES_SELECT = (
+    "SELECT note_id, policy_key, title, vault_path, owner, document_version, "
+    "effective_from, effective_to, policy_status, workspace, department, "
+    "acl_json, acl_public FROM notes "
+)
+_POLICY_EFFECTIVE_FILTER = (
+    " AND (effective_from IS NULL OR effective_from <= ?)"
+    " AND (effective_to IS NULL OR effective_to >= ?)"
+    " ORDER BY policy_key, effective_from, document_version, note_id"
+)
+
 
 class PolicyConflictService:
     """Detect ambiguous policy versions without guessing version precedence."""
@@ -32,15 +45,7 @@ class PolicyConflictService:
         statuses = HISTORICAL_STATUSES if include_historical else ("active",)
         status_placeholders = ",".join("?" for _ in statuses)
         rows = self.database.fetch_all(
-            f"""SELECT note_id, policy_key, title, vault_path, owner, document_version,
-                       effective_from, effective_to, policy_status, workspace, department,
-                       acl_json, acl_public
-                FROM notes
-                WHERE policy_key IN ({key_placeholders})
-                  AND policy_status IN ({status_placeholders})
-                  AND (effective_from IS NULL OR effective_from <= ?)
-                  AND (effective_to IS NULL OR effective_to >= ?)
-                ORDER BY policy_key, effective_from, document_version, note_id""",
+            _POLICY_NOTES_SELECT + f"WHERE policy_key IN ({key_placeholders}) AND policy_status IN ({status_placeholders})" + _POLICY_EFFECTIVE_FILTER,  # nosec B608 -- placeholders 仅由常量 '?' 拼接
             (*keys, *statuses, target_date, target_date),
         )
         if access_scope is not None:

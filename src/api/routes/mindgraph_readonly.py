@@ -23,6 +23,26 @@ from infrastructure.settings import get_settings
 logger = logging.getLogger("mindgraph.api.readonly")
 router = APIRouter(prefix="/mindgraph", tags=["mindgraph-readonly"])
 
+# 静态 SQL 片段（不含任何用户输入）；动态部分仅拼接常量 '?' 占位符或常量条件，
+# 抽取为常量以便 bandit nosec 精确标注（B608 误报抑制）。
+_NOTES_LIST_SELECT = (
+    "SELECT note_id, vault_path, title, ai_access_level, chunk_count, "
+    "index_status, updated_at, frontmatter_json, owner, document_version, "
+    "policy_key, effective_from, effective_to, policy_status, metadata_issues_json, "
+    "workspace, department, acl_json, acl_public FROM notes "
+)
+_RESOLVE_BATCH_SELECT = (
+    "SELECT r.relation_id, r.status, r.relation_type, r.evidence_chunk_id, r.evidence_span, "
+    "r.source_note_id, r.target_note_id, "
+    "s.workspace AS source_workspace, s.department AS source_department, "
+    "s.acl_json AS source_acl_json, s.acl_public AS source_acl_public, "
+    "t.workspace AS target_workspace, t.department AS target_department, "
+    "t.acl_json AS target_acl_json, t.acl_public AS target_acl_public "
+    "FROM note_relations r "
+    "JOIN notes s ON s.note_id = r.source_note_id "
+    "JOIN notes t ON t.note_id = r.target_note_id "
+)
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -151,12 +171,7 @@ def list_notes(
         params += [f"%{q}%", f"%{q}%"]
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
     rows = db.fetch_all(
-        f"""SELECT note_id, vault_path, title, ai_access_level, chunk_count,
-                   index_status, updated_at, frontmatter_json, owner, document_version,
-                   policy_key, effective_from, effective_to, policy_status, metadata_issues_json,
-                   workspace, department, acl_json, acl_public
-            FROM notes {where_sql}
-            ORDER BY updated_at DESC""",
+        _NOTES_LIST_SELECT + where_sql + " ORDER BY updated_at DESC",  # nosec B608 -- where_sql 仅由常量片段与 '?' 占位符构成
         tuple(params),
     )
     visible = [r for r in rows if note_acl_matches(r, access_scope)]
@@ -301,8 +316,8 @@ def evaluation_ablation(request: Request):
         relations_proposed = 0
         if visible_ids:
             placeholders = ",".join("?" for _ in visible_ids)
-            relations_confirmed = cnt(f"SELECT COUNT(*) AS c FROM note_relations WHERE status='confirmed' AND source_note_id IN ({placeholders}) AND target_note_id IN ({placeholders})", tuple(visible_ids) * 2)
-            relations_proposed = cnt(f"SELECT COUNT(*) AS c FROM note_relations WHERE status='proposed' AND source_note_id IN ({placeholders}) AND target_note_id IN ({placeholders})", tuple(visible_ids) * 2)
+            relations_confirmed = cnt(f"SELECT COUNT(*) AS c FROM note_relations WHERE status='confirmed' AND source_note_id IN ({placeholders}) AND target_note_id IN ({placeholders})", tuple(visible_ids) * 2)  # nosec B608 -- placeholders 仅由常量 '?' 拼接
+            relations_proposed = cnt(f"SELECT COUNT(*) AS c FROM note_relations WHERE status='proposed' AND source_note_id IN ({placeholders}) AND target_note_id IN ({placeholders})", tuple(visible_ids) * 2)  # nosec B608 -- placeholders 仅由常量 '?' 拼接
     else:
         notes_total = cnt("SELECT COUNT(*) AS c FROM notes")
         relations_confirmed = cnt("SELECT COUNT(*) AS c FROM note_relations WHERE status='confirmed'")
@@ -392,7 +407,7 @@ def list_proposed(request: Request, limit: int = Query(200, ge=1, le=500)):
     note_rows = {}
     if note_ids:
         placeholders = ",".join("?" for _ in note_ids)
-        fetched = db.fetch_all(f"SELECT note_id, title, vault_path, workspace, department, acl_json, acl_public FROM notes WHERE note_id IN ({placeholders})", tuple(note_ids))
+        fetched = db.fetch_all(f"SELECT note_id, title, vault_path, workspace, department, acl_json, acl_public FROM notes WHERE note_id IN ({placeholders})", tuple(note_ids))  # nosec B608 -- placeholders 仅由常量 '?' 拼接
         note_rows = {row["note_id"]: row for row in fetched}
     titles = store.note_titles(note_ids)
     confirmed_pairs = set()
@@ -451,7 +466,7 @@ def list_confirmed(request: Request, limit: int = Query(200, ge=1, le=500)):
     note_rows = {}
     if note_ids:
         placeholders = ",".join("?" for _ in note_ids)
-        fetched = db.fetch_all(f"SELECT note_id, title, vault_path, workspace, department, acl_json, acl_public FROM notes WHERE note_id IN ({placeholders})", tuple(note_ids))
+        fetched = db.fetch_all(f"SELECT note_id, title, vault_path, workspace, department, acl_json, acl_public FROM notes WHERE note_id IN ({placeholders})", tuple(note_ids))  # nosec B608 -- placeholders 仅由常量 '?' 拼接
         note_rows = {row["note_id"]: row for row in fetched}
     titles = store.note_titles(note_ids)
     items = []
@@ -553,16 +568,7 @@ def resolve_relations_batch(
     actor = reviewer.get("name") or reviewer.get("username") or "anonymous"
     placeholders = ",".join("?" for _ in body.ids)
     rows = db.fetch_all(
-        f"""SELECT r.relation_id, r.status, r.relation_type, r.evidence_chunk_id, r.evidence_span,
-                   r.source_note_id, r.target_note_id,
-                   s.workspace AS source_workspace, s.department AS source_department,
-                   s.acl_json AS source_acl_json, s.acl_public AS source_acl_public,
-                   t.workspace AS target_workspace, t.department AS target_department,
-                   t.acl_json AS target_acl_json, t.acl_public AS target_acl_public
-            FROM note_relations r
-            JOIN notes s ON s.note_id = r.source_note_id
-            JOIN notes t ON t.note_id = r.target_note_id
-            WHERE r.relation_id IN ({placeholders})""",
+        _RESOLVE_BATCH_SELECT + f"WHERE r.relation_id IN ({placeholders})",  # nosec B608 -- placeholders 仅由常量 '?' 拼接
         tuple(body.ids),
     )
     permitted = []

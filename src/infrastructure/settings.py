@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     LOG_FORMAT: Literal["json", "console"] = "console"
 
     # ── 服务 ──
-    API_HOST: str = "0.0.0.0"
+    API_HOST: str = "0.0.0.0"  # nosec B104 -- 容器化部署默认绑定，生产经反向代理暴露，可用 API_HOST 环境变量覆盖
     API_PORT: int = 8000
     API_BASE_URL: str = "http://localhost:8000/api/v1"
     STREAMLIT_PORT: int = 8501

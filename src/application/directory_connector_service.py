@@ -241,7 +241,7 @@ class DirectoryConnectorService:
             return
         placeholders = ",".join("?" for _ in note_ids)
         rows = self.database.fetch_all(
-            f"SELECT note_id, vault_path, workspace, department, acl_json FROM notes WHERE note_id IN ({placeholders})",
+            f"SELECT note_id, vault_path, workspace, department, acl_json FROM notes WHERE note_id IN ({placeholders})",  # nosec B608 -- placeholders 仅由常量 '?' 拼接
             tuple(sorted(note_ids)),
         )
         if not rows:

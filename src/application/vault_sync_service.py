@@ -373,9 +373,9 @@ class VaultSyncService:
             return 0
         placeholders = ",".join("?" * len(to_delete))
         self.db.execute(
-            f"DELETE FROM note_relations "
+            f"DELETE FROM note_relations "  # nosec B608 -- placeholders 仅由常量 '?' 拼接
             f"WHERE source_note_id IN ({placeholders}) OR target_note_id IN ({placeholders})",
             tuple(to_delete) * 2,
         )
-        self.db.execute(f"DELETE FROM notes WHERE note_id IN ({placeholders})", tuple(to_delete))
+        self.db.execute(f"DELETE FROM notes WHERE note_id IN ({placeholders})", tuple(to_delete))  # nosec B608 -- placeholders 仅由常量 '?' 拼接
         return len(to_delete)

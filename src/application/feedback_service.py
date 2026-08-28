@@ -41,7 +41,7 @@ class FeedbackService:
             clauses.append("status=?"); params.append(status)
         if category:
             clauses.append("error_category=?"); params.append(category)
-        sql = "SELECT * FROM bad_cases" + (" WHERE " + " AND ".join(clauses) if clauses else "") + " ORDER BY updated_at DESC"
+        sql = "SELECT * FROM bad_cases" + (" WHERE " + " AND ".join(clauses) if clauses else "") + " ORDER BY updated_at DESC"  # nosec B608 -- clauses 仅为常量 'status=?'/'error_category=?'
         return [self._bad_case(row) for row in self.database.fetch_all(sql, tuple(params))]
 
     def get_bad_case(self, bad_case_id: str) -> BadCase:
@@ -54,9 +54,9 @@ class FeedbackService:
         self.get_bad_case(bad_case_id)
         values = update.model_dump(exclude_none=True)
         if values:
-            assignments = ",".join(f"{name}=?" for name in values)
+            assignments = ",".join(f"{name}=?" for name in values)  # name 来自 Pydantic 模型字段名（固定 schema）
             params = tuple(values.values()) + (datetime.now(timezone.utc).isoformat(), bad_case_id)
-            self.database.execute(f"UPDATE bad_cases SET {assignments},updated_at=? WHERE bad_case_id=?", params)
+            self.database.execute(f"UPDATE bad_cases SET {assignments},updated_at=? WHERE bad_case_id=?", params)  # nosec B608 -- assignments 由 Pydantic 字段名 + '?' 构成，非用户输入
             logger.info("bad_case_updated", extra={"bad_case_id": bad_case_id, "fields": sorted(values)})
         return self.get_bad_case(bad_case_id)
 

@@ -30,7 +30,7 @@ class Collection:
 
     def count(self) -> int:
         conn = self._conn()
-        cur = conn.execute(f'SELECT COUNT(*) FROM "{self._name}"')
+        cur = conn.execute(f'SELECT COUNT(*) FROM "{self._name}"')  # nosec B608 -- _name 为内部集合名（建表时固定），非用户输入
         n = int(cur.fetchone()[0])
         conn.close()
         return n
@@ -67,7 +67,7 @@ class Collection:
 
         conn = self._conn()
         cur = conn.execute(
-            f'SELECT document, metadata, embedding FROM "{self._name}"'
+            f'SELECT document, metadata, embedding FROM "{self._name}"'  # nosec B608 -- _name 为内部集合名（建表时固定），非用户输入
         )
         rows = cur.fetchall()
         conn.close()
@@ -100,7 +100,7 @@ class Collection:
 
     def delete_all(self) -> None:
         conn = self._conn()
-        conn.execute(f'DELETE FROM "{self._name}"')
+        conn.execute(f'DELETE FROM "{self._name}"')  # nosec B608 -- _name 为内部集合名（建表时固定），非用户输入
         conn.commit()
         conn.close()
 

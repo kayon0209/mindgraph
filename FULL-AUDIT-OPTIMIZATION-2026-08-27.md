@@ -397,3 +397,20 @@ python scripts/sync_vault.py --vault "D:/demo/mindgraph/knowledge"
 **验证（2026-08-28，本地 mypy 2.3.1）**：`mypy src/ --ignore-missing-imports --no-strict-optional --python-version 3.12` → **Success: no issues found in 92 source files**；CI 同款 `ruff check src/ scripts/ tests/ --select F821,F822,F823,E902` → All checks passed；改动文件扩展规则（+F401/F841）→ All checks passed；pytest **335 passed / 2 skipped**（与基线一致，零回归）。
 
 **改动文件**：`.github/workflows/ci-cd.yml`、`src/domain/models.py`、`src/application/{structured_chunker,question_concept_miner,knowledge_service,mindgraph_index_service,index_lifecycle_service,document_lifecycle_service}.py`、`src/infrastructure/{logging_config,database,openai_compatible_provider}.py`、`src/infrastructure/parsers/{text,docx,pdf}.py`、`src/retrieval/{pipeline,dense,embeddings}.py`、`src/api/{oidc,auth,middleware,main,dependencies}.py`、`src/ui/{whimsy,api_client}.py`、`src/{vector_store,local_embedder,embedder,rag_engine,mcp_server}.py`、`evaluation/retrieval_eval.py`。
+
+### 11.9 CI 修复：Security Audit（bandit）门禁转绿 + Unit Tests 数据集契约步骤修复（2026-08-28）
+
+**问题一（Security Audit 红灯）**：mypy 门禁转绿后，`security-scan` 作业（`needs: lint`，自 08-27 起从未运行过）首次执行即失败：bandit 报 24 个发现（1 HIGH / 21 MEDIUM / 2 LOW）。**根因判定**：对上次全绿提交 `56203a3`（2026-08-27 09:52）用同一 bandit 1.9.4 复扫，得到完全相同的 24 个发现（仅行号漂移）——证明是 **bandit 版本漂移**（CI 原先未固定版本，1.9.x 起 B608/B324 检测行为变化），而非新代码引入。
+
+**修复（逐条处置，无全局跳过）**：
+- **B324 HIGH**（`retrieval/embeddings.py:58`）：MD5 仅用作本地模型路径指纹（生成 `local:xxxx` 修订号，非安全用途）→ 显式 `hashlib.md5(..., usedforsecurity=False)`，真实修复。
+- **B608 MEDIUM ×20**：全部核查为误报——17 处为 `",".join("?" ...)` 常量占位符拼接的参数化 IN 查询（值走 `?` 参数绑定），3 处为内部表名/常量条件片段/Pydantic 固定字段名。处置：单行点位加带理由的 `# nosec B608`（13 处）；4 处多行 f-string（bandit nosec 仅识别报告行）重构为「模块级静态 SQL 常量 + 单行拼接」（`mindgraph_readonly.py` 的 `_NOTES_LIST_SELECT`/`_RESOLVE_BATCH_SELECT`、`mindgraph_graph_store.py` 的 `_RELATION_JOIN_SELECT`、`policy_conflict_service.py` 的 `_POLICY_NOTES_SELECT`/`_POLICY_EFFECTIVE_FILTER`），SQL 语义零变化。
+- **B104 MEDIUM**（`infrastructure/settings.py:35`）：`API_HOST="0.0.0.0"` 为容器化部署必需默认值 → `# nosec B104` 并注明可经环境变量覆盖、生产走反向代理。
+- **B110 LOW ×2**（`api/main.py:71`、`rag_engine.py:116`）：关停期/重建期的尽力清理 `except: pass` → 改为 `logger.debug(..., exc_info=True)` 真实记录（rag_engine 新增模块 logger），顺带消除静默吞异常。
+- **CI 固化**：`ci-cd.yml` 将 `pip install bandit safety` 固定为 `bandit==1.9.4 safety==3.8.1`（与本次验证版本一致）。
+
+**问题二（Unit Tests 3.11 失败，3.12 被取消）**：pytest 本体 335 全过，失败在后续「Validate Golden and candidate dataset contracts」步骤：裸 `python -c` 导入 `evaluation.mindgraph_retrieval_eval` 时，经 `src.retrieval` 命名空间包触发 `retrieval/__init__.py → pipeline.py` 导入链，而 `80d43da` 给 `pipeline.py` 新增的 `from infrastructure.date_utils import parse_date_safe` 在无 `src/` 路径的环境下断裂（pytest 由 conftest 注入路径故不受影响；此前被 mypy 红灯掩盖未暴露）。修复：该步骤 env 显式声明 `PYTHONPATH: ${{ github.workspace }}/src`。
+
+**验证（2026-08-28，本地）**：bandit 1.9.4 复扫 → **0 发现**；mypy → Success（92 files）；ruff 双门禁 → All checks passed；pytest → **335 passed / 2 skipped**（零回归）；数据集契约步骤带 PYTHONPATH 本地复跑 → OK；workflow YAML 解析通过。
+
+**改动文件**：`.github/workflows/ci-cd.yml`、`src/retrieval/embeddings.py`、`src/infrastructure/settings.py`、`src/api/main.py`、`src/rag_engine.py`、`src/vector_store.py`、`src/api/routes/mindgraph_readonly.py`、`src/application/{directory_connector_service,document_lifecycle_service,feedback_service,mindgraph_graph_store,policy_conflict_service,vault_sync_service}.py`、`src/mcp_server.py`。

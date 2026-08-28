@@ -68,8 +68,8 @@ async def lifespan(app: FastAPI):
     # 清理连接池等资源
     try:
         container.database.close()
-    except Exception:
-        pass
+    except Exception:  # 关停期尽力清理，失败不阻断退出
+        logger.debug("database_close_failed", exc_info=True)
     logger.info("application_stopped")
 
 
