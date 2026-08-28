@@ -114,6 +114,14 @@ class Settings(BaseSettings):
     # False（默认）= 图保持实验态、仅客户端 opt-in。
     GRAPH_DEFAULT_ENABLED: bool = False
 
+    # ── 问题概念挖掘（阶段B：仅数据积累，不进入检索路径） ──
+    # 聊天落库后自动增量挖掘（规则式，无 LLM）；只产出 proposed 候选，需 HITL 确认。
+    CONCEPT_MINE_AUTO_ENABLED: bool = True
+    # 累计 N 条新提问后触发一次后台自动挖掘
+    CONCEPT_MINE_AUTO_MIN_NEW_QUESTIONS: int = 20
+    # 覆盖缺口面板只展示出现次数 ≥ 该值的未收录概念
+    CONCEPT_MINE_GAP_MIN_SEEN: int = 2
+
     # ── 数据库 ──
     DATABASE_PATH: str = str(PROJECT_ROOT / "data" / "product" / "product.sqlite3")
     SQLITE_JOURNAL_MODE: str = "WAL"

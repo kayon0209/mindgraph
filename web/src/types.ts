@@ -1,4 +1,4 @@
-export type ViewId = "chat" | "knowledge" | "evaluation" | "relations";
+export type ViewId = "chat" | "knowledge" | "graph" | "evaluation" | "relations";
 
 export type HealthStatus = {
   status?: string;
@@ -236,3 +236,47 @@ export type ProposedRelationsResponse = {
 };
 
 export type ConfirmedRelationsResponse = { confirmed: RelationItem[] };
+
+/** POST /knowledge/documents 上传回执（后端 DocumentRecord 的前端视图） */
+export type DocumentRecord = {
+  document_id?: string;
+  title?: string;
+  category?: string;
+  status?: string;
+  [key: string]: unknown;
+};
+
+/** POST /mindgraph/relations/extract 结果（HITL：仅写 proposed） */
+export type ExtractRelationsResult = {
+  ok?: boolean;
+  created?: number;
+  dry_run?: boolean;
+  method?: string;
+  reason?: string;
+  [key: string]: unknown;
+};
+
+/** 覆盖缺口：用户问过但语料未覆盖的概念（来自 query_logs 规则式挖掘） */
+export type ConceptGap = {
+  term: string;
+  seen_count: number;
+  first_seen: string;
+  last_seen: string;
+  sample_question_hash?: string | null;
+};
+
+/** POST /mindgraph/relations/mine-questions 结果（只产 proposed CO_ASKED，需人工确认） */
+export type MineQuestionsResult = {
+  ok?: boolean;
+  dry_run?: boolean;
+  trigger?: string;
+  mined?: number;
+  proposed_created?: number;
+  skipped_existing?: number;
+  gap_terms?: number;
+  gaps?: ConceptGap[];
+  reason?: string;
+  [key: string]: unknown;
+};
+
+export type ConceptGapsResponse = { gaps: ConceptGap[]; total: number };

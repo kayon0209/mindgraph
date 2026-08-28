@@ -1,13 +1,18 @@
-import { FormEvent, useEffect, useState } from "react";
-import { BookMarked, ChevronLeft, ChevronRight, FileText, Search, X } from "lucide-react";
+import { FormEvent, useEffect, useRef, useState } from "react";
+import { BookMarked, ChevronLeft, ChevronRight, FileText, Search, Sparkles, UploadCloud, X } from "lucide-react";
 
 import { ContextHint, EmptyState, ErrorState, LoadingState, MetricCard, PageHeader, StatusPill } from "../components/Primitives";
 import { PolicyGovernance } from "../components/PolicyGovernance";
 import { api } from "../lib/api";
+import { relationTypeColor, relationTypeLabel } from "../lib/graph-meta";
 import type { EvaluationResponse, NoteDetail, NoteItem } from "../types";
 
 /** U2：台账分页——后端 notes 接口支持 offset/limit，前端不再一次性拉全量 */
 const PAGE_SIZE = 50;
+
+/** 上传流程状态机：idle → uploading → rebuilding → done →（extracting → extracted）| error */
+type UploadPhase = "idle" | "uploading" | "rebuilding" | "done" | "extracting" | "extracted" | "error";
+type UploadState = { phase: UploadPhase; message: string };
 
 export function KnowledgePage() {
   const [notes, setNotes] = useState<NoteItem[]>([]);
@@ -94,6 +99,60 @@ export function KnowledgePage() {
     }
   };
 
+  // ── 材料上传与融合（阶段A需求3）──
+  const [upload, setUpload] = useState<UploadState>({ phase: "idle", message: "" });
+  const [dragOver, setDragOver] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const handleUploadFile = async (file: File) => {
+    if (!file.name.toLowerCase().endsWith(".md")) {
+      setUpload({ phase: "error", message: "仅支持 .md Markdown 文件（后端限制）。" });
+      return;
+    }
+    setUpload({ phase: "uploading", message: `正在上传「${file.name}」…` });
+    try {
+      const record = await api.uploadDocument(file, "upload");
+      setUpload({ phase: "rebuilding", message: "上传成功，正在增量重建索引…" });
+      try {
+        await api.incrementalRebuild();
+      } catch (rebuildError) {
+        setUpload({ phase: "error", message: `上传成功但索引重建失败：${(rebuildError as Error).message}` });
+        return;
+      }
+      await load(query.trim(), offset);
+      const title = (record.title as string | undefined) || file.name;
+      setUpload({
+        phase: "done",
+        message: `「${title}」已入库并可检索。下一步可把它融入图谱：自动发现候选关系（proposed），经人工审核确认后才进入图谱与检索。`,
+      });
+    } catch (uploadError) {
+      setUpload({ phase: "error", message: `上传失败：${(uploadError as Error).message}` });
+    }
+  };
+
+  const fuseIntoGraph = async () => {
+    setUpload({ phase: "extracting", message: "正在离线抽取关系（只产 proposed 候选，不调用生成模型）…" });
+    try {
+      const result = await api.extractRelations();
+      const created = Number(result.inserted ?? result.created ?? 0);
+      setUpload({
+        phase: "extracted",
+        message: created > 0
+          ? `已生成 ${created} 条候选关系（proposed）。请到「关系审核」逐条确认——确认后才成为 confirmed 关系并进入图谱。`
+          : "未发现新的候选关系（与已有候选/已确认关系去重）。可稍后积累更多材料再试。",
+      });
+    } catch (extractError) {
+      setUpload({ phase: "error", message: `关系抽取失败：${(extractError as Error).message}` });
+    }
+  };
+
+  const onDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setDragOver(false);
+    const file = event.dataTransfer.files?.[0];
+    if (file) void handleUploadFile(file);
+  };
+
   return (
     <div className="page knowledge-page">
       <PageHeader
@@ -118,6 +177,65 @@ export function KnowledgePage() {
       <ContextHint storageKey="mindgraph.hint.knowledge">
         台账数字实时来自数据库与当前激活索引 manifest，不是静态占位。点击任意一行可查看制度档案与已确认关系；「当前索引」一行可核对索引版本与构建时间。
       </ContextHint>
+
+      {/* 材料上传与融合（阶段A需求3）：.md 上传 → 自动增量重建 → 引导融入图谱（HITL） */}
+      <section className="upload-card reveal reveal-2" aria-label="上传新材料">
+        <div
+          className={dragOver ? "upload-dropzone drag-over" : "upload-dropzone"}
+          onClick={() => fileInputRef.current?.click()}
+          onDragOver={(event) => {
+            event.preventDefault();
+            setDragOver(true);
+          }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={onDrop}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") fileInputRef.current?.click();
+          }}
+        >
+          <UploadCloud size={22} />
+          <div>
+            <strong>上传 .md 材料</strong>
+            <span>点击选择或拖拽 Markdown 文件到此处；上传后自动增量重建索引（后端仅接收 .md）</span>
+          </div>
+          <input
+            ref={fileInputRef}
+            accept=".md,text/markdown"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) void handleUploadFile(file);
+              event.target.value = "";
+            }}
+            style={{ display: "none" }}
+            type="file"
+          />
+        </div>
+        {upload.phase !== "idle" ? (
+          <div className={upload.phase === "error" ? "upload-status error" : "upload-status"} role="status">
+            <p>{upload.message}</p>
+            {upload.phase === "uploading" || upload.phase === "rebuilding" || upload.phase === "extracting" ? (
+              <span className="upload-spinner" aria-hidden="true" />
+            ) : null}
+            {upload.phase === "done" ? (
+              <button className="button secondary small" onClick={() => void fuseIntoGraph()} type="button">
+                <Sparkles size={14} /> 融入图谱（发现候选关系）
+              </button>
+            ) : null}
+            {upload.phase === "extracted" ? (
+              <button className="button secondary small" onClick={() => { window.location.hash = "#/relations"; }} type="button">
+                去关系审核确认
+              </button>
+            ) : null}
+            {upload.phase === "error" || upload.phase === "extracted" || upload.phase === "done" ? (
+              <button className="upload-status-dismiss" onClick={() => setUpload({ phase: "idle", message: "" })} type="button" aria-label="关闭上传状态">
+                <X size={14} />
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+      </section>
 
       <div className="metrics-grid reveal reveal-2">
         <MetricCard label="已同步制度" note="notes 表真实数量" value={total} />
@@ -224,14 +342,30 @@ export function KnowledgePage() {
               ) : (
                 <div className="relation-mini-list">
                   {selected.outgoing_relations.map((relation) => (
-                    <div key={`${relation.target_id}-${relation.relation_type}`}>
-                      <span>{selected.title}</span><i>{relation.relation_type}</i><strong>{relation.target_title}</strong>
-                    </div>
+                    <button
+                      className="relation-mini-item"
+                      key={`${relation.target_id}-${relation.relation_type}`}
+                      onClick={() => void openDetail(relation.target_id)}
+                      title="查看对端制度档案"
+                      type="button"
+                    >
+                      <span>{selected.title}</span>
+                      <i style={{ color: relationTypeColor(relation.relation_type) }}>{relationTypeLabel(relation.relation_type)}</i>
+                      <strong>{relation.target_title}</strong>
+                    </button>
                   ))}
                   {selected.incoming_relations.map((relation) => (
-                    <div key={`${relation.source_id}-${relation.relation_type}`}>
-                      <strong>{relation.source_title}</strong><i>{relation.relation_type}</i><span>{selected.title}</span>
-                    </div>
+                    <button
+                      className="relation-mini-item"
+                      key={`${relation.source_id}-${relation.relation_type}`}
+                      onClick={() => void openDetail(relation.source_id)}
+                      title="查看对端制度档案"
+                      type="button"
+                    >
+                      <strong>{relation.source_title}</strong>
+                      <i style={{ color: relationTypeColor(relation.relation_type) }}>{relationTypeLabel(relation.relation_type)}</i>
+                      <span>{selected.title}</span>
+                    </button>
                   ))}
                 </div>
               )}

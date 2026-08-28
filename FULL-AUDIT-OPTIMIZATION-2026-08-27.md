@@ -359,3 +359,23 @@ python scripts/sync_vault.py --vault "D:/demo/mindgraph/knowledge"
 **改动文件**：新增 `web/src/components/AnswerBody.tsx`、`web/src/lib/citation-status.ts`、`web/src/lib/export-evidence.ts`；修改 `web/src/pages/{ChatPage,EvaluationPage,RelationsPage,KnowledgePage}.tsx`、`web/src/App.tsx`、`web/src/lib/api.ts`、`web/src/types.ts`、`web/src/styles.css`。
 
 **遗留（用户侧）**：S1 智谱 Key 轮换；`.env` 中 Gitee AI Key 勿入公开仓库。
+
+### 11.7 图谱功能批次：可视化 + 问题概念挖掘（2026-08-28，交接单 mindgraph-handoff-2026-08-28 §2 A3-B4）
+
+按交接单顺序执行 A3→A6→B1-B4。**治理红线全程保持**：`GRAPH_DEFAULT_ENABLED` 未翻转（图仍默认关闭，本批只做可视化与数据积累）；挖掘只产出 `proposed` 候选，必须 HITL 确认后才进入检索路径；查询时零 LLM 抽取；不引入外部图数据库（仍为 SQLite `note_relations`）。
+
+**A3 知识图谱页**（新增 `web/src/pages/GraphPage.tsx`）：d3-force 力导向图（forceLink≈110 / manyBody -220 / collide r+14），滚轮缩放（passive:false，k∈[0.25,4]）、背景拖拽平移、节点拖拽（pointer capture + fx/fy + alphaTarget，位移<4px 判定为点击）；点击节点打开右侧详情面板（经 `api.note` 拉全量字段），出边/入边关系双向可点击跳转（选中并居中目标节点）、「在台账中查看」跳 `#/knowledge`；深链 `#/graph?node=<id>`（hashchange 监听 + replaceState 同步）；工具栏含节点/确认边/待审边计数、「显示待审关系」开关（待审边虚线）、适应视图/重新布局/从提问挖掘按钮；节点半径随度数 `7+min(deg*2,10)`、按目录分类着色，边按关系类型着色 + 分类型箭头 marker；空态两档（0 节点 → EmptyState；有节点无确认边 → 引导横幅去关系审核）。
+
+**A4 导航与材料上传**：App.tsx 新增「知识图谱」导航（Network 图标，快捷键扩为 1-5，hash 路由 `#/graph`）；KnowledgePage 新增 `.md` 上传卡片（点击/拖拽，`api.uploadDocument` → `api.incrementalRebuild` 自动增量重建 → 状态区引导「融入图谱」调 `api.extractRelations`，产出提示去关系审核确认）；台账抽屉的关系列表改为可点击按钮（跳对应笔记详情），类型用共享中文标签着色。
+
+**A5 样式**：styles.css 追加图谱页（画布点阵背景/图例/空态横幅/详情面板/链接列表）、上传卡片（虚线 dropzone + drag-over + 状态区）、关系页挖掘条与缺口面板全套样式；移动端底部导航 `repeat(4,1fr)` → `repeat(5,1fr)`。
+
+**B1-B2 问题概念挖掘（后端）**：新增 `src/application/question_concept_miner.py` —— 纯规则、离线、无 LLM：① 提问中《标题》与笔记标题/别名精确匹配；② 标题/别名（≥2 字符）子串命中；③ 同一提问命中 ≥2 篇笔记 → 两两产出 `CO_ASKED` proposed 候选（confidence 随共同出现次数 0.55 起步 +0.05/次、封顶 0.9；evidence_span=原提问，evidence_section=query_logs，extraction_method=question_co_asked）；④ 未匹配的《》引用累计进新表 `concept_signals`（覆盖缺口）。增量幂等：水位记录于新表 `concept_mine_runs`（取本批最大 created_at，非墙钟），只扫描水位后新提问；候选对与 note_relations 任意状态/任意方向去重；`PRIVACY_LOG_QUESTIONS=false`（question=NULL）安全跳过；dry_run 只预测不落库、不推进水位。schema 8→9（新增 `concept_signals`、`concept_mine_runs`）；`TYPED_RELATION_TYPES` 增加 `CO_ASKED`（保证 HITL 确认与图遍历可用，且不在 GOVERNANCE 集合 → span 证据即可）。端点：`POST /api/v1/mindgraph/relations/mine-questions`（admin，手动挖掘，写 access_audit）与 `GET /api/v1/mindgraph/concept-gaps?limit=N`（只读，阈值 `CONCEPT_MINE_GAP_MIN_SEEN=2` 过滤一次性噪音）。自动触发：`ChatService._persist` 成功后 fire-and-forget 回调 → 容器计数累计 `CONCEPT_MINE_AUTO_MIN_NEW_QUESTIONS=20` 条新提问后后台线程增量挖掘（单飞互斥，异常只记日志，绝不影响应答路径）；`CONCEPT_MINE_AUTO_ENABLED=false` 可整体关闭。
+
+**B3 测试**：新增 `tests/test_question_concept_miner.py` 16 例（《》匹配/别名子串/co-occurrence 置信度/任意状态任意方向去重/增量水位/NULL 提问安全/dry_run 零写入/单笔记不成边/两端点契约/limit 校验/自动触发阈值与单飞与开关关闭）。同步修正 `test_policy_metadata.py` 的 schema 版本断言 8→9。顺手清掉 `chat_service.py` 一处历史遗留未用导入（F401）。
+
+**B4 覆盖缺口面板**：RelationsPage 新增挖掘条（说明 + 「从提问中挖掘」手动按钮 + 结果消息）与「知识覆盖缺口」面板（`api.conceptGaps`，按出现次数降序，展示词/次数/最近出现，空态说明收敛路径）；候选卡关系类型改用共享中文标签；指标卡口径更新为「BGE / CO_ASKED」。
+
+**验证（2026-08-28）**：pytest **335 passed / 2 skipped**（基线 319 + 新增 16，`--no-cov`）；ruff 关键规则（F821/F822/F823/F401/F841/E902）本次改动文件 0 命中；web `pnpm typecheck` ✅ / `pnpm build` ✅（CSS 48.08 kB / JS 310.11 kB）。无浏览器自动化，视觉以用户刷新为准。
+
+**改动文件**：新增 `web/src/pages/GraphPage.tsx`、`src/application/question_concept_miner.py`、`tests/test_question_concept_miner.py`；修改 `web/src/{App.tsx,styles.css}`、`web/src/pages/{KnowledgePage,RelationsPage}.tsx`、`web/src/lib/api.ts`、`web/src/types.ts`、`src/api/{dependencies.py,routes/mindgraph_readonly.py}`、`src/application/{chat_service.py,mindgraph_graph_store.py}`、`src/infrastructure/{database.py,settings.py}`、`tests/test_policy_metadata.py`。

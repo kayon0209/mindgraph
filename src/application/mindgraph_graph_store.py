@@ -18,6 +18,7 @@ TYPED_RELATION_TYPES = {
     "EXCEPTION_TO",
     "SUPERSEDES",
     "CONTRADICTS",
+    "CO_ASKED",
     "related_to",
     "references",
     "elaborates",

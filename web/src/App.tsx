@@ -4,12 +4,14 @@ import {
   BookOpenText,
   GitPullRequestArrow,
   MessageSquareText,
+  Network,
   ShieldCheck,
 } from "lucide-react";
 
 import { api } from "./lib/api";
 import { ChatPage } from "./pages/ChatPage";
 import { EvaluationPage } from "./pages/EvaluationPage";
+import { GraphPage } from "./pages/GraphPage";
 import { KnowledgePage } from "./pages/KnowledgePage";
 import { RelationsPage } from "./pages/RelationsPage";
 import type { PublicConfig, ViewId } from "./types";
@@ -17,11 +19,12 @@ import type { PublicConfig, ViewId } from "./types";
 const NAV_ITEMS = [
   { id: "chat" as const, label: "可信问答", icon: MessageSquareText },
   { id: "knowledge" as const, label: "制度台账", icon: BookOpenText },
+  { id: "graph" as const, label: "知识图谱", icon: Network },
   { id: "evaluation" as const, label: "质量账本", icon: Activity },
   { id: "relations" as const, label: "关系审核", icon: GitPullRequestArrow },
 ];
 
-const VIEW_IDS: ViewId[] = ["chat", "knowledge", "evaluation", "relations"];
+const VIEW_IDS: ViewId[] = ["chat", "knowledge", "graph", "evaluation", "relations"];
 
 /** U7：从 location.hash 解析视图（如 #/knowledge），非法值回退 chat */
 function viewFromHash(): ViewId {
@@ -74,7 +77,7 @@ export function App() {
     void checkHealth();
   }, [checkHealth]);
 
-  // P5：键盘效率——1-4 切视图，/ 聚焦提问框（输入控件内不触发）
+  // P5：键盘效率——1-5 切视图，/ 聚焦提问框（输入控件内不触发）
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
@@ -85,7 +88,7 @@ export function App() {
         return;
       }
       if (event.altKey || event.ctrlKey || event.metaKey) return;
-      if (event.key >= "1" && event.key <= "4") {
+      if (event.key >= "1" && event.key <= "5") {
         navigate(VIEW_IDS[Number(event.key) - 1]);
       } else if (event.key === "/") {
         event.preventDefault();
@@ -181,6 +184,7 @@ export function App() {
         </div>
         {view === "chat" ? <ChatPage /> : null}
         {view === "knowledge" ? <KnowledgePage /> : null}
+        {view === "graph" ? <GraphPage /> : null}
         {view === "evaluation" ? <EvaluationPage /> : null}
         {view === "relations" ? <RelationsPage /> : null}
       </main>

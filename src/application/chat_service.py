@@ -6,12 +6,12 @@ import logging
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from application.adaptive_retrieval_router import AdaptiveRetrievalRouter, RetrievalRouteDecision
 from application.policy_conflict_service import PolicyConflictService
 from application.query_understanding import QueryUnderstandingService
-from domain.errors import ProviderUnavailableError, RetrievalUnavailableError
+from domain.errors import RetrievalUnavailableError
 from domain.models import (
     AnswerResult, ChatRequest, Citation, ResultState, RetrievalTraceModel,
     TimingMetrics, UsageMetrics,
@@ -45,6 +45,7 @@ class ChatService:
         retrieval_router: AdaptiveRetrievalRouter | None = None,
         query_understanding: QueryUnderstandingService | None = None,
         graph_default_enabled: bool = False,
+        on_question_logged: Callable[[], None] | None = None,
     ) -> None:
         self.database = database
         self.pipeline_factory = pipeline_factory
@@ -57,6 +58,8 @@ class ChatService:
         # 计划 Phase 5 发布闸门的配置消费方：消融达标后由 GRAPH_DEFAULT_ENABLED
         # 打开服务端默认图路由；客户端 graph_enabled=false 始终可以关闭。
         self.graph_default_enabled = graph_default_enabled
+        # 阶段B：提问落库后的可选回调（容器注入，用于问题概念挖掘的自动触发计数）。
+        self.on_question_logged = on_question_logged
 
     def _provider(self, name: str | None = None, model: str | None = None):
         return self.provider.get(name, model) if hasattr(self.provider, "get") else self.provider
@@ -288,6 +291,13 @@ class ChatService:
                 "query_log_persist_failed",
                 extra={"request_id": result.request_id, "result_state": result.result_state.value},
             )
+            return
+        # 阶段B：提问成功落库后触发概念挖掘计数（fire-and-forget，绝不影响应答路径）。
+        if self.on_question_logged is not None:
+            try:
+                self.on_question_logged()
+            except Exception:
+                logger.exception("concept_mine_trigger_failed", extra={"request_id": result.request_id})
 
     def _persist_or_raise(self, result: AnswerResult) -> None:
         question = result.question if self.privacy_log_questions else None

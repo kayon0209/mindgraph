@@ -18,6 +18,7 @@ from api.auth import current_actor, get_required_principal, require_role, resolv
 from api.dependencies import get_container
 from application.access_control import note_acl_matches, record_access_audit
 from application.mindgraph_graph_store import TYPED_RELATION_TYPES
+from infrastructure.settings import get_settings
 
 logger = logging.getLogger("mindgraph.api.readonly")
 router = APIRouter(prefix="/mindgraph", tags=["mindgraph-readonly"])
@@ -655,3 +656,55 @@ def extract_relations(
         },
     )
     return result
+
+
+class MineQuestionsBody(BaseModel):
+    dry_run: bool = False
+
+
+@router.post("/relations/mine-questions")
+def mine_question_concepts(
+    body: MineQuestionsBody,
+    principal: dict = Depends(get_required_principal),
+    reviewer: dict = Depends(require_role("admin")),
+):
+    """从真实提问中挖掘概念信号（阶段B，Human-in-the-loop：仅写 proposed）。
+
+    纯规则、离线、无 LLM：
+    - 同一提问命中 ≥2 篇笔记（《标题》引用 / 标题别名字串）→ proposed CO_ASKED 候选；
+    - 提问里 《...》 引用未匹配任何笔记 → concept_signals 覆盖缺口累计。
+    增量幂等：只扫描上次运行后的新提问；已存在（任意状态/任一方向）的 pair 自动去重。
+    本端点不改变任何查询时行为，仅做数据积累。
+    """
+    container = get_container()
+    actor = reviewer.get("name") or reviewer.get("username") or "anonymous"
+    result = container.question_concept_miner.mine(trigger="manual", dry_run=body.dry_run)
+    record_access_audit(
+        container.database,
+        actor=actor,
+        action="mine_question_concepts",
+        resource="note_relations/proposed+concept_signals",
+        decision="allow",
+        metadata={
+            "dry_run": body.dry_run,
+            "mined": int(result.get("mined", 0) or 0),
+            "proposed_created": int(result.get("proposed_created", 0) or 0),
+            "gap_terms": int(result.get("gap_terms", 0) or 0),
+        },
+    )
+    return result
+
+
+@router.get("/concept-gaps")
+def list_concept_gaps(request: Request, limit: int = Query(50, ge=1, le=200)):
+    """覆盖缺口：用户在提问中引用过、但知识库尚未收录的概念（按出现次数降序）。
+
+    数据来自 concept_signals（问题概念挖掘累计），只读、无 ACL 维度（聚合统计）。
+    仅展示出现次数 ≥ CONCEPT_MINE_GAP_MIN_SEEN 的词，避免一次性噪音。
+    """
+    settings = get_settings()
+    container = get_container()
+    miner = container.question_concept_miner
+    miner.gap_min_seen = max(1, int(settings.CONCEPT_MINE_GAP_MIN_SEEN))
+    gaps = miner.top_gaps(limit=limit)
+    return {"gaps": gaps, "total": miner.gap_total()}

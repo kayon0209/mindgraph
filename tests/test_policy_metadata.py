@@ -61,7 +61,7 @@ def test_initialize_migrates_existing_notes_without_losing_rows(tmp_path: Path) 
         "policy_status": "unspecified",
         "metadata_issues_json": "[]",
     }
-    assert database.fetch_one("SELECT version FROM schema_meta") == {"version": 8}
+    assert database.fetch_one("SELECT version FROM schema_meta") == {"version": 9}
     with database.connect() as connection:
         indexes = {item[1] for item in connection.execute("PRAGMA index_list(notes)")}
     assert "idx_notes_policy_lifecycle" in indexes

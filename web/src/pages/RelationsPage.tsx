@@ -1,9 +1,10 @@
 import { useEffect, useState, type KeyboardEvent } from "react";
-import { AlertOctagon, Check, GitCompareArrows, RefreshCw, X } from "lucide-react";
+import { AlertOctagon, Check, GitCompareArrows, RefreshCw, Sparkles, X } from "lucide-react";
 
 import { ContextHint, EmptyState, ErrorState, LoadingState, MetricCard, PageHeader } from "../components/Primitives";
 import { api } from "../lib/api";
-import type { RelationItem } from "../types";
+import { relationTypeLabel } from "../lib/graph-meta";
+import type { ConceptGap, RelationItem } from "../types";
 
 type Tab = "proposed" | "confirmed";
 
@@ -17,6 +18,21 @@ export function RelationsPage() {
   const [reviewReasons, setReviewReasons] = useState<Record<string, string>>({});
   // U3：校验提示用页内轻量提示，而不是整页 ErrorState（那会吞掉整个审核队列）
   const [hint, setHint] = useState("");
+  // 阶段B：问题概念挖掘（CO_ASKED 候选）与覆盖缺口面板
+  const [gaps, setGaps] = useState<ConceptGap[]>([]);
+  const [gapTotal, setGapTotal] = useState(0);
+  const [mining, setMining] = useState(false);
+  const [mineMessage, setMineMessage] = useState("");
+
+  const loadGaps = async () => {
+    try {
+      const data = await api.conceptGaps(50);
+      setGaps(data.gaps);
+      setGapTotal(data.total);
+    } catch {
+      // 覆盖缺口是辅助面板：加载失败不打断主审核队列
+    }
+  };
 
   const load = async () => {
     setLoading(true);
@@ -35,7 +51,31 @@ export function RelationsPage() {
 
   useEffect(() => {
     void load();
+    void loadGaps();
   }, []);
+
+  const runMine = async () => {
+    setMining(true);
+    setMineMessage("");
+    setError("");
+    try {
+      const result = await api.mineQuestions();
+      const mined = Number(result.mined ?? 0);
+      const created = Number(result.proposed_created ?? 0);
+      const skipped = Number(result.skipped_existing ?? 0);
+      const gapTerms = Number(result.gap_terms ?? 0);
+      setMineMessage(
+        mined === 0
+          ? "没有新提问可挖掘。聊天产生的新提问会在累计到阈值后自动挖掘，也可以稍后再手动运行。"
+          : `已扫描 ${mined} 条新提问：新增共同提问候选 ${created} 条${skipped ? `，去重跳过 ${skipped} 条` : ""}，累计缺口概念 ${gapTerms} 个。候选需在本页审核确认后才会进入图谱。`,
+      );
+      await Promise.all([load(), loadGaps()]);
+    } catch (mineError) {
+      setError((mineError as Error).message);
+    } finally {
+      setMining(false);
+    }
+  };
 
   const resolve = async (relation: RelationItem, decision: "confirm" | "reject") => {
     const reason = (reviewReasons[relation.id] || "").trim();
@@ -101,8 +141,18 @@ export function RelationsPage() {
         <MetricCard label="待人工判断" note="proposed，不参与检索" value={proposed.length} />
         <MetricCard label="已确认关系" note="可参与一跳扩展" value={confirmed.length} />
         <MetricCard label="冲突候选" note="同一文档对已有确认边" value={conflicts} />
-        <MetricCard label="默认候选来源" note="当前仅使用 BGE 相似度，非业务关系类型" value="BGE 语义相似" />
+        <MetricCard label="默认候选来源" note="BGE 相似度 + 提问共同提问" value="BGE / CO_ASKED" />
       </div>
+
+      <section className="mine-bar reveal reveal-2" aria-label="问题概念挖掘">
+        <p>
+          真实提问里同时涉及多篇制度的场景会被挖掘为「共同提问」候选（纯规则、无 LLM）；提问中引用但知识库未收录的概念会累计到下方覆盖缺口。聊天累计到阈值后会自动挖掘，也可以立即手动运行。
+        </p>
+        <button className="button secondary" disabled={mining} onClick={() => void runMine()} type="button">
+          <Sparkles size={15} className={mining ? "spin" : ""} /> {mining ? "挖掘中…" : "从提问中挖掘"}
+        </button>
+      </section>
+      {mineMessage ? <p className="mine-bar-message reveal reveal-2" role="status">{mineMessage}</p> : null}
 
       <section className="relation-register reveal reveal-3">
         {/* U10：标签页补全 ARIA 语义；P0-3：键盘导航 + roving tabindex */}
@@ -159,7 +209,7 @@ export function RelationsPage() {
                   </div>
                   <div className="relation-arrow">
                     <GitCompareArrows size={19} />
-                    <span>{relation.type || "related_to"}</span>
+                    <span>{relationTypeLabel(relation.type || "related_to")}</span>
                   </div>
                   <div className="relation-document">
                     <small>目标制度</small>
@@ -220,6 +270,32 @@ export function RelationsPage() {
           </div>
         ) : null}
         </div>
+      </section>
+
+      <section className="gap-panel reveal reveal-4" aria-label="知识覆盖缺口">
+        <div className="gap-panel-head">
+          <h2>知识覆盖缺口</h2>
+          <span>{gapTotal} 个未收录概念（按提问出现次数降序）</span>
+        </div>
+        <p className="gap-panel-description">
+          以下概念来自真实提问中的《》引用，但知识库尚未收录对应制度。把它们补充进知识库并重建索引后，相应提问就能命中证据；再次挖掘时这些缺口会自然收敛。
+        </p>
+        {gaps.length === 0 ? (
+          <EmptyState
+            title="暂无覆盖缺口"
+            detail="提问中引用的概念目前都能匹配到知识库笔记。新的缺口会在聊天积累后由问题挖掘自动累计。"
+          />
+        ) : (
+          <div className="gap-list">
+            {gaps.map((gap) => (
+              <div className="gap-row" key={gap.term}>
+                <strong title={gap.term}>{gap.term}</strong>
+                <span className="gap-count">×{gap.seen_count}</span>
+                <span className="gap-seen">最近 {gap.last_seen?.slice(0, 10) || "—"}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </section>
 
       <div className="semantic-warning reveal reveal-4">

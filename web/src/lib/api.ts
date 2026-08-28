@@ -1,9 +1,13 @@
 import type {
   AnswerResult,
   ChatRequest,
+  ConceptGapsResponse,
   ConfirmedRelationsResponse,
+  DocumentRecord,
   EvaluationResponse,
+  ExtractRelationsResult,
   HealthStatus,
+  MineQuestionsResult,
   NoteDetail,
   NoteItem,
   ProposedRelationsResponse,
@@ -122,4 +126,37 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ decision, reason }),
     }),
+  /** 材料上传（阶段A需求3）：multipart 走独立 fetch，不能复用 JSON request 助手 */
+  uploadDocument: async (file: File, category = "upload"): Promise<DocumentRecord> => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("category", category);
+    const response = await fetch(`${API_BASE}/knowledge/documents`, { method: "POST", body: form });
+    if (!response.ok) {
+      let detail = response.statusText;
+      try {
+        const body = (await response.json()) as { detail?: string; message?: string };
+        detail = body.detail || body.message || detail;
+      } catch {
+        // 非 JSON 错误体保留状态文本
+      }
+      throw new ApiError(detail || `HTTP ${response.status}`, response.status);
+    }
+    return response.json() as Promise<DocumentRecord>;
+  },
+  /** 上传后增量重建索引，使新材料进入检索 */
+  incrementalRebuild: () =>
+    request<Record<string, unknown>>("/knowledge/index/incremental-rebuild", { method: "POST" }),
+  /** 离线关系抽取（HITL：只产 proposed，需人工确认后入图） */
+  extractRelations: (options?: { dry_run?: boolean; use_llm?: boolean }) =>
+    request<ExtractRelationsResult>("/mindgraph/relations/extract", {
+      method: "POST",
+      body: JSON.stringify({ method: "embedding", use_llm: false, dry_run: false, ...options }),
+    }),
+  /** 问题概念挖掘（纯规则式，HITL：只产 proposed CO_ASKED，需人工确认后入图） */
+  mineQuestions: () =>
+    request<MineQuestionsResult>("/mindgraph/relations/mine-questions", { method: "POST" }),
+  /** 覆盖缺口：用户问过但语料未覆盖的概念（指导补传材料） */
+  conceptGaps: (limit = 50) =>
+    request<ConceptGapsResponse>(`/mindgraph/concept-gaps?limit=${limit}`),
 };

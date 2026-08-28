@@ -3,6 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 import json
 import logging
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ from application.feedback_service import FeedbackService
 from application.index_lifecycle_service import IndexLifecycleService
 from application.knowledge_service import KnowledgeService
 from application.mindgraph_graph_store import MindGraphGraphStore
+from application.question_concept_miner import QuestionConceptMiner
 from application.relation_extraction_service import RelationExtractionService
 from infrastructure.anthropic_provider import AnthropicProvider
 from infrastructure.chat_provider import ZhipuChatProvider
@@ -58,9 +60,17 @@ class ServiceContainer:
         self.provider = self.provider_registry.get()
         self.privacy_log = settings.PRIVACY_LOG_QUESTIONS
         self.graph_default_enabled = settings.GRAPH_DEFAULT_ENABLED
+        # 阶段B：问题概念挖掘（纯规则、仅数据积累；自动触发计数 + 后台运行状态）
+        self.question_concept_miner = QuestionConceptMiner(
+            self.database, gap_min_seen=settings.CONCEPT_MINE_GAP_MIN_SEEN
+        )
+        self._concept_mine_lock = threading.Lock()
+        self._concept_mine_pending = 0
+        self._concept_mine_running = False
         self.chat = ChatService(
             self.database, self.pipeline, self.provider_registry, self.privacy_log,
             graph_default_enabled=self.graph_default_enabled,
+            on_question_logged=self._maybe_auto_mine_concepts,
         )
         self.knowledge = KnowledgeService(DOCS_DIR, UPLOAD_DIR, INDEX_ROOT, self.invalidate_pipelines)
         self.document_lifecycle = DocumentLifecycleService(self.database, self.root / "data" / "product" / "documents")
@@ -91,6 +101,7 @@ class ServiceContainer:
                 "先给结论，再给简要依据，并使用 [citation-N] 标注引用来源。"
             ),
             graph_default_enabled=self.graph_default_enabled,
+            on_question_logged=self._maybe_auto_mine_concepts,
         )
         # 本地目录 / Markdown 目录增量同步连接器（Phase 5-2）
         from application.directory_connector_service import DirectoryConnectorService
@@ -107,6 +118,41 @@ class ServiceContainer:
             self.mindgraph_index_service,
             allowed_roots=(self.root / "knowledge", *settings.connector_allowed_root_list),
         )
+
+    def _maybe_auto_mine_concepts(self) -> None:
+        """提问落库后的自动挖掘触发器（fire-and-forget，绝不阻塞应答路径）。
+
+        累计 CONCEPT_MINE_AUTO_MIN_NEW_QUESTIONS 条新提问后，在后台线程跑一次
+        增量挖掘；同一时刻最多一个挖掘任务在运行（重复触发直接丢弃）。
+        """
+        settings = get_settings()
+        if not settings.CONCEPT_MINE_AUTO_ENABLED:
+            return
+        with self._concept_mine_lock:
+            self._concept_mine_pending += 1
+            pending = self._concept_mine_pending
+            if pending < settings.CONCEPT_MINE_AUTO_MIN_NEW_QUESTIONS or self._concept_mine_running:
+                return
+            self._concept_mine_pending = 0
+            self._concept_mine_running = True
+        threading.Thread(target=self._run_auto_concept_mine, name="concept-mine", daemon=True).start()
+
+    def _run_auto_concept_mine(self) -> None:
+        try:
+            result = self.question_concept_miner.mine(trigger="auto")
+            logger.info(
+                "concept_mine_auto_completed",
+                extra={
+                    "mined": result.get("mined", 0),
+                    "proposed_created": result.get("proposed_created", 0),
+                    "gap_terms": result.get("gap_terms", 0),
+                },
+            )
+        except Exception:
+            logger.exception("concept_mine_auto_failed")
+        finally:
+            with self._concept_mine_lock:
+                self._concept_mine_running = False
 
     def mindgraph_pipeline(self, top_k: int, graph_enabled: bool = False):
         key = (top_k, graph_enabled)

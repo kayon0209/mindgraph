@@ -12,7 +12,7 @@ from typing import Any, Iterator
 
 logger = logging.getLogger("mindgraph.database")
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 class ProductDatabase:
@@ -262,6 +262,21 @@ class ProductDatabase:
                 );
                 CREATE INDEX IF NOT EXISTS idx_connector_syncs_source ON connector_syncs(source_path);
                 CREATE INDEX IF NOT EXISTS idx_connector_syncs_status ON connector_syncs(status);
+                CREATE TABLE IF NOT EXISTS concept_signals (
+                    term TEXT PRIMARY KEY,
+                    seen_count INTEGER NOT NULL DEFAULT 1,
+                    first_seen TEXT NOT NULL,
+                    last_seen TEXT NOT NULL,
+                    sample_question_hash TEXT
+                );
+                CREATE TABLE IF NOT EXISTS concept_mine_runs (
+                    run_id TEXT PRIMARY KEY,
+                    trigger TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    questions_scanned INTEGER NOT NULL DEFAULT 0,
+                    proposed_created INTEGER NOT NULL DEFAULT 0,
+                    gap_terms INTEGER NOT NULL DEFAULT 0
+                );
             """)
             self._ensure_columns(connection, "query_logs", {
                 "index_version": "TEXT", "prompt_version": "TEXT",
