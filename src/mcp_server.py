@@ -240,6 +240,7 @@ def _call_tool(
         if not note_acl_matches(row, scope):
             _audit("mcp_get_note", f"notes/{note_id}", "deny", {"reason": "acl"})
             return {"error": "note not found"}
+        relations: list[dict[str, Any]] = []
         body = {
             "note": row,
             "governance": {
@@ -250,7 +251,7 @@ def _call_tool(
                 "effective_to": row.get("effective_to"),
                 "policy_status": row.get("policy_status"),
             },
-            "relations": [],
+            "relations": relations,
         }
         # 工具描述承诺"含 confirmed 关系"——真正返回（ACL 双端校验 + 治理元数据），
         # 与 REST /mindgraph/notes/{id} 的行为对齐。

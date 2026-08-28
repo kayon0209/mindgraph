@@ -41,7 +41,7 @@ class ServiceContainer:
         self.database = ProductDatabase(self.root / "data" / "product" / "product.sqlite3")
         self.database.initialize()
         self.database.mark_abandoned_runs_interrupted()
-        self._pipelines = {}
+        self._pipelines: dict[int, Any] = {}
         providers = [
             ZhipuChatProvider(settings.ZHIPU_API_KEY, settings.ZHIPU_MODEL, settings.ZHIPU_VERIFIED),
             OpenAICompatibleProvider(

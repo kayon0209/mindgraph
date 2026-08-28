@@ -6,7 +6,7 @@ import logging
 import time
 import uuid
 from collections import defaultdict
-from typing import Callable
+from typing import Callable, cast
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -57,7 +57,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """添加生产级安全响应头。"""
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
-        response = await call_next(request)
+        response: Response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["X-XSS-Protection"] = "1; mode=block"
@@ -91,7 +91,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             },
         )
 
-        response = await call_next(request)
+        response: Response = await call_next(request)
         elapsed_ms = round((time.perf_counter() - started) * 1000, 3)
 
         response.headers["X-Request-ID"] = request_id
@@ -120,7 +120,7 @@ class TimingMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         started = time.perf_counter()
-        response = await call_next(request)
+        response: Response = await call_next(request)
         elapsed_ms = round((time.perf_counter() - started) * 1000, 3)
         response.headers["X-Response-Time"] = str(elapsed_ms)
         return response
@@ -163,7 +163,7 @@ class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
                     )
             except ValueError:
                 pass
-        return await call_next(request)
+        return cast(Response, await call_next(request))
 
 
 # ── 速率限制中间件 ──
@@ -205,7 +205,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         # 跳过健康检查等不需要限制的路由
         if request.url.path.startswith("/api/v1/health"):
-            return await call_next(request)
+            return cast(Response, await call_next(request))
 
         key = self._client_key(request)
         now = time.monotonic()
@@ -240,7 +240,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         self._store[key].append(now)
 
-        response = await call_next(request)
+        response: Response = await call_next(request)
         after = time.monotonic()
         remaining = max(0, self.max_requests - len(self._store[key]))
         first_ts = self._store[key][0] if self._store[key] else after

@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import secrets
 import time
-from typing import Callable
+from typing import Callable, cast
 
 from fastapi import Depends, Header, Request
 
@@ -90,7 +90,7 @@ def load_api_keys() -> dict[str, dict]:
     mtime = API_KEYS_FILE.stat().st_mtime
     cached = getattr(load_api_keys, "_cache", None)
     if cached and cached[0] == mtime:
-        return cached[1]
+        return cast(dict[str, dict], cached[1])
     try:
         data = json.loads(API_KEYS_FILE.read_text(encoding="utf-8"))
         result = {k: v for k, v in data.get("keys", {}).items() if v.get("enabled", True)}

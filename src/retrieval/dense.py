@@ -107,7 +107,7 @@ class FAISSDenseRetriever:
         from application.access_control import chunk_acl_matches
 
         target_date = parse_date_safe(query_date) or date.today()
-        results = []
+        results: list[RetrievalCandidate] = []
         for score, position in zip(scores[0], positions[0]):
             if position < 0:
                 continue

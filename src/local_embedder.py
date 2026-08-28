@@ -3,14 +3,9 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import List, Sequence, TYPE_CHECKING
-
-import numpy as np
+from typing import List, Sequence, cast
 
 from retrieval.embeddings import DEFAULT_BGE_MODEL
-
-if TYPE_CHECKING:
-    from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger("mindgraph.embedding.local")
 MODEL_NAME = os.getenv("BGE_MODEL_NAME", DEFAULT_BGE_MODEL)
@@ -55,7 +50,7 @@ def embed_texts(texts: Sequence[str]) -> List[List[float]]:
         convert_to_numpy=True,
     )
     
-    return embeddings.tolist()
+    return cast(List[List[float]], embeddings.tolist())
 
 
 def embed_query(text: str) -> List[float]:
@@ -70,13 +65,13 @@ def embed_query(text: str) -> List[float]:
         normalize_embeddings=True,
         convert_to_numpy=True,
     )
-    return embedding[0].tolist()
+    return cast(List[float], embedding[0].tolist())
 
 
 def get_dimension() -> int:
     """获取向量维度。"""
     model = _get_model()
-    return model.get_sentence_embedding_dimension()
+    return int(model.get_sentence_embedding_dimension())
 
 
 if __name__ == "__main__":

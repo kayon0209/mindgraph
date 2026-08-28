@@ -5,7 +5,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 import re
 
-from domain.models import ParsedDocument, ParsedElement
+from domain.models import ElementType, ParsedDocument, ParsedElement
 
 
 CLAUSE = re.compile(r"^\s*((?:第[一二三四五六七八九十百]+条)|(?:\d+(?:\.\d+)*[、.]))\s*(.*)$")
@@ -65,11 +65,14 @@ class TextParser:
             lines = extractor.lines
         else:
             lines = [(line, None) for line in text.splitlines()]
-        elements, heading_path, order = [], [], 0
+        elements: list[ParsedElement] = []
+        heading_path: list[str] = []
+        order = 0
         for raw, html_heading_level in lines:
             line = raw.strip()
             if not line:
                 continue
+            element_type: ElementType
             if html_heading_level or (self.markdown and (match := re.match(r"^(#{1,6})\s+(.+)$", line))):
                 if html_heading_level:
                     level, title = html_heading_level, line

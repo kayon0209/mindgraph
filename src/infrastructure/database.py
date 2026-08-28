@@ -65,7 +65,7 @@ class ProductDatabase:
 
     def _thread_connection(self) -> sqlite3.Connection:
         """获取当前线程的复用连接（惰性建立，PRAGMA 只设一次）。"""
-        connection = getattr(self._local, "connection", None)
+        connection: sqlite3.Connection | None = getattr(self._local, "connection", None)
         if connection is None:
             connection = self.connect()
             self._local.connection = connection
@@ -102,7 +102,7 @@ class ProductDatabase:
 
     def close(self) -> None:
         """关闭线程本地连接并执行 WAL checkpoint。"""
-        connection = getattr(self._local, "connection", None)
+        connection: sqlite3.Connection | None = getattr(self._local, "connection", None)
         if connection is not None:
             try:
                 connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")

@@ -2,16 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import os
-from typing import Sequence, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from sentence_transformers import SentenceTransformer
+from typing import Sequence, cast
 
 
 def _lazy_import_st() -> type:
     """Lazy import to avoid blocking at module load time."""
     from sentence_transformers import SentenceTransformer as ST
-    return ST
+    return cast(type, ST)
 
 
 DEFAULT_BGE_MODEL = "BAAI/bge-small-zh-v1.5"
@@ -82,7 +79,7 @@ class BGEEmbeddingProvider:
             convert_to_numpy=True,
             show_progress_bar=False,
         )
-        return vectors.tolist()
+        return cast(list[list[float]], vectors.tolist())
 
     def embed_query(self, text: str) -> list[float]:
         if not text.strip():
@@ -94,4 +91,4 @@ class BGEEmbeddingProvider:
             convert_to_numpy=True,
             show_progress_bar=False,
         )[0]
-        return vector.tolist()
+        return cast(list[float], vector.tolist())

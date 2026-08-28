@@ -8,7 +8,7 @@ from typing import Any
 
 from pypdf import PdfReader
 
-from domain.models import ParsedDocument, ParsedElement
+from domain.models import ElementType, ParsedDocument, ParsedElement
 
 
 @dataclass(frozen=True)
@@ -142,7 +142,7 @@ class PDFParser:
 
     @staticmethod
     def _paragraph_element(text: str, order: int, page_number: int) -> ParsedElement:
-        element_type = "paragraph"
+        element_type: ElementType = "paragraph"
         clause = None
         if text.startswith(("-", "*", "+")):
             element_type = "list_item"

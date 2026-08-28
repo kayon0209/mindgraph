@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -107,7 +107,7 @@ def validate_id_token(token: str) -> dict[str, Any] | None:
             issuer=issuer,
             options={"require": ["exp", "iat", "iss", "sub"]},
         )
-        return claims
+        return cast(dict[str, Any], claims)
     except Exception:
         logger.exception("oidc_token_validation_failed")
         return None

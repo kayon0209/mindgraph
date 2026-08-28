@@ -18,7 +18,7 @@ import hashlib
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 import uuid
 
 import faiss
@@ -179,7 +179,7 @@ class MindGraphIndexService:
             (self.provider.model_name, self.provider.model_revision, checksum),
         )
         if row and row["dimension"] == self.provider.dimension:
-            return json.loads(row["embedding_json"])
+            return cast(list[float], json.loads(row["embedding_json"]))
         return None
 
     def _cache_embedding(self, checksum: str, vector: list[float]) -> None:

@@ -100,6 +100,7 @@ def configure_logging(
     handler = logging.StreamHandler(sys.stdout)
     handler.setLevel(log_level)
 
+    formatter: logging.Formatter
     if fmt == "json":
         formatter = StructuredFormatter()
     else:

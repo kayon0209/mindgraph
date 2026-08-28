@@ -111,7 +111,7 @@ class RetrievalPipeline:
             trace.warnings.append("invalid_date_metadata_treated_as_missing")
         return sorted(selected, key=lambda item: (item.adjusted_score or 0.0, item.chunk.chunk_id), reverse=True)
 
-    def _filter_by_access(self, candidates, access_scope: dict | None, trace: RetrievalTrace) -> list:
+    def _filter_by_access(self, candidates: list, access_scope: dict | None, trace: RetrievalTrace) -> list:
         """按当前主体的 ACL 范围裁剪候选。
 
         access_scope 形如：{"allow": [...], "deny": [...], "user": "...", "roles": [...]}

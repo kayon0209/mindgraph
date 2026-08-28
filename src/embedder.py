@@ -11,13 +11,13 @@ from __future__ import annotations
 
 import os
 import hashlib
-from typing import List, Sequence
+from typing import Callable, List, Sequence
 
 # 全局后端实例
-_backend = None
+_backend: "_ZhipuBackend | _LocalBackend | _HashBackend | _OpenAIBackend | None" = None
 
 
-def _get_backend():
+def _get_backend() -> "_ZhipuBackend | _LocalBackend | _HashBackend | _OpenAIBackend":
     """获取或初始化 embedding 后端。"""
     global _backend
     if _backend is None:
@@ -61,7 +61,7 @@ class _ZhipuBackend:
 class _LocalBackend:
     """本地 BGE 模型后端。"""
     
-    def __init__(self, embed_texts_fn, embed_query_fn):
+    def __init__(self, embed_texts_fn: Callable[[Sequence[str]], List[List[float]]], embed_query_fn: Callable[[str], List[float]]) -> None:
         self.embed_texts_fn = embed_texts_fn
         self.embed_query_fn = embed_query_fn
     
@@ -106,7 +106,7 @@ class _HashBackend:
         if not normalized:
             return [0.0] * self.dim
 
-        features = []
+        features: list[str] = []
         for n in (1, 2, 3):
             if len(normalized) >= n:
                 features.extend(normalized[i : i + n] for i in range(len(normalized) - n + 1))

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 
-from domain.models import ParsedDocument, StructuredChunk
+from domain.models import ParsedDocument, ParsedElement, StructuredChunk
 
 
 class StructuredChunker:
@@ -11,7 +11,9 @@ class StructuredChunker:
         self.child_size, self.parent_size, self.overlap = child_size, parent_size, overlap
 
     def chunk(self, document: ParsedDocument) -> list[StructuredChunk]:
-        groups, current, current_key = [], [], None
+        groups: list[list[ParsedElement]] = []
+        current: list[ParsedElement] = []
+        current_key = None
         for element in document.elements:
             key = tuple(element.heading_path) or (f"page:{element.page_number}" if element.page_number else "root",)
             if current and (key != current_key or sum(len(item.text) for item in current) + len(element.text) > self.parent_size):

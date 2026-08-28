@@ -6,7 +6,7 @@ from io import BytesIO
 
 from docx import Document
 
-from domain.models import ParsedDocument, ParsedElement
+from domain.models import ElementType, ParsedDocument, ParsedElement
 
 
 class DOCXParser:
@@ -17,12 +17,15 @@ class DOCXParser:
     def parse(self, data: bytes, document_name: str) -> ParsedDocument:
         try: document = Document(BytesIO(data))
         except Exception as exc: raise ValueError("Corrupted DOCX") from exc
-        elements, heading_path, order = [], [], 0
+        elements: list[ParsedElement] = []
+        heading_path: list[str] = []
+        order = 0
         for paragraph in document.paragraphs:
             text = paragraph.text.strip()
             if not text: continue
             style = paragraph.style.name if paragraph.style else ""
             heading = re.match(r"Heading (\d+)", style, re.I)
+            kind: ElementType
             if heading:
                 level = int(heading.group(1)); heading_path = heading_path[:level - 1] + [text]; kind = "heading"
             elif style.lower().startswith("list"):

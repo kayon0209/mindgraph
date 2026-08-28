@@ -88,9 +88,10 @@ class QuestionConceptMiner:
 
     def _last_run_created_at(self) -> str | None:
         row = self.db.fetch_one("SELECT created_at FROM concept_mine_runs ORDER BY created_at DESC LIMIT 1")
-        return row["created_at"] if row else None
+        return str(row["created_at"]) if row else None
 
     def _load_new_questions(self, since: str | None) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]]
         if since:
             rows = self.db.fetch_all(
                 "SELECT question, question_hash, created_at FROM query_logs "

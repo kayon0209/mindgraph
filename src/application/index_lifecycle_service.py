@@ -27,7 +27,9 @@ class IndexLifecycleService:
     def build(self, operator: str = "local"):
         provider = BGEEmbeddingProvider(); active = self.documents.active_chunks(include_historical=True)
         version = datetime.now(timezone.utc).strftime("m4-%Y%m%dT%H%M%SZ-") + uuid.uuid4().hex[:8]; directory = self.index_root / version; directory.mkdir()
-        chunks, vectors, reused = [], [], 0
+        chunks: list[Chunk] = []
+        vectors: list[list[float]] = []
+        reused = 0
         try:
             for item in active:
                 checksum = item["checksum"]

@@ -7,6 +7,7 @@ import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import cast
 
 from domain.errors import ConflictError, NotFoundError
 from domain.models import DocumentRecord, IndexStatus
@@ -27,7 +28,7 @@ class KnowledgeService:
 
     def _pending_deletions(self) -> list[dict]:
         try:
-            return json.loads(self._deletions_file.read_text(encoding="utf-8"))
+            return cast(list[dict], json.loads(self._deletions_file.read_text(encoding="utf-8")))
         except Exception:
             return []
 
@@ -41,7 +42,7 @@ class KnowledgeService:
     def _metadata(self) -> dict:
         try:
             current = (self.index_root / "CURRENT").read_text(encoding="utf-8").strip()
-            return json.loads((self.index_root / current / "metadata.json").read_text(encoding="utf-8"))
+            return cast(dict, json.loads((self.index_root / current / "metadata.json").read_text(encoding="utf-8")))
         except Exception:
             return {}
 

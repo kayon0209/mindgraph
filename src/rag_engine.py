@@ -53,7 +53,7 @@ def collection_count() -> int:
         return 0
     try:
         col = _get_collection(create=False)
-        return col.count()
+        return int(col.count())
     except Exception:
         return 0
 
@@ -203,7 +203,7 @@ def _lexical_score(question: str, text: str) -> float:
     if "差旅费" in q and ("包括" in q or "哪些费用" in q):
         if all(term in t for term in ("交通费", "住宿费")) and ("伙食" in t or "补助" in t):
             term_hits += 3
-    grams = set()
+    grams: set[str] = set()
     for n in (2, 3, 4):
         if len(q) >= n:
             grams.update(q[i : i + n] for i in range(len(q) - n + 1))

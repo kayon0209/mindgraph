@@ -24,7 +24,7 @@ class OpenAICompatibleProvider:
     def __init__(self, provider_name: str, base_url: str, api_key: str, model_name: str, timeout: float = 60.0, max_retries: int = 1, verified: bool = False, configured_models: list[str] | None = None) -> None:
         self.provider_name, self.base_url, self.api_key, self.model_name = provider_name, base_url.rstrip("/"), api_key, model_name
         self.timeout, self.max_retries, self.verified = timeout, max_retries, verified
-        self._last_health = None
+        self._last_health: datetime | None = None
         self._health_status = "not_checked" if api_key else "not_configured"
         self.configured_models = list(dict.fromkeys(configured_models or [model_name]))
         self.verified_models = {model_name} if verified else set()

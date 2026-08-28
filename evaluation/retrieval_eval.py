@@ -10,7 +10,7 @@ import sys
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "src"
@@ -121,7 +121,7 @@ def build_pipeline(enable_reranker: bool, allow_model_downloads: bool = False,
         "bm25_k1": sparse.k1,
         "bm25_b": sparse.b,
         "bm25_tokenization": "CJK unigram + bigram; contiguous Latin/number tokens",
-        "rrf_constant": pipeline.fusion.constant,
+        "rrf_constant": cast(ReciprocalRankFusion, pipeline.fusion).constant,
         "reranker_enabled": enable_reranker,
         "reranker_model_name": reranker.model_name if reranker else None,
         "rerank_top_n": pipeline.rerank_top_n,

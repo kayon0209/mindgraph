@@ -13,9 +13,8 @@ Whimsy & Delight Engine — 趣味体验核心模块。
 
 from __future__ import annotations
 
-import hashlib
 import random
-from typing import Any
+from typing import Any, cast
 
 import streamlit as st
 
@@ -186,7 +185,7 @@ def get_loading_copy(phase: int, total: int = 3) -> tuple[str, str]:
         st.session_state.whimsy_loading_seq = random.randint(0, len(LOADING_SEQUENCES) - 1)
     seq = LOADING_SEQUENCES[st.session_state.whimsy_loading_seq]
     if 0 <= phase < len(seq):
-        return seq[phase]
+        return cast(tuple[str, str], seq[phase])
     return ("处理中…", "")
 
 
@@ -217,7 +216,7 @@ def track_answer_count() -> int:
     """Increment and return the total answer count for this session."""
     st.session_state.setdefault("whimsy_answer_count", 0)
     st.session_state.whimsy_answer_count += 1
-    return st.session_state.whimsy_answer_count
+    return int(st.session_state.whimsy_answer_count)
 
 
 def check_and_celebrate_achievement(
@@ -311,7 +310,7 @@ def track_logo_click() -> int:
     """Track logo area clicks. Returns current count; triggers achievement at 10."""
     st.session_state.setdefault("whimsy_logo_clicks", 0)
     st.session_state.whimsy_logo_clicks += 1
-    count = st.session_state.whimsy_logo_clicks
+    count = int(st.session_state.whimsy_logo_clicks)
 
     if count == 5:
         st.toast("👀 你在点什么呢？", icon="👀")

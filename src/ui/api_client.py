@@ -42,7 +42,7 @@ def _get_session(base_url: str, timeout: float) -> httpx.Client:
     eliminating the TLS-handshake overhead on every API call.
     """
     session_key = f"__httpx_client_{base_url}"
-    client = st.session_state.get(session_key)
+    client: httpx.Client | None = st.session_state.get(session_key)
     if client is None or client.is_closed:
         client = httpx.Client(
             base_url=base_url,

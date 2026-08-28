@@ -379,3 +379,21 @@ python scripts/sync_vault.py --vault "D:/demo/mindgraph/knowledge"
 **验证（2026-08-28）**：pytest **335 passed / 2 skipped**（基线 319 + 新增 16，`--no-cov`）；ruff 关键规则（F821/F822/F823/F401/F841/E902）本次改动文件 0 命中；web `pnpm typecheck` ✅ / `pnpm build` ✅（CSS 48.08 kB / JS 310.11 kB）。无浏览器自动化，视觉以用户刷新为准。
 
 **改动文件**：新增 `web/src/pages/GraphPage.tsx`、`src/application/question_concept_miner.py`、`tests/test_question_concept_miner.py`；修改 `web/src/{App.tsx,styles.css}`、`web/src/pages/{KnowledgePage,RelationsPage}.tsx`、`web/src/lib/api.ts`、`web/src/types.ts`、`src/api/{dependencies.py,routes/mindgraph_readonly.py}`、`src/application/{chat_service.py,mindgraph_graph_store.py}`、`src/infrastructure/{database.py,settings.py}`、`tests/test_policy_metadata.py`。
+
+### 11.8 CI 修复：MindGraph CI mypy 门禁转绿（2026-08-28）
+
+**问题**：GitHub Actions `MindGraph CI` 自 2026-08-27 10:26 起连续 4 次推送全部失败（每次 ~18s 即挂）。根因：`lint` 作业的 `mypy src/ --ignore-missing-imports --no-strict-optional` 步骤报 39 个类型错误（24 文件），阻断下游 test/web/docker/security 全部作业。错误主体为历史债务（`no-any-return` / `var-annotated` / Literal `arg-type` 等），图谱批次仅新增其中 2 个（`question_concept_miner.py:91/105`）。
+
+**修复（29 文件，纯类型收紧，零运行时行为变更）**：
+- **类型别名**（`domain/models.py`）：新增 `ElementType` / `AuthorityLevel` / `DocumentStatus` 三个 Literal 别名并用于 `ParsedElement` / `DocumentVersionModel` 字段（值与原内联 Literal 完全一致）；`EvaluationRunCreate.retrieval_strategies` 的 default_factory 改用带标注的模块常量 `_DEFAULT_RETRIEVAL_STRATEGIES`。
+- **no-any-return**：对 sqlite 行取值、`json.loads`、numpy `.tolist()`、streamlit `session_state`、pyjwt decode、未标注后端函数的返回值，按声明返回类型用 `typing.cast` 或 `int()/str()` 显式收紧（`embeddings.py`、`local_embedder.py`、`knowledge_service.py`、`mindgraph_index_service.py`、`oidc.py`、`auth.py`、`whimsy.py`、`vector_store.py`、`rag_engine.py`、`database.py`、`question_concept_miner.py`、`document_lifecycle_service.py` 的 `get()/_row()` 补返回标注）。
+- **var-annotated**：`structured_chunker.py`（groups/current 标注为 `list[ParsedElement]`）、三个 parser（elements/heading_path）、`dense.py`（`list[RetrievalCandidate]`）、`index_lifecycle_service.py`（chunks/vectors）、`embedder.py`（features、`_backend` 联合类型、`_get_backend()` 返回标注、`_LocalBackend` 构造参数 Callable 标注）、`rag_engine.py`（`set[str]`）、`dependencies.py`（`dict[int, Any]`）、`mcp_server.py`（relations 预声明）、`pipeline.py`（candidates 参数标注）。
+- **assignment**：`logging_config.py`（formatter 声明为 `logging.Formatter`）、`openai_compatible_provider.py`（`_last_health: datetime | None`）。
+- **Literal arg-type**：text/docx/pdf 解析器的 element_type/kind 标注为 `ElementType`；`document_lifecycle_service.py` 构造 `DocumentVersionModel` 时对 authority/status 用别名 cast。
+- **中间件**（`middleware.py` 6 处）：`await call_next(request)` 结果标注/ cast 为 `Response`；`main.py` 7 处异常处理器注册加 `# type: ignore[arg-type]`（starlette 版本间签名差异，本地与 CI 依赖版本不一致时两边都不报错）。
+- **顺手清理**：改动文件内 5 处历史遗留 F401（local_embedder 的 numpy、两处 TYPE_CHECKING SentenceTransformer、whimsy 的 hashlib、vector_store 的 Any）。
+- **CI 固化**：`ci-cd.yml` 将 `pip install ruff mypy` 改为 `pip install ruff mypy==2.3.1`，与本地验证版本一致，避免 mypy 新版本发布再次意外红灯。
+
+**验证（2026-08-28，本地 mypy 2.3.1）**：`mypy src/ --ignore-missing-imports --no-strict-optional --python-version 3.12` → **Success: no issues found in 92 source files**；CI 同款 `ruff check src/ scripts/ tests/ --select F821,F822,F823,E902` → All checks passed；改动文件扩展规则（+F401/F841）→ All checks passed；pytest **335 passed / 2 skipped**（与基线一致，零回归）。
+
+**改动文件**：`.github/workflows/ci-cd.yml`、`src/domain/models.py`、`src/application/{structured_chunker,question_concept_miner,knowledge_service,mindgraph_index_service,index_lifecycle_service,document_lifecycle_service}.py`、`src/infrastructure/{logging_config,database,openai_compatible_provider}.py`、`src/infrastructure/parsers/{text,docx,pdf}.py`、`src/retrieval/{pipeline,dense,embeddings}.py`、`src/api/{oidc,auth,middleware,main,dependencies}.py`、`src/ui/{whimsy,api_client}.py`、`src/{vector_store,local_embedder,embedder,rag_engine,mcp_server}.py`、`evaluation/retrieval_eval.py`。

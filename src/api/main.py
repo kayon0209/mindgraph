@@ -117,13 +117,13 @@ if _settings.rate_limit_effective:
 
 # ── 异常处理器注册 ──
 
-app.add_exception_handler(ProductError, product_error_handler)
-app.add_exception_handler(AuthenticationError, authentication_error_handler)
-app.add_exception_handler(AuthorizationError, authorization_error_handler)
-app.add_exception_handler(RateLimitError, rate_limit_handler)
-app.add_exception_handler(RequestValidationError, validation_error_handler)
-app.add_exception_handler(ValueError, value_error_handler)
-app.add_exception_handler(StarletteHTTPException, http_exception_handler)
+app.add_exception_handler(ProductError, product_error_handler)  # type: ignore[arg-type]
+app.add_exception_handler(AuthenticationError, authentication_error_handler)  # type: ignore[arg-type]
+app.add_exception_handler(AuthorizationError, authorization_error_handler)  # type: ignore[arg-type]
+app.add_exception_handler(RateLimitError, rate_limit_handler)  # type: ignore[arg-type]
+app.add_exception_handler(RequestValidationError, validation_error_handler)  # type: ignore[arg-type]
+app.add_exception_handler(ValueError, value_error_handler)  # type: ignore[arg-type]
+app.add_exception_handler(StarletteHTTPException, http_exception_handler)  # type: ignore[arg-type]
 app.add_exception_handler(Exception, unhandled_error_handler)
 
 # ── 路由注册 ──

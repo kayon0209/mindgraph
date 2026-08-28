@@ -27,7 +27,7 @@ jobs:
 
       - name: Install lint tools
         run: |
-          pip install ruff mypy
+          pip install ruff mypy==2.3.1
 
       - name: Ruff critical check
         run: ruff check src/ scripts/ tests/ --config pyproject.toml --select F821,F822,F823,E902

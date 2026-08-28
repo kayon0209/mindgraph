@@ -6,10 +6,11 @@ import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import cast
 
 from application.access_control import note_acl_matches
 from domain.errors import ConflictError, NotFoundError, ValidationError
-from domain.models import DocumentVersionModel
+from domain.models import AuthorityLevel, DocumentStatus, DocumentVersionModel
 from infrastructure.database import ProductDatabase, dumps, loads
 from infrastructure.parsers import default_parser_registry
 from application.structured_chunker import StructuredChunker
@@ -90,7 +91,7 @@ class DocumentLifecycleService:
         now = datetime.now(timezone.utc)
         record = DocumentVersionModel(document_id=document_id, logical_document_id=logical_id, version=version,
             title=Path(filename).stem, file_type=Path(filename).suffix.lower().lstrip("."), knowledge_category=category,
-            authority_level=authority, effective_date=effective_date, expiration_date=expiration_date, status=status,
+            authority_level=cast(AuthorityLevel, authority), effective_date=effective_date, expiration_date=expiration_date, status=cast(DocumentStatus, status),
             checksum=checksum, parsing_diagnostics=diagnostics, created_at=now, updated_at=now,
             workspace=workspace, department=department, acl_json=acl_json, acl_public=acl_public)
         self.database.execute(
@@ -140,7 +141,7 @@ class DocumentLifecycleService:
             rows = [row for row in rows if note_acl_matches(row.model_dump(mode="python"), access_scope)]
         return rows
 
-    def get(self, document_id: str):
+    def get(self, document_id: str) -> DocumentVersionModel:
         row = self.database.fetch_one("SELECT * FROM document_versions WHERE document_id=?", (document_id,))
         if not row: raise NotFoundError("Document version not found")
         return self._row(row)
@@ -173,7 +174,7 @@ class DocumentLifecycleService:
         return output
 
     @staticmethod
-    def _row(row):
+    def _row(row) -> DocumentVersionModel:
         return DocumentVersionModel(document_id=row["document_id"], logical_document_id=row["logical_document_id"], version=row["version"],
             title=row["title"], file_type=row["file_type"], knowledge_category=row["knowledge_category"], authority_level=row["authority_level"],
             effective_date=row["effective_date"], expiration_date=row["expiration_date"], status=row["status"], checksum=row["checksum"],

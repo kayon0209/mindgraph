@@ -212,9 +212,12 @@ class EvaluationRun(BaseModel):
     provider: str | None = None
 
 
+_DEFAULT_RETRIEVAL_STRATEGIES: list[Literal["dense", "bm25", "hybrid", "hybrid_rerank"]] = ["hybrid"]
+
+
 class EvaluationRunCreate(BaseModel):
     dataset_name: str = "expense_qa_v1"
-    retrieval_strategies: list[Literal["dense", "bm25", "hybrid", "hybrid_rerank"]] = Field(default_factory=lambda: ["hybrid"])
+    retrieval_strategies: list[Literal["dense", "bm25", "hybrid", "hybrid_rerank"]] = Field(default_factory=lambda: list(_DEFAULT_RETRIEVAL_STRATEGIES))
     chat_model: str | None = None
     repetitions: int = Field(default=1, ge=1, le=5)
     warmups: int = Field(default=1, ge=0, le=3)
@@ -261,8 +264,13 @@ class ProviderCapability(BaseModel):
     pricing_metadata_available: bool = False
 
 
+ElementType = Literal["heading", "paragraph", "list_item", "numbered_clause", "table", "page_break", "section", "metadata"]
+AuthorityLevel = Literal["official_policy", "official_guideline", "approved_faq", "user_uploaded_reference", "external_reference"]
+DocumentStatus = Literal["draft", "pending_index", "active", "expired", "replaced", "deleted", "parse_failed", "index_failed"]
+
+
 class ParsedElement(BaseModel):
-    element_type: Literal["heading", "paragraph", "list_item", "numbered_clause", "table", "page_break", "section", "metadata"]
+    element_type: ElementType
     text: str
     order: int
     page_number: int | None = None
@@ -308,10 +316,10 @@ class DocumentVersionModel(BaseModel):
     title: str
     file_type: str
     knowledge_category: str
-    authority_level: Literal["official_policy", "official_guideline", "approved_faq", "user_uploaded_reference", "external_reference"]
+    authority_level: AuthorityLevel
     effective_date: str | None = None
     expiration_date: str | None = None
-    status: Literal["draft", "pending_index", "active", "expired", "replaced", "deleted", "parse_failed", "index_failed"]
+    status: DocumentStatus
     checksum: str
     supersedes_version: str | None = None
     parsing_diagnostics: dict[str, Any] = Field(default_factory=dict)

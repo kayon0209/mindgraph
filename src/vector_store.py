@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -31,7 +31,7 @@ class Collection:
     def count(self) -> int:
         conn = self._conn()
         cur = conn.execute(f'SELECT COUNT(*) FROM "{self._name}"')
-        n = cur.fetchone()[0]
+        n = int(cur.fetchone()[0])
         conn.close()
         return n
 
