@@ -3,8 +3,6 @@ from __future__ import annotations
 import json
 from typing import Any
 
-PUBLIC_TOKENS = {"*", "all", "public"}
-
 
 def public_access_scope() -> dict[str, Any]:
     """Return the explicit scope used by unauthenticated demo users.
@@ -154,15 +152,8 @@ def note_acl_matches(note: dict[str, Any], access_scope: dict[str, Any] | None) 
         return False
     if not allowed:
         return False
-    if allowed.intersection(note_tags):
-        return True
-
-    # 没有显式 workspace/department 命中时，允许 note 端声明的 allow_* 直接命中
-    if allowed.intersection(note_deny):
-        return False
-    if allowed.intersection(note_tags):
-        return True
-    return False
+    # 命中判定：allow 与笔记标签的交集（deny 已在上面全部拦截）。
+    return bool(allowed.intersection(note_tags))
 
 
 def chunk_acl_matches(metadata: dict[str, Any], access_scope: dict[str, Any] | None) -> bool:
@@ -196,11 +187,8 @@ def chunk_acl_matches(metadata: dict[str, Any], access_scope: dict[str, Any] | N
         return False
     if not allowed:
         return False
-    if allowed.intersection(note_tags):
-        return True
-    if allowed.intersection(note_deny):
-        return False
-    return False
+    # 命中判定：allow 与笔记标签的交集（deny 已在上面全部拦截）。
+    return bool(allowed.intersection(note_tags))
 
 
 def record_access_audit(

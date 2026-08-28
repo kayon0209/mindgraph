@@ -22,8 +22,14 @@ from infrastructure.database import ProductDatabase, dumps
 OUT_OF_SCOPE = ("工资", "薪资", "年终奖", "股票", "请假", "年假", "辞职", "离职", "wifi", "食堂", "系统提示词", "ignore previous", "system prompt")
 REFUSAL = "抱歉，我只能回答公司报销相关问题。"
 INSUFFICIENT = "未在制度文件中找到足够依据。建议联系 HR/财务确认。"
+PERMISSION_DENIED = "当前账号没有权限访问相关制度内容。请联系管理员申请对应工作区/部门的访问权限。"
 CONFLICTING = "检测到同一制度在查询日期存在多个有效版本，已停止生成答案。请由制度责任人确认有效版本。"
 logger = logging.getLogger("mindgraph.chat")
+
+
+def _acl_filtered_everything(trace) -> bool:
+    """判断“零引用”是否由 ACL 裁剪导致（计划 3.3：权限不足 → 拒绝/安全提示）。"""
+    return bool(trace) and "access_denied_chunks_filtered" in getattr(trace, "warnings", [])
 
 DEFAULT_SYSTEM_PROMPT = "你是企业报销政策助手。只能依据给定制度证据回答；不得编造。先给结论，再给简要依据，并使用 [citation-N] 标注引用。"
 
@@ -38,6 +44,7 @@ class ChatService:
         system_prompt: str | None = None,
         retrieval_router: AdaptiveRetrievalRouter | None = None,
         query_understanding: QueryUnderstandingService | None = None,
+        graph_default_enabled: bool = False,
     ) -> None:
         self.database = database
         self.pipeline_factory = pipeline_factory
@@ -47,23 +54,27 @@ class ChatService:
         self.policy_conflict_service = PolicyConflictService(database)
         self.retrieval_router = retrieval_router or AdaptiveRetrievalRouter()
         self.query_understanding = query_understanding or QueryUnderstandingService()
+        # 计划 Phase 5 发布闸门的配置消费方：消融达标后由 GRAPH_DEFAULT_ENABLED
+        # 打开服务端默认图路由；客户端 graph_enabled=false 始终可以关闭。
+        self.graph_default_enabled = graph_default_enabled
 
     def _provider(self, name: str | None = None, model: str | None = None):
         return self.provider.get(name, model) if hasattr(self.provider, "get") else self.provider
 
     def _route(self, request: ChatRequest) -> tuple[RetrievalRouteDecision, float]:
         started = time.perf_counter()
+        graph_allowed = bool(getattr(request, "graph_enabled", False)) or self.graph_default_enabled
         decision = self.retrieval_router.decide(
             request.question,
             requested_strategy=request.retrieval_strategy,
-            graph_allowed=request.graph_enabled,
+            graph_allowed=graph_allowed,
             top_k=request.final_top_k,
             filters={
                 "query_date": request.query_date,
                 "knowledge_categories": request.knowledge_categories or [],
                 "include_historical": request.include_historical,
             },
-            query_type=None,
+            query_type=getattr(request, "query_type", None),
         )
         return decision, round((time.perf_counter() - started) * 1000, 3)
 
@@ -138,15 +149,19 @@ class ChatService:
                     query_text, decision.selected_strategy, effective_query_date,
                     request.knowledge_categories, request.include_historical, **kwargs,
                 )
+            # graph_hops 仅在管线支持时传递（计划 4.4 两跳能力由请求显式驱动）
+            graph_hops_kwargs: dict[str, Any] = {}
+            if "graph_hops" in parameters:
+                graph_hops_kwargs["graph_hops"] = getattr(request, "graph_hops", 1) or 1
             if "query_date" not in parameters:
                 return pipeline.retrieve(
                     query_text, decision.selected_strategy,
-                    graph_enabled=decision.graph_enabled, **kwargs,
+                    graph_enabled=decision.graph_enabled, **graph_hops_kwargs, **kwargs,
                 )
             return pipeline.retrieve(
                 query_text, decision.selected_strategy, effective_query_date,
                 request.knowledge_categories, request.include_historical,
-                graph_enabled=decision.graph_enabled, **kwargs,
+                graph_enabled=decision.graph_enabled, **graph_hops_kwargs, **kwargs,
             )
 
         traces = [retrieve_variant(query_text) for query_text in variants]
@@ -264,6 +279,17 @@ class ChatService:
         )
 
     def _persist(self, result: AnswerResult) -> None:
+        # 持久化失败不应让已经算出的答案/引用在客户端面前炸掉：
+        # 记录错误并继续（query_logs 仅用于审计与回归，丢失一条可接受）。
+        try:
+            self._persist_or_raise(result)
+        except Exception:
+            logger.exception(
+                "query_log_persist_failed",
+                extra={"request_id": result.request_id, "result_state": result.result_state.value},
+            )
+
+    def _persist_or_raise(self, result: AnswerResult) -> None:
         question = result.question if self.privacy_log_questions else None
         self.database.execute(
             """INSERT INTO query_logs (
@@ -271,7 +297,9 @@ class ChatService:
                 trace_json,citations_json,timing_json,usage_json,created_at,index_version,prompt_version,
                 requested_provider,actual_provider,query_date,category_filter_json
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (result.request_id, question, hashlib.sha256((result.question + "expense-rag-salt").encode()).hexdigest(), result.answer,
+            # 盐更名（expense-rag-salt → mindgraph-question-salt）：历史 question_hash
+            # 失效可接受，该字段仅用于同题去重，不承载跨版本可追溯承诺。
+            (result.request_id, question, hashlib.sha256((result.question + "mindgraph-question-salt").encode()).hexdigest(), result.answer,
              result.result_state.value, result.requested_strategy, result.actual_strategy,
              dumps(result.retrieval_trace.model_dump(mode="json") if result.retrieval_trace else {}),
              dumps([item.model_dump(mode="json") for item in result.citations]),
@@ -318,12 +346,16 @@ class ChatService:
             self._persist(result)
             return result
         if not citations:
+            denied = _acl_filtered_everything(trace)
             result = AnswerResult(
-                request_id=request_id, question=request.question, answer=INSUFFICIENT,
-                result_state=ResultState.insufficient_evidence, citations=[], retrieval_trace=trace_model,
+                request_id=request_id, question=request.question,
+                answer=PERMISSION_DENIED if denied else INSUFFICIENT,
+                result_state=ResultState.permission_denied if denied else ResultState.insufficient_evidence,
+                citations=[], retrieval_trace=trace_model,
                 timing=self._timing(trace, started, None, None), requested_strategy=request.retrieval_strategy,
                 actual_strategy=trace.actual_strategy, degraded=trace.degraded,
-                degradation_reason=trace.degradation_reason, model=provider.model_name,
+                degradation_reason="acl_filtered_all_candidates" if denied else trace.degradation_reason,
+                model=provider.model_name,
                 requested_provider=request.chat_provider or provider.provider_name, actual_provider=provider.provider_name,
                 index_version=trace.index_version,
             )
@@ -375,7 +407,16 @@ class ChatService:
             yield event("usage", result.usage.model_dump(mode="json"))
             yield event("completed", result.model_dump(mode="json"))
             return
-        decision, routing_ms = self._route(request)
+        try:
+            decision, routing_ms = self._route(request)
+        except Exception as exc:
+            logger.exception("mindgraph_routing_failed", extra={"request_id": request_id})
+            yield event("error", {
+                "code": "retrieval_unavailable",
+                "message": "检索服务暂不可用，请稍后重试。",
+                "detail": f"{type(exc).__name__}: {exc}",
+            })
+            return
         yield event("retrieval_routed", {**decision.to_dict(), "routing_ms": routing_ms})
         yield event("retrieval_started", {"strategy": decision.selected_strategy})
         try:
@@ -411,11 +452,15 @@ class ChatService:
                 model=provider.model_name, requested_provider=request.chat_provider or provider.provider_name,
                 actual_provider=provider.provider_name, index_version=trace.index_version)
         elif not citations:
-            yield event("answer_delta", {"text": INSUFFICIENT, "stream_mode": "deterministic"})
-            result = AnswerResult(request_id=request_id, question=request.question, answer=INSUFFICIENT,
-                result_state=ResultState.insufficient_evidence, citations=[], retrieval_trace=self._trace_model(trace),
+            denied = _acl_filtered_everything(trace)
+            no_evidence_text = PERMISSION_DENIED if denied else INSUFFICIENT
+            yield event("answer_delta", {"text": no_evidence_text, "stream_mode": "deterministic"})
+            result = AnswerResult(request_id=request_id, question=request.question, answer=no_evidence_text,
+                result_state=ResultState.permission_denied if denied else ResultState.insufficient_evidence,
+                citations=[], retrieval_trace=self._trace_model(trace),
                 timing=self._timing(trace, started, None, 0.0), requested_strategy=request.retrieval_strategy,
-                actual_strategy=trace.actual_strategy, degraded=trace.degraded, degradation_reason=trace.degradation_reason,
+                actual_strategy=trace.actual_strategy, degraded=trace.degraded,
+                degradation_reason="acl_filtered_all_candidates" if denied else trace.degradation_reason,
                 model=provider.model_name, requested_provider=request.chat_provider or provider.provider_name,
                 actual_provider=provider.provider_name, index_version=trace.index_version)
         elif not provider.available:

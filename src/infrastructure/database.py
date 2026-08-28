@@ -4,9 +4,11 @@ import json
 import logging
 import os
 import sqlite3
+import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 logger = logging.getLogger("mindgraph.database")
 
@@ -31,6 +33,9 @@ class ProductDatabase:
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        # 线程级连接复用：此前每条 SQL 新开连接（含 5 条 PRAGMA），高频请求下
+        # 开销显著；SQLite 连接线程绑定时用 threading.local 缓存即可。
+        self._local = threading.local()
         try:
             self._SLOW_QUERY_THRESHOLD_MS = float(os.getenv("SLOW_QUERY_THRESHOLD_MS", "500"))
         except (ValueError, TypeError):
@@ -58,13 +63,20 @@ class ProductDatabase:
                 extra={"sql": sql[:200], "elapsed_ms": round(elapsed_ms, 3)},
             )
 
+    def _thread_connection(self) -> sqlite3.Connection:
+        """获取当前线程的复用连接（惰性建立，PRAGMA 只设一次）。"""
+        connection = getattr(self._local, "connection", None)
+        if connection is None:
+            connection = self.connect()
+            self._local.connection = connection
+        return connection
+
     def _cursor_with_retry(self) -> sqlite3.Connection:
-        """带重试的数据库连接获取（返回普通连接，调用方负责关闭）。"""
+        """带重试的数据库连接获取（返回可复用连接，调用方不再手动关闭）。"""
         last_error: Exception | None = None
         for attempt in range(self._MAX_RETRIES):
             try:
-                conn = self.connect()
-                return conn
+                return self._thread_connection()
             except sqlite3.OperationalError as exc:
                 last_error = exc
                 if "database is locked" in str(exc).lower() and attempt < self._MAX_RETRIES - 1:
@@ -74,14 +86,32 @@ class ProductDatabase:
                 raise
         raise last_error  # type: ignore[misc]
 
-    def close(self) -> None:
-        """关闭数据库连接并执行 WAL checkpoint。"""
+    @contextmanager
+    def transaction(self) -> Iterator[sqlite3.Connection]:
+        """多语句原子事务：全部成功才提交，任一失败整体回滚。
+
+        用于跨语句业务写入（如批量关系状态变更），避免中途失败留下半成品状态。
+        """
+        connection = self._cursor_with_retry()
         try:
-            with self.connect() as conn:
-                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                logger.info("database_closed_with_checkpoint")
-        except Exception as exc:
-            logger.warning("database_close_warning", extra={"error": str(exc)})
+            yield connection
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+
+    def close(self) -> None:
+        """关闭线程本地连接并执行 WAL checkpoint。"""
+        connection = getattr(self._local, "connection", None)
+        if connection is not None:
+            try:
+                connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                connection.close()
+            except Exception as exc:
+                logger.warning("database_close_warning", extra={"error": str(exc)})
+            finally:
+                self._local.connection = None
+        logger.info("database_closed_with_checkpoint")
 
     def initialize(self) -> None:
         with self.connect() as connection:
@@ -315,8 +345,9 @@ class ProductDatabase:
         try:
             conn.execute(sql, params)
             conn.commit()
-        finally:
-            conn.close()
+        except sqlite3.OperationalError:
+            conn.rollback()
+            raise
         self._log_slow_query(sql, (time.perf_counter() - started) * 1000)
 
     def execute_many(self, sql: str, params_list: list[tuple[Any, ...]]) -> None:
@@ -325,27 +356,22 @@ class ProductDatabase:
         try:
             conn.executemany(sql, params_list)
             conn.commit()
-        finally:
-            conn.close()
+        except sqlite3.OperationalError:
+            conn.rollback()
+            raise
         self._log_slow_query(sql, (time.perf_counter() - started) * 1000)
 
     def fetch_one(self, sql: str, params: tuple[Any, ...] = ()) -> dict[str, Any] | None:
         started = time.perf_counter()
         conn = self._cursor_with_retry()
-        try:
-            row = conn.execute(sql, params).fetchone()
-        finally:
-            conn.close()
+        row = conn.execute(sql, params).fetchone()
         self._log_slow_query(sql, (time.perf_counter() - started) * 1000)
         return dict(row) if row else None
 
     def fetch_all(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
         started = time.perf_counter()
         conn = self._cursor_with_retry()
-        try:
-            rows = conn.execute(sql, params).fetchall()
-        finally:
-            conn.close()
+        rows = conn.execute(sql, params).fetchall()
         self._log_slow_query(sql, (time.perf_counter() - started) * 1000)
         return [dict(row) for row in rows]
 

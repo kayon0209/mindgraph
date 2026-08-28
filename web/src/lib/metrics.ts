@@ -1,4 +1,4 @@
-import type { EvaluationRun, PolicyGovernance } from "../types";
+﻿import type { EvaluationRun, PolicyGovernance } from "../types";
 
 export const METRIC_DEFINITIONS = [
   { key: "recall_at_5", label: "Recall@5" },
@@ -57,7 +57,7 @@ export function evaluationEfficiencyView(run: EvaluationRun | null) {
 }
 
 const POLICY_STATUS_LABELS: Record<string, { label: string; tone: "positive" | "negative" | "neutral" }> = {
-  active: { label: "在行", tone: "positive" },
+  active: { label: "生效中", tone: "positive" },
   draft: { label: "草案", tone: "neutral" },
   archived: { label: "已归档", tone: "neutral" },
   expired: { label: "已失效", tone: "negative" },

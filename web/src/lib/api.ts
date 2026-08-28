@@ -7,6 +7,7 @@ import type {
   NoteDetail,
   NoteItem,
   ProposedRelationsResponse,
+  PublicConfig,
   StreamEvent,
 } from "../types";
 
@@ -100,10 +101,18 @@ export async function streamChat(
 
 export const api = {
   health: () => request<HealthStatus>("/health"),
+  publicConfig: () => request<PublicConfig>("/config/public"),
   answer: (payload: ChatRequest) =>
     request<AnswerResult>("/mindgraph/chat", { method: "POST", body: JSON.stringify(payload) }),
-  notes: (query = "") =>
-    request<{ total: number; items: NoteItem[] }>(`/mindgraph/notes?limit=200&q=${encodeURIComponent(query)}`),
+  submitFeedback: (payload: { request_id: string; rating: "helpful" | "not_helpful" }) =>
+    request<{ feedback_id: string; request_id: string }>("/feedback", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  notes: (query = "", offset = 0, limit = 200) =>
+    request<{ total: number; items: NoteItem[] }>(
+      `/mindgraph/notes?limit=${limit}&offset=${offset}&q=${encodeURIComponent(query)}`,
+    ),
   note: (id: string) => request<NoteDetail>(`/mindgraph/notes/${encodeURIComponent(id)}`),
   evaluations: () => request<EvaluationResponse>("/mindgraph/evaluation/ablation"),
   proposedRelations: () => request<ProposedRelationsResponse>("/mindgraph/relations/proposed"),

@@ -119,6 +119,10 @@ def list_notes(
     access_scope = resolve_access_scope(request)
     actor = current_actor(request)
     where, params = [], []
+    # 公共快路径：匿名主体（public_only）只能看到公开笔记，直接下推到 SQL，
+    # 避免全表拉取后逐行 ACL 过滤；带权限主体仍走完整过滤。
+    if access_scope is not None and access_scope.get("public_only"):
+        where.append("acl_public = 1")
     if status:
         where.append("index_status = ?")
         params.append(status)
@@ -256,20 +260,25 @@ def get_note(note_id: str, request: Request):
 
 
 def _active_index_stats() -> dict:
-    """读取当前激活索引的 manifest，返回真实 chunk / note 数量。"""
+    """读取当前激活索引的 manifest，返回真实 chunk / note 数量与索引版本信息（P1：新鲜度可见）。"""
     try:
         root = get_container().mindgraph_index_root
         cur = root / "CURRENT"
         if not cur.exists():
-            return {"chunks": 0, "notes": 0}
+            return {"chunks": 0, "notes": 0, "index_version": None, "built_at": None}
         version = cur.read_text(encoding="utf-8").strip()
         mpath = root / version / "manifest.json"
         if not mpath.exists():
-            return {"chunks": 0, "notes": 0}
+            return {"chunks": 0, "notes": 0, "index_version": version, "built_at": None}
         m = json.loads(mpath.read_text(encoding="utf-8"))
-        return {"chunks": m.get("chunk_count", 0), "notes": m.get("note_count", 0)}
+        return {
+            "chunks": m.get("chunk_count", 0),
+            "notes": m.get("note_count", 0),
+            "index_version": m.get("index_version", version),
+            "built_at": m.get("created_at"),
+        }
     except Exception:
-        return {"chunks": 0, "notes": 0}
+        return {"chunks": 0, "notes": 0, "index_version": None, "built_at": None}
 
 
 @router.get("/evaluation/ablation")
@@ -300,6 +309,8 @@ def evaluation_ablation(request: Request):
     idx = _active_index_stats()
     chunks_total = idx["chunks"]
     indexed_notes = idx["notes"]
+    index_version = idx.get("index_version")
+    index_built_at = idx.get("built_at")
 
     run_rows = db.fetch_all(
         """SELECT run_id, status, dataset_name, dataset_version, retrieval_strategy, chat_model,
@@ -355,6 +366,8 @@ def evaluation_ablation(request: Request):
             "relations_confirmed": relations_confirmed,
             "relations_proposed": relations_proposed,
             "indexed_notes": indexed_notes,
+            "index_version": index_version,
+            "index_built_at": index_built_at,
         },
         "runs": runs,
     }
@@ -369,7 +382,7 @@ def list_proposed(request: Request, limit: int = Query(200, ge=1, le=500)):
     store = get_container().mindgraph_graph_store
     rows = db.fetch_all(
         """SELECT relation_id, source_note_id, target_note_id, relation_type,
-                  confidence, proposed_at, evidence_chunk_id
+                  confidence, proposed_at, evidence_chunk_id, evidence_span, evidence_section
            FROM note_relations WHERE status='proposed'
            ORDER BY confidence DESC LIMIT ?""",
         (limit,),
@@ -405,6 +418,9 @@ def list_proposed(request: Request, limit: int = Query(200, ge=1, le=500)):
             "confidence": r["confidence"],
             "proposed_at": (r["proposed_at"] or "")[:10],
             "evidence_chunk_id": r["evidence_chunk_id"],
+            # 审核者对照证据原文（P3-24）：提供关系自带的证据 span/章节
+            "evidence_span": r.get("evidence_span"),
+            "evidence_section": r.get("evidence_section"),
             "conflict": conflict,
         })
     record_access_audit(db, actor=actor, action="list_relations_proposed", resource="note_relations/proposed", decision="allow", metadata={"count": len(items)})
@@ -561,19 +577,21 @@ def resolve_relations_batch(
             denied.append(row["relation_id"])
     new_status = "rejected"
     ts = _now_iso()
-    for rid in permitted:
-        db.execute(
-            "UPDATE note_relations SET status=?, resolved_at=?, resolved_by=? WHERE relation_id=?",
-            (new_status, ts, actor, rid),
-        )
-        record_access_audit(
-            db,
-            actor=actor,
-            action="resolve_relation",
-            resource=f"note_relations/{rid}",
-            decision="allow",
-            metadata={"new_status": new_status, "batch": True, "reason": body.reason},
-        )
+    # 批量写必须原子：部分成功会留下半成品的治理状态。
+    with db.transaction() as connection:
+        for rid in permitted:
+            connection.execute(
+                "UPDATE note_relations SET status=?, resolved_at=?, resolved_by=? WHERE relation_id=? AND status='proposed'",
+                (new_status, ts, actor, rid),
+            )
+            record_access_audit(
+                db,
+                actor=actor,
+                action="resolve_relation",
+                resource=f"note_relations/{rid}",
+                decision="allow",
+                metadata={"new_status": new_status, "batch": True, "reason": body.reason},
+            )
     for rid in denied:
         record_access_audit(db, actor=actor, action="resolve_relation", resource=f"note_relations/{rid}", decision="deny", reason="out_of_scope_or_not_proposed", metadata={"batch": True})
     return {"ok": True, "processed": len(permitted), "skipped": len(body.ids) - len(permitted), "status": new_status}

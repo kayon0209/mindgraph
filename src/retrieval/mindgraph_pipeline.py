@@ -45,6 +45,19 @@ class MindGraphRetrievalPipeline:
         self.max_graph_hops = max_graph_hops
         self.max_graph_edges_per_hop = max_graph_edges_per_hop
         self.max_graph_nodes_per_hop = max_graph_nodes_per_hop
+        # mindgraph_id → chunks 预建索引：图扩展不再逐关系遍历全语料
+        # （旧实现 O(relations×corpus)；管线随索引激活整体重建，无需失效逻辑）。
+        self._chunks_by_mindgraph_id: dict[str, list] | None = None
+
+    def _mindgraph_id_index(self) -> dict[str, list]:
+        if self._chunks_by_mindgraph_id is None:
+            index: dict[str, list] = {}
+            for chunk in self.dense.chunks:
+                mindgraph_id = chunk.metadata.get("mindgraph_id")
+                if mindgraph_id:
+                    index.setdefault(mindgraph_id, []).append(chunk)
+            self._chunks_by_mindgraph_id = index
+        return self._chunks_by_mindgraph_id
 
     @property
     def dense(self):
@@ -109,11 +122,17 @@ class MindGraphRetrievalPipeline:
         main.sparse_results = merge("sparse_results", len(main.sparse_results))
         if strategy in {"hybrid", "hybrid_rerank"}:
             main.fused_results = merge("fused_results", len(main.fused_results))
+        # hybrid_rerank 多变体合并必须基于 rerank 后的排名，否则精排结果
+        # 会被融合前的排名覆盖（合并语义与单变体路径保持一致）。
+        has_reranked = any(getattr(t, "reranked_results", None) for t in traces)
         top_k = len(main.final_selected_chunks)
         if strategy == "dense":
             main.final_selected_chunks = merge("dense_results", top_k)
         elif strategy == "bm25":
             main.final_selected_chunks = merge("sparse_results", top_k)
+        elif strategy == "hybrid_rerank" and has_reranked:
+            main.reranked_results = merge("reranked_results", len(main.reranked_results))
+            main.final_selected_chunks = merge("reranked_results", top_k)
         else:
             main.final_selected_chunks = merge("fused_results", top_k)
         for rank, cand in enumerate(main.final_selected_chunks, 1):
@@ -185,14 +204,13 @@ class MindGraphRetrievalPipeline:
 
         titles = self.graph_store.note_titles(set(rel_by_target) | hit_notes)
         existing_ids = {c.chunk.chunk_id for c in trace.final_selected_chunks}
+        mindgraph_index = self._mindgraph_id_index()
         added = 0
         added_targets: set[str] = set()
         for target_id, rel in rel_by_target.items():
             if target_id in hit_notes:
                 continue  # 已是命中笔记，跳过
-            for chunk in self.dense.chunks:
-                if chunk.metadata.get("mindgraph_id") != target_id:
-                    continue
+            for chunk in mindgraph_index.get(target_id, []):
                 if chunk.chunk_id in existing_ids:
                     continue
                 if not self._visible_for_trace(chunk, trace):
@@ -275,7 +293,9 @@ class MindGraphRetrievalPipeline:
         }
 
     def _visible_for_trace(self, chunk, trace: RetrievalTrace) -> bool:
-        filters = trace.applied_filters
+        from infrastructure.date_utils import parse_date_safe
+
+        filters = trace.applied_filters or {}
         metadata = chunk.metadata
         status = metadata.get("document_status") or metadata.get("policy_status")
         if not filters.get("include_historical", False) and status and status != "active":
@@ -283,12 +303,12 @@ class MindGraphRetrievalPipeline:
         categories = filters.get("knowledge_categories") or []
         if categories and metadata.get("knowledge_category") not in categories:
             return False
-        target_date = date.fromisoformat(filters["query_date"]) if filters.get("query_date") else date.today()
-        effective = metadata.get("effective_date") or metadata.get("effective_from")
-        expiration = metadata.get("expiration_date") or metadata.get("effective_to")
-        if effective and date.fromisoformat(effective) > target_date:
+        target_date = parse_date_safe(filters.get("query_date")) or date.today()
+        effective = parse_date_safe(metadata.get("effective_date") or metadata.get("effective_from"))
+        expiration = parse_date_safe(metadata.get("expiration_date") or metadata.get("effective_to"))
+        if effective and effective > target_date:
             return False
-        if expiration and date.fromisoformat(expiration) < target_date and not filters.get("include_historical", False):
+        if expiration and expiration < target_date and not filters.get("include_historical", False):
             return False
         access_scope = filters.get("access_scope")
         if access_scope is not None:

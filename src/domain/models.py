@@ -20,6 +20,7 @@ class UsageSource(str, Enum):
 class ResultState(str, Enum):
     answered = "answered"
     insufficient_evidence = "insufficient_evidence"
+    permission_denied = "permission_denied"
     conflicting_evidence = "conflicting_evidence"
     out_of_scope = "out_of_scope"
     model_unavailable = "model_unavailable"
@@ -65,7 +66,6 @@ class RetrievalTraceModel(BaseModel):
     applied_filters: dict[str, Any] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
     graph_enabled: bool = False
-    graph_hops: int = Field(default=1, ge=1, le=2)
     graph_hops: int = Field(default=1, ge=1, le=2)
     graph_links: list[dict[str, Any]] = Field(default_factory=list)
     policy_conflicts: list[dict[str, Any]] = Field(default_factory=list)
@@ -127,6 +127,13 @@ class ChatRequest(BaseModel):
     knowledge_categories: list[str] = Field(default_factory=list, max_length=10)
     include_historical: bool = False
     graph_enabled: bool = False
+    # 调用方可显式声明问题类型以驱动路由（计划 3.3）：
+    # "compound_question"/"clarification" 触发 clarification 路由与子问题拆解，
+    # "versioned_policy" 触发版本过滤。多问号不自动触发——见
+    # test_multiple_question_marks_do_not_force_clarification_without_missing_context。
+    query_type: str | None = Field(default=None, max_length=40)
+    # 计划 4.4：版本继承/条件/例外/冲突问题可配置最多 2 跳图扩展。
+    graph_hops: int = Field(default=1, ge=1, le=2)
 
     @field_validator("query_date")
     @classmethod

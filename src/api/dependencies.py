@@ -57,7 +57,11 @@ class ServiceContainer:
         self.provider_registry = ProviderRegistry(providers, settings.CHAT_PROVIDER)
         self.provider = self.provider_registry.get()
         self.privacy_log = settings.PRIVACY_LOG_QUESTIONS
-        self.chat = ChatService(self.database, self.pipeline, self.provider_registry, self.privacy_log)
+        self.graph_default_enabled = settings.GRAPH_DEFAULT_ENABLED
+        self.chat = ChatService(
+            self.database, self.pipeline, self.provider_registry, self.privacy_log,
+            graph_default_enabled=self.graph_default_enabled,
+        )
         self.knowledge = KnowledgeService(DOCS_DIR, UPLOAD_DIR, INDEX_ROOT, self.invalidate_pipelines)
         self.document_lifecycle = DocumentLifecycleService(self.database, self.root / "data" / "product" / "documents")
         self.document_lifecycle.import_existing_markdown(list(DOCS_DIR.glob("*.md")))
@@ -86,6 +90,7 @@ class ServiceContainer:
                 "你是个人知识助手 MindGraph。只能依据给定证据回答；不得编造。"
                 "先给结论，再给简要依据，并使用 [citation-N] 标注引用来源。"
             ),
+            graph_default_enabled=self.graph_default_enabled,
         )
         # 本地目录 / Markdown 目录增量同步连接器（Phase 5-2）
         from application.directory_connector_service import DirectoryConnectorService

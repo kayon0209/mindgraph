@@ -100,3 +100,35 @@ class RetrievalTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_invalid_date_metadata_is_tolerated_instead_of_raising():
+    """P2-5 回归：非 ISO 日期元数据不得让检索 503，按缺省日期处理并告警。"""
+    from datetime import date
+    from types import SimpleNamespace
+
+    from retrieval.types import RetrievalTrace
+
+    bad_chunk = Chunk(
+        "legacy.md::0", "老制度报销时限", "legacy.md", 0, None,
+        {"document_status": "active", "effective_date": "2026/07/01"},
+    )
+    good_chunk = Chunk(
+        "policy.md::0", "现行制度报销时限", "policy.md", 0, None,
+        {"document_status": "active", "effective_date": "2026-01-01"},
+    )
+    pipeline = RetrievalPipeline(
+        dense=SimpleNamespace(metadata={}), sparse=SimpleNamespace(),
+        fusion=SimpleNamespace(), reranker=None,
+    )
+    trace = RetrievalTrace(query="q", requested_strategy="hybrid", actual_strategy="hybrid")
+    candidates = [
+        RetrievalCandidate(chunk=bad_chunk, rrf_score=1.0),
+        RetrievalCandidate(chunk=good_chunk, rrf_score=0.9),
+    ]
+
+    # 此前这里会抛 date.fromisoformat ValueError；现在应容错并继续
+    selected = pipeline._filter_and_adjust(candidates, "2026-08-01", [], False, trace)
+
+    assert {c.chunk.chunk_id for c in selected} == {"legacy.md::0", "policy.md::0"}
+    assert "invalid_date_metadata_treated_as_missing" in trace.warnings

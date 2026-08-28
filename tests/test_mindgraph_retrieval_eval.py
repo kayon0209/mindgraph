@@ -191,8 +191,8 @@ def test_repository_v2_golden_dataset_is_valid_and_structurally_complete():
     """The checked-in V2 set remains an independently authored, typed fixture."""
     cases = load_golden_dataset()
 
-    assert len(cases) == 54  # 50 + 4 Basecamp external_policy (approved 2026-08-27)
-    assert {item["dataset_version"] for item in cases} == {"2.3.0"}
+    assert len(cases) == 90  # 54 (v2.3.0) + 36 plan-coverage gap fill (2026-08-27)
+    assert {item["dataset_version"] for item in cases} == {"2.4.0"}
     assert {item["expected_behavior"] for item in cases} == {"answer", "abstain"}
     assert {item["split"] for item in cases} == {"development", "regression"}
     assert {item["category"] for item in cases} >= {

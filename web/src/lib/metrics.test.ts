@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+﻿import { describe, expect, it } from "vitest";
 
 import type { EvaluationRun } from "../types";
 import * as metricHelpers from "./metrics";
@@ -115,7 +115,7 @@ describe("policy governance view", () => {
       metadata_complete: true,
       issues: [],
     })).toEqual({
-      statusLabel: "在行",
+      statusLabel: "生效中",
       statusTone: "positive",
       completenessLabel: "元数据完整",
       period: "2026-08-01 → 长期有效",

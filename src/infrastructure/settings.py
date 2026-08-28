@@ -106,6 +106,14 @@ class Settings(BaseSettings):
     RERANKER_LOCAL_FILES_ONLY: bool = True
     RERANK_TOP_N: int = 10
 
+    # ── Graph 路由（计划 Phase 5 发布闸门） ──
+    # 消融闸门（evaluation/ablation_runner.evaluate_graph_gate）满足
+    # Recall@5≥+5pp、延迟≤3x 后，由人工决策把结论写回这里：
+    # True = Adaptive 路由默认允许图扩展（OR 语义，全局生效；回滚请改回 False，
+    # 不提供 per-request opt-out —— 见 ADR-002 Gate-to-config flow）；
+    # False（默认）= 图保持实验态、仅客户端 opt-in。
+    GRAPH_DEFAULT_ENABLED: bool = False
+
     # ── 数据库 ──
     DATABASE_PATH: str = str(PROJECT_ROOT / "data" / "product" / "product.sqlite3")
     SQLITE_JOURNAL_MODE: str = "WAL"
@@ -144,8 +152,20 @@ class Settings(BaseSettings):
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
 
     @property
+    def cors_allow_credentials(self) -> bool:
+        """通配符 origin 与 allow_credentials=true 组合会让任意站点以凭据模式
+        跨域调用本地 API（drive-by localhost 风险）；仅在显式枚举来源时启用凭据。"""
+        return "*" not in self.cors_origin_list
+
+    @property
     def connector_allowed_root_list(self) -> tuple[Path, ...]:
         return tuple(Path(item.strip()).resolve() for item in self.CONNECTOR_ALLOWED_ROOTS.split(",") if item.strip())
+
+    @property
+    def rate_limit_effective(self) -> bool:
+        """计划 Phase 7 要求"限额与超时生效"：生产环境强制开启速率限制，
+        非生产环境可经 RATE_LIMIT_ENABLED 显式开启。"""
+        return self.RATE_LIMIT_ENABLED or self.is_production
 
     @property
     def is_production(self) -> bool:

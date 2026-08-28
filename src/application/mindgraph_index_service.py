@@ -278,9 +278,13 @@ class MindGraphIndexService:
             )
 
             now = _utc_iso()
+            # F4：回填每个 note 的真实分块数（此前 chunk_count 恒为 0）
+            chunk_counts: dict[str, int] = {}
+            for chunk in chunks:
+                chunk_counts[chunk.document_id] = chunk_counts.get(chunk.document_id, 0) + 1
             self.db.execute_many(
-                "UPDATE notes SET index_status='ready', index_version=?, last_indexed_at=? WHERE note_id=?",
-                [(version, now, nid) for nid in all_ids],
+                "UPDATE notes SET index_status='ready', index_version=?, last_indexed_at=?, chunk_count=? WHERE note_id=?",
+                [(version, now, chunk_counts.get(nid, 0), nid) for nid in all_ids],
             )
             self.db.execute(
                 "INSERT INTO index_builds VALUES (?,?,?,?,?,?,?)",

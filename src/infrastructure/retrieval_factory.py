@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 
 from config import DOCS_DIR, ROOT, UPLOAD_DIR
+from infrastructure.settings import get_settings
 from retrieval.embeddings import BGEEmbeddingProvider
 from retrieval.fusion import ReciprocalRankFusion
 from retrieval.indexing import load_corpus, load_current_index
@@ -18,21 +18,24 @@ INDEX_ROOT = ROOT / "data" / "retrieval_indexes"
 
 
 def _rerank_top_n() -> int:
-    value = int(os.getenv("RERANK_TOP_N", "10"))
+    # 统一从 settings 读取（进程环境变量 > .env > 默认），避免 os.getenv
+    # 双配置源导致的"裸机启动不生效"问题。
+    value = int(get_settings().RERANK_TOP_N)
     if value < 1:
         raise ValueError("RERANK_TOP_N must be a positive integer")
     return value
 
 
 def create_retrieval_pipeline(final_top_k: int = 5) -> RetrievalPipeline:
+    settings = get_settings()
     provider = BGEEmbeddingProvider()
     dense = load_current_index(provider, INDEX_ROOT)
     chunks = dense.chunks
-    sparse = BM25Retriever(chunks, float(os.getenv("BM25_K1", "1.5")), float(os.getenv("BM25_B", "0.75")))
-    reranker = CrossEncoderReranker() if os.getenv("RERANKER_ENABLED", "false").lower() == "true" else None
+    sparse = BM25Retriever(chunks, float(settings.BM25_K1), float(settings.BM25_B))
+    reranker = CrossEncoderReranker() if settings.RERANKER_ENABLED else None
     return RetrievalPipeline(
-        dense, sparse, ReciprocalRankFusion(int(os.getenv("RRF_CONSTANT", "60"))), reranker,
-        candidate_count=int(os.getenv("RETRIEVAL_CANDIDATE_COUNT", "20")),
+        dense, sparse, ReciprocalRankFusion(int(settings.RRF_CONSTANT)), reranker,
+        candidate_count=int(settings.RETRIEVAL_CANDIDATE_COUNT),
         rerank_top_n=_rerank_top_n(), final_top_k=final_top_k,
     )
 
@@ -58,16 +61,17 @@ def create_mindgraph_retrieval_pipeline(
     - 索引已构建：加载当前版本（load_current_index 兼容 MindGraph 索引结构）；
     - 索引尚未构建：返回空管线，问答将自然返回 insufficient_evidence，不崩溃。
     """
-    candidate_count = int(os.getenv("RETRIEVAL_CANDIDATE_COUNT", "20"))
+    candidate_count = int(get_settings().RETRIEVAL_CANDIDATE_COUNT)
     rerank_top_n = _rerank_top_n()
-    reranker = CrossEncoderReranker() if os.getenv("RERANKER_ENABLED", "false").lower() == "true" else None
+    settings = get_settings()
+    reranker = CrossEncoderReranker() if settings.RERANKER_ENABLED else None
 
     current = index_root / "CURRENT"
     if not current.exists():
         base = RetrievalPipeline(
             _EmptyDenseRetriever(),
-            BM25Retriever([], float(os.getenv("BM25_K1", "1.5")), float(os.getenv("BM25_B", "0.75"))),
-            ReciprocalRankFusion(int(os.getenv("RRF_CONSTANT", "60"))),
+            BM25Retriever([], float(settings.BM25_K1), float(settings.BM25_B)),
+            ReciprocalRankFusion(int(settings.RRF_CONSTANT)),
             None,
             candidate_count=candidate_count,
             rerank_top_n=rerank_top_n,
@@ -77,9 +81,9 @@ def create_mindgraph_retrieval_pipeline(
 
     dense = load_current_index(BGEEmbeddingProvider(), index_root)
     chunks = dense.chunks
-    sparse = BM25Retriever(chunks, float(os.getenv("BM25_K1", "1.5")), float(os.getenv("BM25_B", "0.75")))
+    sparse = BM25Retriever(chunks, float(settings.BM25_K1), float(settings.BM25_B))
     base = RetrievalPipeline(
-        dense, sparse, ReciprocalRankFusion(int(os.getenv("RRF_CONSTANT", "60"))), reranker,
+        dense, sparse, ReciprocalRankFusion(int(settings.RRF_CONSTANT)), reranker,
         candidate_count=candidate_count,
         rerank_top_n=rerank_top_n, final_top_k=final_top_k,
     )

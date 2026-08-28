@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import sys
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -49,6 +50,21 @@ class MCPAuthenticationRequired(PermissionError):
 
 def _utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+class MCPToolDeadlineExceeded(TimeoutError):
+    """协作式超时：工具在执行重活前检查 deadline，超时即主动让出线程。
+
+    背景：HTTP 传输层的 ``asyncio.wait_for`` 只能放弃等待，无法取消已经
+    进入线程池的调用——反复超时会占满 anyio 线程池拖垮整个 API。工具侧
+    主动检查 deadline 才能真正及时停手。
+    """
+
+
+def _deadline_remaining(deadline: float | None = None) -> float:
+    if deadline is None:
+        return float("inf")
+    return deadline - time.monotonic()
 
 
 def _tools() -> list[dict[str, Any]]:
@@ -143,10 +159,21 @@ def _validate_tool_arguments(name: object, arguments: object) -> tuple[str, dict
     return name, arguments
 
 
-def _call_tool(name: str, arguments: dict[str, Any], principal: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Execute a named tool with ACL-aware scope and audit."""
+def _call_tool(
+    name: str,
+    arguments: dict[str, Any],
+    principal: dict[str, Any] | None = None,
+    deadline: float | None = None,
+) -> dict[str, Any]:
+    """Execute a named tool with ACL-aware scope and audit.
+
+    ``deadline`` 为 ``time.monotonic()`` 绝对时刻；工具在重活前主动检查，
+    超时抛 MCPToolDeadlineExceeded（HTTP 层映射为 -32000 tool timeout）。
+    """
     if principal is None:
         raise MCPAuthenticationRequired
+    if _deadline_remaining(deadline) <= 0:
+        raise MCPToolDeadlineExceeded
     container = get_container()
     database = container.database
     scope = build_access_scope(principal)
@@ -168,11 +195,17 @@ def _call_tool(name: str, arguments: dict[str, Any], principal: dict[str, Any] |
     if name == "mindgraph_list_notes":
         limit = min(max(int(arguments.get("limit", 50)), 1), MAX_LIST_LIMIT)
         q = arguments.get("q")
-        rows = database.fetch_all(
+        # 公共快路径：public_only 主体只能看到公开笔记，SQL 预过滤 acl_public。
+        public_only = scope is not None and scope.get("public_only")
+        sql = (
             "SELECT note_id, vault_path, title, ai_access_level, chunk_count, index_status, "
             "workspace, department, acl_json, acl_public, updated_at "
-            "FROM notes ORDER BY updated_at DESC"
+            "FROM notes"
         )
+        if public_only:
+            sql += " WHERE acl_public = 1"
+        sql += " ORDER BY updated_at DESC"
+        rows = database.fetch_all(sql)
         if q:
             rows = [r for r in rows if q.lower() in (r["title"] or "").lower() or q.lower() in r["vault_path"].lower()]
         visible = [r for r in rows if note_acl_matches(r, scope)]
@@ -219,6 +252,24 @@ def _call_tool(name: str, arguments: dict[str, Any], principal: dict[str, Any] |
             },
             "relations": [],
         }
+        # 工具描述承诺"含 confirmed 关系"——真正返回（ACL 双端校验 + 治理元数据），
+        # 与 REST /mindgraph/notes/{id} 的行为对齐。
+        store = container.mindgraph_graph_store
+        outgoing = store.related_note_ids([note_id], status="confirmed", access_scope=scope)
+        titles = store.note_titles([o["target_note_id"] for o in outgoing])
+        body["relations"] = [
+            {
+                "target_id": o["target_note_id"],
+                "target_title": titles.get(o["target_note_id"], o["target_note_id"]),
+                "relation_type": o["relation_type"],
+                "confidence": o["confidence"],
+                "evidence_chunk_id": o.get("evidence_chunk_id"),
+                "source_document_version": o.get("source_document_version"),
+                "effective_from": o.get("effective_from"),
+                "effective_to": o.get("effective_to"),
+            }
+            for o in outgoing
+        ]
         _audit("mcp_get_note", f"notes/{note_id}", "allow", {"title": row.get("title")})
         return body
 
@@ -226,6 +277,8 @@ def _call_tool(name: str, arguments: dict[str, Any], principal: dict[str, Any] |
         query = arguments.get("query") or ""
         strategy = arguments.get("strategy") or "hybrid"
         top_k = min(max(int(arguments.get("top_k", 5)), 1), MAX_SEARCH_TOP_K)
+        if _deadline_remaining(deadline) <= 0:
+            raise MCPToolDeadlineExceeded
         pipeline = container.mindgraph_pipeline(top_k=top_k, graph_enabled=False)
         trace = pipeline.retrieve(query, strategy, access_scope=scope)
         citations = []
@@ -292,8 +345,16 @@ def _call_tool(name: str, arguments: dict[str, Any], principal: dict[str, Any] |
     raise ValueError(f"Unknown tool: {name}")
 
 
-def handle_jsonrpc(message: dict[str, Any], principal: dict[str, Any] | None = None) -> dict[str, Any] | None:
-    """处理单条 JSON-RPC 2.0 请求，返回响应 dict（通知返回 None）。"""
+def handle_jsonrpc(
+    message: dict[str, Any],
+    principal: dict[str, Any] | None = None,
+    deadline: float | None = None,
+) -> dict[str, Any] | None:
+    """处理单条 JSON-RPC 2.0 请求，返回响应 dict（通知返回 None）。
+
+    ``deadline``（time.monotonic 时刻）用于协作式超时：工具执行前检查剩余
+    时间，超时返回 -32000，而不是让线程池里的调用无限期占线。
+    """
     method = message.get("method")
     msg_id = message.get("id")
 
@@ -320,11 +381,19 @@ def handle_jsonrpc(message: dict[str, Any], principal: dict[str, Any] | None = N
                 raise InvalidToolArguments
             raw_arguments = params.get("arguments", {})
             tool_name, arguments = _validate_tool_arguments(params.get("name"), raw_arguments)
-            result = _call_tool(tool_name, arguments, principal)
+            result = _call_tool(tool_name, arguments, principal, deadline=deadline)
             return {
                 "jsonrpc": JSONRPC_VERSION,
                 "id": msg_id,
                 "result": {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, default=str)}]},
+            }
+        except MCPToolDeadlineExceeded:
+            tool_name = params.get("name") if isinstance(params, dict) else None
+            logger.warning("mcp_tool_deadline_exceeded", extra={"tool": tool_name})
+            return {
+                "jsonrpc": JSONRPC_VERSION,
+                "id": msg_id,
+                "error": {"code": -32000, "message": "tool timeout"},
             }
         except MCPAuthenticationRequired:
             return {

@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import date
 from pathlib import Path
 from typing import Any, Sequence
 
 import numpy as np
+
+from infrastructure.date_utils import parse_date_safe
 
 from .types import Chunk, EmbeddingProvider, RetrievalCandidate
 
@@ -102,9 +105,8 @@ class FAISSDenseRetriever:
         scores, positions = self._index.search(vector, search_k)
         retrieval_ms = (time.perf_counter() - start) * 1000
         from application.access_control import chunk_acl_matches
-        from datetime import date
 
-        target_date = date.fromisoformat(query_date) if query_date else date.today()
+        target_date = parse_date_safe(query_date) or date.today()
         results = []
         for score, position in zip(scores[0], positions[0]):
             if position < 0:
@@ -118,11 +120,11 @@ class FAISSDenseRetriever:
                 continue
             if categories and metadata.get("knowledge_category") not in categories:
                 continue
-            effective = metadata.get("effective_date") or metadata.get("effective_from")
-            expiration = metadata.get("expiration_date") or metadata.get("effective_to")
-            if effective and date.fromisoformat(effective) > target_date:
+            effective = parse_date_safe(metadata.get("effective_date") or metadata.get("effective_from"))
+            expiration = parse_date_safe(metadata.get("expiration_date") or metadata.get("effective_to"))
+            if effective and effective > target_date:
                 continue
-            if expiration and date.fromisoformat(expiration) < target_date and not include_historical:
+            if expiration and expiration < target_date and not include_historical:
                 continue
             results.append(RetrievalCandidate(chunk=chunk, dense_score=float(score), dense_rank=len(results) + 1))
             if len(results) >= top_k:

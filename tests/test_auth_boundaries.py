@@ -69,3 +69,45 @@ def test_directory_sync_rejects_non_admin_api_key(monkeypatch, tmp_path):
     client.close()
 
     assert response.status_code == 403, response.text
+
+
+def test_auth_mode_resolution_priority(monkeypatch):
+    """模块覆盖 > 进程环境变量 > settings(.env/默认)，非法值回退 demo。"""
+    from types import SimpleNamespace
+
+    import api.auth as auth
+
+    # 1) 模块级覆盖最高（测试 monkeypatch 路径）
+    monkeypatch.setattr(auth, "AUTH_MODE", "api_key")
+    monkeypatch.setenv("AUTH_MODE", "off")
+    assert auth._auth_mode() == "api_key"
+
+    # 2) 进程环境变量次之（docker/compose env_file 路径）
+    monkeypatch.setattr(auth, "AUTH_MODE", None)
+    assert auth._auth_mode() == "off"
+
+    # 3) 无环境变量时回退 settings（裸机 uvicorn 读 .env 的路径）
+    monkeypatch.delenv("AUTH_MODE", raising=False)
+    monkeypatch.setattr(
+        "infrastructure.settings.get_settings",
+        lambda: SimpleNamespace(AUTH_MODE="off"),
+    )
+    assert auth._auth_mode() == "off"
+
+    # 4) 非法配置值 fail-closed 回退 demo 并告警
+    monkeypatch.setattr(auth, "AUTH_MODE", "bogus")
+    assert auth._auth_mode() == "demo"
+
+
+def test_default_demo_key_has_admin_role(monkeypatch, tmp_path):
+    """demo 模式自动生成的默认 key 必须带 admin 角色，否则关系治理端点不可用。"""
+    import json as json_module
+
+    import api.auth as auth
+
+    key_file = tmp_path / "api_keys.json"
+    monkeypatch.setattr(auth, "API_KEYS_FILE", key_file)
+    auth._ensure_api_keys_file()
+    data = json_module.loads(key_file.read_text(encoding="utf-8"))
+    default_key = next(iter(data["keys"].values()))
+    assert "admin" in default_key["roles"]

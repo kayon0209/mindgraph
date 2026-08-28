@@ -6,6 +6,17 @@ export type HealthStatus = {
   version?: string;
 };
 
+/** /config/public 中与前端状态展示相关的字段（研究项⑭：模型状态前置） */
+export type PublicConfig = {
+  chat_models?: Array<{
+    provider: string;
+    model: string;
+    configured?: boolean;
+    verified?: boolean;
+  }>;
+  default_chat_provider?: string;
+};
+
 export type ChatRequest = {
   question: string;
   retrieval_strategy: "auto" | "dense" | "bm25" | "hybrid" | "hybrid_rerank";
@@ -13,6 +24,12 @@ export type ChatRequest = {
   include_retrieval_trace: boolean;
   include_historical: boolean;
   graph_enabled: boolean;
+  /** 计划 4.4：版本/冲突问题可用两跳图扩展（后端 ge=1 le=2） */
+  graph_hops?: number;
+  /** ISO 日期（YYYY-MM-DD），用于版本/冲突判定 */
+  query_date?: string;
+  /** 计划 3.3：显式问题类型（compound_question 触发拆解等） */
+  query_type?: string;
 };
 
 export type Citation = {
@@ -46,7 +63,8 @@ export type GraphLink = {
   evidence_chunk_id?: string | null;
   evidence_span?: string | null;
   evidence_section?: string | null;
-  document_version?: string | null;
+  /** 后端字段为 source_document_version（关系所在文档的版本） */
+  source_document_version?: string | null;
   status?: string | null;
   hop?: number;
 };
@@ -119,6 +137,16 @@ export type StreamEvent = {
   data: Record<string, unknown>;
 };
 
+/** SSE usage 事件（后端 UsageMetrics 的 JSON 形态） */
+export type UsageInfo = {
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  total_tokens?: number | null;
+  estimated_cost?: number | null;
+  currency?: string | null;
+  usage_source?: string;
+};
+
 export type NoteItem = {
   id: string;
   title: string;
@@ -179,6 +207,9 @@ export type EvaluationResponse = {
     relations_confirmed: number;
     relations_proposed: number;
     indexed_notes: number;
+    /** P1：当前激活索引版本与构建时间，用于索引新鲜度展示 */
+    index_version?: string | null;
+    index_built_at?: string | null;
   };
   runs: EvaluationRun[];
 };
@@ -193,6 +224,9 @@ export type RelationItem = {
   confidence?: number | null;
   proposed_at?: string;
   evidence_chunk_id?: string | null;
+  /** 审核者需要看到证据原文/章节，而不是只有 chunk id（P3-24） */
+  evidence_span?: string | null;
+  evidence_section?: string | null;
   conflict?: boolean;
 };
 

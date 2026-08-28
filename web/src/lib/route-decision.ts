@@ -11,11 +11,11 @@ const ROUTE_LABELS: Record<string, string> = {
 };
 
 const STRATEGY_LABELS: Record<string, string> = {
-  auto: "Auto",
-  dense: "Dense",
-  bm25: "BM25",
-  hybrid: "Hybrid",
-  hybrid_rerank: "Hybrid + Rerank",
+  auto: "自动匹配",
+  dense: "语义检索",
+  bm25: "关键词检索",
+  hybrid: "混合检索",
+  hybrid_rerank: "混合检索 + 精排",
 };
 
 const REASON_LABELS: Record<string, string> = {

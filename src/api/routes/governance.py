@@ -1,14 +1,20 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
+from api.auth import require_role
 from api.dependencies import get_container
 
 
 router = APIRouter(prefix="/governance", tags=["governance"])
+
+# 写操作（注册数据集/写标注/写评审/改提示词）只允许 admin 角色：
+# off 模式下"已认证"等于匿名可写，会污染评测治理数据并动摇验收结论。
+# 与关系审核端点（mindgraph_readonly.resolve_relation）的门槛保持一致。
+_require_admin = require_role("admin")
 
 
 class DatasetCreate(BaseModel):
@@ -50,7 +56,7 @@ def list_datasets():
 
 
 @router.post("/datasets", status_code=201)
-def create_dataset(payload: DatasetCreate):
+def create_dataset(payload: DatasetCreate, _admin: dict = Depends(_require_admin)):
     return get_container().governance.register_dataset(**payload.model_dump())
 
 
@@ -60,7 +66,7 @@ def list_annotations(dataset_id: str, version: str, include_holdout_labels: bool
 
 
 @router.post("/datasets/{dataset_id}/{version}/annotations", status_code=201)
-def create_annotation(dataset_id: str, version: str, payload: AnnotationCreate):
+def create_annotation(dataset_id: str, version: str, payload: AnnotationCreate, _admin: dict = Depends(_require_admin)):
     return get_container().governance.annotate(dataset_id, version, **payload.model_dump())
 
 
@@ -70,7 +76,7 @@ def list_human_reviews(run_id: str):
 
 
 @router.post("/human-reviews", status_code=201)
-def create_human_review(payload: HumanReviewCreate):
+def create_human_review(payload: HumanReviewCreate, _admin: dict = Depends(_require_admin)):
     return get_container().governance.add_human_review(**payload.model_dump())
 
 
@@ -80,7 +86,7 @@ def list_prompts():
 
 
 @router.post("/prompts", status_code=201)
-def create_prompt(payload: PromptCreate):
+def create_prompt(payload: PromptCreate, _admin: dict = Depends(_require_admin)):
     return get_container().governance.create_prompt(**payload.model_dump())
 
 

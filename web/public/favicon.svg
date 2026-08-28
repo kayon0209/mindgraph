@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- MindGraph logo「核实盖章」· 16px 简化版：加粗印章框 + 对勾（折角在小尺寸删除） -->
+  <!-- 对比度：亮朱 #e05a41 对深炭 #171916 ≈ 4.9:1；奶油 #f6f2e9 对深炭 ≈ 13:1；描边 32 网格 3px = 16px 下 1.5px -->
+  <rect width="32" height="32" rx="7" fill="#171916"/>
+  <rect x="7.5" y="7.5" width="17" height="17" rx="4.5" fill="none" stroke="#e05a41" stroke-width="3"/>
+  <path d="M11.8 16.4 l2.9 2.9 5.5-6.1" fill="none" stroke="#f6f2e9" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

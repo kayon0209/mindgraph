@@ -17,12 +17,39 @@ from domain.errors import AuthenticationError, AuthorizationError
 logger = logging.getLogger("mindgraph.api.auth")
 
 # 环境变量
-AUTH_MODE: str = os.getenv("AUTH_MODE", "demo").lower()
+# AUTH_MODE 解析优先级（_auth_mode()）：
+#   1. 模块级 AUTH_MODE 覆盖（测试/嵌入方 monkeypatch 用）
+#   2. 进程环境变量 AUTH_MODE（docker/compose env_file 导出、CI 显式设置）
+#   3. .env 配置文件（经 pydantic-settings 读取；裸机 uvicorn 启动也生效）
+#   4. 默认 "demo"
+# 历史缺陷：本值曾在导入期一次性 os.getenv，导致 .env 中的 AUTH_MODE 对
+# `uvicorn api.main:app` 裸机启动不生效（main.py 先导入 api.auth、后经依赖链
+# 触发 load_dotenv）。现改为请求期动态解析，消除导入顺序依赖。
+AUTH_MODE: str | None = None
+VALID_AUTH_MODES = {"off", "api_key", "bearer", "demo"}
+
+
+def _auth_mode() -> str:
+    """按优先级解析当前鉴权模式，非法值告警并回退 demo（fail-closed）。"""
+    override = AUTH_MODE
+    if override:
+        mode = str(override).strip().lower()
+    else:  # pragma: no cover - 分支由测试通过 monkeypatch 覆盖
+        env_mode = os.getenv("AUTH_MODE")
+        if env_mode:
+            mode = env_mode.strip().lower()
+        else:
+            from infrastructure.settings import get_settings
+
+            mode = get_settings().AUTH_MODE
+    if mode not in VALID_AUTH_MODES:
+        logger.warning("invalid_auth_mode_fallback_demo", extra={"configured": mode})
+        return "demo"
+    return mode
+
+
 API_KEYS_FILE = Path(__file__).resolve().parent.parent.parent / "data" / "api_keys.json"
 API_KEY_HEADER = "X-API-Key"
-
-# 允许的认证模式
-VALID_AUTH_MODES = {"off", "api_key", "bearer", "demo"}
 
 # ── API Key 管理 ──
 
@@ -40,7 +67,9 @@ def _ensure_api_keys_file() -> None:
                         default_key: {
                             "name": "default",
                             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                            "roles": ["read", "write"],
+                            # demo 模式的默认 key 需要能完成本地治理操作
+                            # （关系确认/抽取等 admin 端点），demo 本就不用于生产。
+                            "roles": ["read", "write", "admin"],
                             "enabled": True,
                         }
                     }
@@ -96,7 +125,7 @@ def _extract_api_key(request: Request, x_api_key: str | None = None) -> str | No
 
 async def get_api_key(request: Request, x_api_key: str | None = Header(None, alias="X-API-Key")) -> dict:
     """从请求头提取 API Key 并验证。"""
-    if AUTH_MODE == "off":
+    if _auth_mode() == "off":
         return {"name": "anonymous", "roles": ["read", "write"]}
 
     api_key = _extract_api_key(request, x_api_key)
@@ -118,12 +147,12 @@ def get_required_principal(request: Request) -> dict:
     invalid OIDC token is never downgraded to anonymous; API-key fallback must
     be supplied explicitly through ``X-API-Key``.
     """
-    if AUTH_MODE == "off":
+    if _auth_mode() == "off":
         return {
             "name": "local-development",
             "roles": ["read", "write", "admin"],
             "authenticated": True,
-            "auth_mode": AUTH_MODE,
+            "auth_mode": "off",
             "allow": ["*"],
             "deny": [],
         }
@@ -144,11 +173,11 @@ def get_required_principal(request: Request) -> dict:
             raise AuthenticationError("Invalid bearer token.") from exc
         if oidc_principal:
             return oidc_principal
-        if AUTH_MODE == "bearer" and not x_api_key:
+        if _auth_mode() == "bearer" and not x_api_key:
             raise AuthenticationError("Invalid bearer token.")
 
     api_key = x_api_key
-    if not api_key and authorization.startswith("Bearer ") and AUTH_MODE != "bearer":
+    if not api_key and authorization.startswith("Bearer ") and _auth_mode() != "bearer":
         api_key = authorization[7:]
     if not api_key:
         raise AuthenticationError("Authentication required. Provide an OIDC Bearer token or X-API-Key.")
@@ -176,19 +205,19 @@ def get_optional_principal(request: Request) -> dict:
 
     优先级：OIDC Bearer Token → API Key → 匿名。
     """
-    if AUTH_MODE == "off":
+    if _auth_mode() == "off":
         return {
             "name": "anonymous",
             "roles": ["read", "write"],
             "authenticated": False,
-            "auth_mode": AUTH_MODE,
+            "auth_mode": "off",
             "allow": [],
             "deny": [],
         }
 
     has_credentials = bool(request.headers.get(API_KEY_HEADER) or request.headers.get("Authorization"))
-    if not has_credentials and AUTH_MODE == "demo":
-        return {"name": "anonymous", "roles": [], "authenticated": False, "auth_mode": AUTH_MODE, "allow": [], "deny": []}
+    if not has_credentials and _auth_mode() == "demo":
+        return {"name": "anonymous", "roles": [], "authenticated": False, "auth_mode": "demo", "allow": [], "deny": []}
     return get_required_principal(request)
 
 
@@ -200,7 +229,7 @@ def resolve_access_scope(request: Request) -> dict | None:
     """
     from application.access_control import build_access_scope, public_access_scope
 
-    if AUTH_MODE == "off":
+    if _auth_mode() == "off":
         return None
     principal = get_optional_principal(request)
     if not principal or not principal.get("authenticated"):

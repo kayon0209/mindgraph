@@ -36,3 +36,7 @@ ruff check src/ scripts/ tests/ --config pyproject.toml --select F821,F822,F823,
 ```
 
 No real company data or production claims are made by this report.
+
+## Update (2026-08-27, post-review)
+
+- Golden dataset expanded to 90 approved cases, `dataset_version` bumped to `2.4.0` (+36 plan-coverage gap-fill cases; per-category minimums from the upgrade plan are now met). See `GOLDEN_DATASET_CARD.md` for the new canonical SHA-256. The "54 approved cases, version 2.2.0" line above was already stale at the time of writing (dataset was 2.3.0).

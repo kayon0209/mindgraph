@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 from application.access_control import note_acl_matches
-from domain.errors import ConflictError, NotFoundError
+from domain.errors import ConflictError, NotFoundError, ValidationError
 from domain.models import DocumentVersionModel
 from infrastructure.database import ProductDatabase, dumps, loads
 from infrastructure.parsers import default_parser_registry
@@ -22,6 +23,17 @@ TRANSITIONS = {
     "parse_failed": {"draft", "deleted"},
     "expired": set(), "replaced": set(), "deleted": set(),
 }
+
+# 存储目录段安全校验：logical_document_id / version 直接拼进文件系统路径，
+# 必须拒绝路径分隔符与 ".."，否则表单字段可穿越 storage_root 任意写文件。
+_SAFE_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
+
+
+def _safe_segment(value: str, name: str) -> str:
+    text = (value or "").strip()
+    if not text or ".." in text or not _SAFE_SEGMENT.match(text):
+        raise ValidationError(f"Invalid {name}: only letters, digits, dot, dash and underscore are allowed")
+    return text
 
 
 class DocumentLifecycleService:
@@ -42,11 +54,15 @@ class DocumentLifecycleService:
                        expiration_date: str | None = None, status: str = "draft",
                        workspace: str | None = None, department: str | None = None,
                        acl_json: str = "{}", acl_public: bool = False) -> DocumentVersionModel:
-        logical_id = logical_document_id or str(uuid.uuid4())
+        logical_id = _safe_segment(logical_document_id or str(uuid.uuid4()), "logical_document_id")
+        version = _safe_segment(version, "version")
         parser = default_parser_registry.get(filename)
         checksum = hashlib.sha256(data).hexdigest()
         document_id = hashlib.sha256(f"{logical_id}:{version}:{checksum}".encode()).hexdigest()[:24]
         target_dir = self.storage_root / logical_id / version
+        # 纵深防御：即使段校验被绕过，也确保目标路径仍位于存储根之内
+        if self.storage_root.resolve() not in target_dir.resolve().parents:
+            raise ValidationError("Invalid document storage path")
         if target_dir.exists(): raise ConflictError("Document version already exists")
         target_dir.mkdir(parents=True)
         source = target_dir / ("source." + Path(filename).suffix.lower().lstrip("."))
@@ -100,8 +116,18 @@ class DocumentLifecycleService:
             raise ConflictError(f"Invalid document transition: {record.status} -> {target}")
         now = datetime.now(timezone.utc).isoformat()
         if target == "active":
-            self.database.execute("UPDATE document_versions SET status='replaced',updated_at=? WHERE logical_document_id=? AND status='active' AND document_id<>?", (now, record.logical_document_id, document_id))
-        self.database.execute("UPDATE document_versions SET status=?,updated_at=? WHERE document_id=?", (target, now, document_id))
+            # 同化旧版本与新状态必须原子，避免"双 active"中间态
+            with self.database.transaction() as connection:
+                connection.execute(
+                    "UPDATE document_versions SET status='replaced',updated_at=? WHERE logical_document_id=? AND status='active' AND document_id<>?",
+                    (now, record.logical_document_id, document_id),
+                )
+                connection.execute(
+                    "UPDATE document_versions SET status=?,updated_at=? WHERE document_id=?",
+                    (target, now, document_id),
+                )
+        else:
+            self.database.execute("UPDATE document_versions SET status=?,updated_at=? WHERE document_id=?", (target, now, document_id))
         return self.get(document_id)
 
     def list(self, status: str | None = None, category: str | None = None, access_scope: dict | None = None):

@@ -108,6 +108,8 @@ def _metadata_text(value: Any) -> str | None:
 
 
 def _policy_metadata(fm: dict[str, Any]) -> PolicyMetadata:
+    from infrastructure.date_utils import parse_date_safe
+
     owner = _metadata_text(fm.get("owner"))
     policy_key = _metadata_text(fm.get("policy_key"))
     version = _metadata_text(fm.get("version"))
@@ -132,7 +134,15 @@ def _policy_metadata(fm: dict[str, Any]) -> PolicyMetadata:
         status = "unspecified"
     else:
         status = raw_status
-    if effective_from and effective_to and effective_to < effective_from:
+    # 写侧日期格式校验：非 ISO 字符串（如 "2026/07/01"）会让检索侧
+    # date.fromisoformat 失败。标记 issue 供台账治理展示；检索侧已做读侧容错。
+    from_date = parse_date_safe(effective_from)
+    to_date = parse_date_safe(effective_to)
+    if effective_from and from_date is None:
+        issues.append("invalid_effective_date_format")
+    if effective_to and to_date is None:
+        issues.append("invalid_effective_date_format")
+    if from_date and to_date and to_date < from_date:
         issues.append("invalid_effective_range")
 
     return PolicyMetadata(owner, policy_key, version, effective_from, effective_to, status, issues)

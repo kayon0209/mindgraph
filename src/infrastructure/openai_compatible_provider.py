@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import time
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
@@ -16,8 +15,8 @@ class NormalizedProviderError(RuntimeError):
 
 def normalize_http_error(status_code: int) -> str:
     return {
-        400: "invalid_request", 401: "authentication_failed", 403: "authentication_failed",
-        404: "model_not_found", 429: "rate_limited",
+        400: "invalid_request", 401: "authentication_failed", 402: "quota_exhausted",
+        403: "authentication_failed", 404: "model_not_found", 429: "rate_limited",
     }.get(status_code, "provider_unavailable" if status_code >= 500 else "unknown_provider_error")
 
 

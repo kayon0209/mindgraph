@@ -1,4 +1,4 @@
-<div align="center">
+﻿<div align="center">
 
 # MindGraph
 
@@ -212,7 +212,7 @@ python scripts/run_routing_evaluation.py
 python scripts/run_answer_evaluation.py --live --strategy hybrid
 ```
 
-The current frozen set (`mindgraph_golden_v2.jsonl`, version `2.2.0`) contains 54 approved cases derived from the synthetic demo vault and public handbooks. It covers replacement, thresholds, exceptions, cross-policy questions, graph-needed controls, ACL-restricted cases, no-answer cases and ambiguity. Retrieval reports Recall@K, Precision@K, MRR and nDCG@K; answer evaluation reports citation F1, refusal correctness, version validity, required facts, forbidden facts, ACL leakage, conflict accuracy, latency, tokens and estimated cost. These are local development/regression measurements, not production benchmark claims.
+The current frozen set (`mindgraph_golden_v2.jsonl`, version `2.4.0`) contains 90 approved cases derived from the synthetic demo vault and public handbooks. It covers replacement, thresholds, exceptions, cross-policy questions, multi-condition cases, exact facts, graph-needed controls, ACL-restricted cases, no-answer cases, synonym/abbreviation and ambiguity. Retrieval reports Recall@K, Precision@K, MRR and nDCG@K with per-query_type/difficulty stratification; answer evaluation reports citation F1, refusal correctness, version validity, required facts, forbidden facts, ACL leakage, conflict accuracy, latency, tokens and estimated cost. These are local development/regression measurements, not production benchmark claims.
 
 ### What MindGraph is today
 
@@ -223,14 +223,14 @@ The current frozen set (`mindgraph_golden_v2.jsonl`, version `2.2.0`) contains 5
 ### What it is not yet
 
 - A complete entity-disambiguation and multi-hop knowledge-graph engine
-- A hosted enterprise SaaS or a production-certified benchmark; the current 54 cases are local development/regression tests
+- A hosted enterprise SaaS or a production-certified benchmark; the current 90 cases are local development/regression tests
 
 ## Project status
 
 | Now | Next | Later |
 |---|---|---|
 | Hybrid retrieval and adaptive routing | Structure-aware chunk inspection | Typed policy edges |
-| Version-conflict interception | Golden set 50 → 60–80 layered cases | Entity-event dual graph |
+| Version-conflict interception | Golden set → 60–80 layered cases (currently 90, plan minimums met) | Entity-event dual graph |
 | ACL, OIDC and audit | Evidence feedback and writable MCP proposals | Community discovery |
 | Web, Obsidian and read-only MCP | Stronger Ruff, mypy and coverage gates | Multi-hop reasoning |
 
@@ -252,7 +252,7 @@ It adds governance before generation: version/effective-date filters, ACL enforc
 
 **Where does the evaluation data come from?**
 
-The frozen golden set (`2.2.0`, 54 cases) is derived from the public synthetic `demo-vault/` and public handbooks. Metrics are local development/regression measurements, not production benchmark claims.
+The frozen golden set (`2.4.0`, 90 cases) is derived from the public synthetic `demo-vault/` and public handbooks. Metrics are local development/regression measurements, not production benchmark claims.
 
 ## Documentation
 

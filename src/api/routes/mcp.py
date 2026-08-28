@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -30,7 +31,13 @@ router = APIRouter(prefix="/mcp", tags=["mcp"])
 
 async def _run_mcp_with_timeout(payload: dict[str, Any], principal: dict[str, Any] | None, container: Any):
     timeout = float(getattr(getattr(container, "settings", None), "MCP_TIMEOUT_SECONDS", 15.0))
-    return await asyncio.wait_for(run_in_threadpool(handle_jsonrpc, payload, principal), timeout=timeout)
+    # 协作式 deadline：asyncio.wait_for 只能放弃等待、无法取消线程池里的调用，
+    # 因此把绝对截止时刻传给工具侧，在重活前主动检查（见 mcp_server.MCPToolDeadlineExceeded）。
+    deadline = time.monotonic() + timeout
+    return await asyncio.wait_for(
+        run_in_threadpool(handle_jsonrpc, payload, principal, deadline),
+        timeout=timeout,
+    )
 
 
 @router.get("/health")
@@ -99,4 +106,6 @@ async def mcp_rpc(request: Request):
         )
     if response is None:
         return JSONResponse({"jsonrpc": "2.0", "id": payload.get("id"), "result": None})
-    return JSONResponse(response, status_code=200 if "error" not in response else 400)
+    # JSON-RPC over HTTP：错误也应以 200 返回（error 语义在 JSON-RPC body 内），
+    # 400 会让部分 MCP 客户端把协议错误误判为传输失败。
+    return JSONResponse(response)

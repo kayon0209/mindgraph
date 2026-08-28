@@ -69,6 +69,7 @@ def evaluate_routing_cases(
                 "actual": decision.to_dict(),
                 "failures": failures,
                 "route": decision.route,
+                "expected_route": str(case["expected_route"]),
                 "selected_strategy": decision.selected_strategy,
                 "graph_enabled": decision.graph_enabled,
                 "reasons": list(decision.reasons),
@@ -94,6 +95,7 @@ def evaluate_routing_cases(
         "failed_cases": failed_cases,
         "route_distribution": dict(sorted(distribution.items())),
         "group_metrics": grouped,
+        "expected_route_metrics": _expected_route_metrics(results),
     }
 
 
@@ -115,6 +117,26 @@ def _group_metrics(results: list[dict[str, Any]]) -> dict[str, dict[str, float]]
     groups: dict[str, list[dict[str, Any]]] = {}
     for item in results:
         groups.setdefault(item["route_group"], []).append(item)
+    summary: dict[str, dict[str, float]] = {}
+    for name, rows in sorted(groups.items()):
+        summary[name] = {
+            "sample_size": float(len(rows)),
+            "route_accuracy": fmean(float(row["route_correct"]) for row in rows),
+            "strategy_accuracy": fmean(float(row["strategy_correct"]) for row in rows),
+            "graph_policy_accuracy": fmean(float(row["graph_policy_correct"]) for row in rows),
+        }
+    return summary
+
+
+def _expected_route_metrics(results: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
+    """计划 2.2：按【标注的期望路由】分层（混淆矩阵的行视角）。
+
+    _group_metrics 按实际路由分组（列视角）；这里按 expected_route 分组，
+    可直接读出"某类问题被路由错了多少"，二者合成路由混淆矩阵的两个视角。
+    """
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for item in results:
+        groups.setdefault(item["expected_route"], []).append(item)
     summary: dict[str, dict[str, float]] = {}
     for name, rows in sorted(groups.items()):
         summary[name] = {

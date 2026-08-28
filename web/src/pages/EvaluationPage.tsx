@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { RefreshCw, Scale, TimerReset } from "lucide-react";
 
 import { BarComparison } from "../components/BarComparison";
-import { EmptyState, ErrorState, LoadingState, MetricCard, PageHeader, StatusPill } from "../components/Primitives";
+import { ContextHint, EmptyState, ErrorState, LoadingState, MetricCard, PageHeader, StatusPill } from "../components/Primitives";
 import { api } from "../lib/api";
 import { evaluationEfficiencyView, latestRunsForMetric, latestRunWithMetric, metricValue, numericMetricValue } from "../lib/metrics";
 import type { EvaluationResponse } from "../types";
@@ -47,10 +47,29 @@ export function EvaluationPage() {
   const hasRouteMetrics = Boolean(latestRoutingRun);
   const hasGraphGateMetrics = Boolean(latestGraphGateRun);
 
+  // 研究项④：指标墙不再整墙展示「—」。每张卡带「如何开启」说明，
+  // 有值的正常展示，无值的折叠进「未启用指标」分组，把空态变成行动召唤。
+  type MetricDef = { label: string; note: string; value: string | number; enableHint?: string };
+  const metricDefs: MetricDef[] = [
+    { label: "当前最佳召回率 Top5", note: "最近各策略运行", value: percent(bestRecall), enableHint: "运行 scripts/run_ablation.py 产出检索指标后显示。" },
+    { label: "引用正确性", note: "最新答案级评测", value: percent(latestAnswerRun ? metricValue(latestAnswerRun, "citation_correctness") : null), enableHint: "运行答案级评测 scripts/run_answer_eval.py 后显示。" },
+    { label: "拒答正确性", note: "最新答案级评测", value: percent(latestAnswerRun ? metricValue(latestAnswerRun, "refusal_correctness") : null), enableHint: "运行答案级评测 scripts/run_answer_eval.py 后显示。" },
+    { label: "版本有效性", note: "状态与生效期一致", value: percent(latestAnswerRun ? metricValue(latestAnswerRun, "version_validity") : null), enableHint: "Golden Set 含版本断言并运行答案级评测后显示。" },
+    { label: "路由准确率", note: "冻结路由矩阵", value: percent(latestRoutingRun ? metricValue(latestRoutingRun, "route_accuracy") : null), enableHint: "运行含冻结路由矩阵的评测（scripts/run_ablation.py）后显示。" },
+    { label: "重排路由占比", note: "高成本路径使用率", value: percent(latestRoutingRun ? metricValue(latestRoutingRun, "rerank_route_rate") : null), enableHint: "运行含冻结路由矩阵的评测（scripts/run_ablation.py）后显示。" },
+    { label: "关系扩展占比", note: "受控图路径使用率", value: percent(latestRoutingRun ? metricValue(latestRoutingRun, "graph_route_rate") : null), enableHint: "运行含冻结路由矩阵的评测（scripts/run_ablation.py）后显示。" },
+    { label: "图门槛通过率", note: "只在 graph 真有增益时才默认开启", value: percent(latestGraphGateRun ? metricValue(latestGraphGateRun, "graph_gate_pass_rate") : null), enableHint: "启用受控关系扩展并运行图门槛评测后显示。" },
+    { label: "P95 总延迟", note: "最新答案级评测", value: efficiency.p95Latency, enableHint: "运行答案级评测 scripts/run_answer_eval.py 后显示。" },
+    { label: "平均 Token", note: "仅统计 Provider 已上报样本", value: efficiency.meanTokens, enableHint: "运行答案级评测且 Provider 上报用量后显示。" },
+    { label: "平均估算成本", note: `成本覆盖率 ${efficiency.costCoverage}`, value: efficiency.meanCost, enableHint: "运行答案级评测并配置成本参数后显示。" },
+  ];
+  const filledMetrics = metricDefs.filter((metric) => String(metric.value) !== "—");
+  const emptyMetrics = metricDefs.filter((metric) => String(metric.value) === "—");
+
   return (
     <div className="page evaluation-page">
       <PageHeader
-        eyebrow="Quality ledger / 03"
+        eyebrow="检索质量追踪"
         title="质量必须能比较，也必须能追责"
         description="指标来自 evaluation_runs，不用静态占位。这里展示最近一次各策略结果，Golden Set 版本必须随运行记录保存。"
         actions={
@@ -60,48 +79,59 @@ export function EvaluationPage() {
         }
       />
 
+      <ContextHint storageKey="mindgraph.hint.evaluation">
+        这里的所有指标来自真实 evaluation_runs 记录，由 scripts/run_ablation.py 用与线上问答相同的检索管线跑出——页面不会出现静态占位数字。重建索引后重跑评测，指标即代表线上问答质量。
+      </ContextHint>
+
       {loading ? <LoadingState label="读取评测运行与指标" /> : null}
       {!loading && error ? <ErrorState message={error} onRetry={() => void load()} /> : null}
 
       {!loading && !error && data ? (
         <>
           <div className="metrics-grid reveal reveal-2">
-            <MetricCard label="当前最佳 Recall@5" note="最近各策略运行" value={percent(bestRecall)} />
-            <MetricCard label="引用正确性" note="最新答案级评测" value={percent(latestAnswerRun ? metricValue(latestAnswerRun, "citation_correctness") : null)} />
-            <MetricCard label="拒答正确性" note="最新答案级评测" value={percent(latestAnswerRun ? metricValue(latestAnswerRun, "refusal_correctness") : null)} />
-            <MetricCard label="版本有效性" note="状态与生效期一致" value={percent(latestAnswerRun ? metricValue(latestAnswerRun, "version_validity") : null)} />
-            <MetricCard label="路由准确率" note="冻结路由矩阵" value={percent(latestRoutingRun ? metricValue(latestRoutingRun, "route_accuracy") : null)} />
-            <MetricCard label="重排路由占比" note="高成本路径使用率" value={percent(latestRoutingRun ? metricValue(latestRoutingRun, "rerank_route_rate") : null)} />
-            <MetricCard label="关系扩展占比" note="受控图路径使用率" value={percent(latestRoutingRun ? metricValue(latestRoutingRun, "graph_route_rate") : null)} />
-            <MetricCard label="图门槛通过率" note="只在 graph 真有增益时才默认开启" value={percent(latestGraphGateRun ? metricValue(latestGraphGateRun, "graph_gate_pass_rate") : null)} />
-            <MetricCard label="P95 总延迟" note="最新答案级评测" value={efficiency.p95Latency} />
-            <MetricCard label="平均 Token" note="仅统计 Provider 已上报样本" value={efficiency.meanTokens} />
-            <MetricCard label="平均估算成本" note={`成本覆盖率 ${efficiency.costCoverage}`} value={efficiency.meanCost} />
+            {/* 库统计永远是真实数据，与评测指标分开展示 */}
             <MetricCard label="评测运行" note="最多展示最近 20 条" value={data.runs.length} />
             <MetricCard label="已索引制度" note="真实 CURRENT manifest" value={data.library_stats.indexed_notes} />
             <MetricCard label="待审核关系" note="不会自动进入检索" value={data.library_stats.relations_proposed} />
+            {filledMetrics.map((metric) => (
+              <MetricCard key={metric.label} label={metric.label} note={metric.note} value={metric.value} />
+            ))}
           </div>
+
+          {data.runs.length === 0 ? (
+            <EmptyState
+              title="还没有评测运行"
+              detail="先运行 scripts/run_ablation.py（检索消融）或 scripts/run_answer_eval.py（答案级评测），再回到这里查看策略对比和真实指标。页面不会用占位数字填空。"
+            />
+          ) : null}
+
+          {emptyMetrics.length ? (
+            <details className="metrics-empty-fold reveal reveal-3">
+              <summary>还有 {emptyMetrics.length} 项指标未启用 · 查看如何开启</summary>
+              <ul className="metrics-empty-list">
+                {emptyMetrics.map((metric) => (
+                  <li key={metric.label}>
+                    <strong>{metric.label}</strong>
+                    <span>{metric.enableHint}</span>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          ) : null}
 
           <div className="evaluation-notes reveal reveal-3">
             <div><Scale size={18} /><p><strong>路由门槛已显式记录</strong><span>{hasRouteMetrics ? "可以看到 route_accuracy、graph_route_rate 等真实指标。" : "当前没有可用路由结果。"}</span></p></div>
             <div><TimerReset size={18} /><p><strong>图门槛不遮掩失败</strong><span>{hasGraphGateMetrics ? "图路径是否可默认开启，必须由 gate 决策。" : "图路径未达到默认开启门槛时，保持关闭。"}</span></p></div>
           </div>
 
-          {data.runs.length === 0 ? (
-            <EmptyState
-              title="还没有评测运行"
-              detail="可以先运行 scripts/run_ablation.py，再回到这里查看策略对比和真实指标。"
-            />
-          ) : null}
-
           {comparisonRuns.length ? (
             <section className="comparison-section reveal reveal-3">
               <div className="section-heading">
                 <div>
-                  <p className="eyebrow">Ablation comparison</p>
+                  <p className="eyebrow">消融对比</p>
                   <h2>策略消融对比</h2>
                 </div>
-                <span>{comparisonRuns.length} strategies</span>
+                <span>{comparisonRuns.length} 个策略</span>
               </div>
               <BarComparison runs={comparisonRuns} />
             </section>
@@ -115,10 +145,10 @@ export function EvaluationPage() {
           <section className="runs-section reveal reveal-4">
             <div className="section-heading">
               <div>
-                <p className="eyebrow">Run history</p>
+                <p className="eyebrow">运行历史记录</p>
                 <h2>运行记录</h2>
               </div>
-              {latest ? <span>latest · {latest.strategy}</span> : null}
+              {latest ? <span>最近 · {latest.strategy}</span> : null}
             </div>
             {data.runs.length ? (
               <div className="run-table-wrap">
@@ -127,8 +157,8 @@ export function EvaluationPage() {
                     <tr>
                       <th>策略</th>
                       <th>数据集</th>
-                      <th>Recall@5</th>
-                      <th>MRR</th>
+                      <th>召回率 Top5</th>
+                      <th>平均倒数排名</th>
                       <th>引用正确性</th>
                       <th>拒答正确性</th>
                       <th>版本有效性</th>

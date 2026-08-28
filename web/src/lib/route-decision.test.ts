@@ -17,7 +17,7 @@ describe("adaptive route decision presentation", () => {
 
     expect(routeDecisionView(decision)).toEqual({
       routeLabel: "结构化能力回退",
-      strategyLabel: "Hybrid",
+      strategyLabel: "混合检索",
       graphLabel: "无需关系扩展",
       reasonLabels: ["检测到结构化条款条件，选择 Hybrid 检索", "路由置信不足，回退到 Hybrid", "检测到版本或生效日期约束"],
       costTierLabel: "中等成本",
@@ -36,7 +36,7 @@ describe("adaptive route decision presentation", () => {
       reasons: ["user_selected_strategy"],
     })).toMatchObject({
       routeLabel: "手动策略",
-      strategyLabel: "BM25",
+      strategyLabel: "关键词检索",
       reasonLabels: ["按用户指定策略执行"],
     });
   });

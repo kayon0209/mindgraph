@@ -289,6 +289,45 @@ def _percentile(values: list[float], percentile: float) -> float | None:
     return round(ordered[lower] * (1 - weight) + ordered[upper] * weight, 4)
 
 
+def _stratified_metrics(
+    cases: list[dict[str, Any]],
+    scored: list[dict[str, Any]],
+    dimensions: tuple[str, ...] = ("query_type", "difficulty", "graph_needed"),
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """计划 2.2：按 query_type/difficulty/graph_needed 输出分层检索指标。
+
+    只统计 answer 用例（与总体指标同分母口径）；每组给出样本量与均值，
+    样本量过小（<3）的组原样输出样本量便于读者判断统计意义。
+    """
+    metrics_by_case = {row["case_id"]: row["metrics"] for row in scored}
+    behavior_by_case = {row["case_id"]: row.get("expected_behavior") for row in scored}
+    stratified: dict[str, dict[str, dict[str, Any]]] = {}
+    for dimension in dimensions:
+        groups: dict[str, list[dict[str, Any]]] = {}
+        for case in cases:
+            if behavior_by_case.get(case["case_id"]) != "answer":
+                continue
+            raw_value = case.get(dimension)
+            key = "unset" if raw_value is None else str(raw_value)
+            groups.setdefault(key, []).append(case)
+        summary: dict[str, dict[str, Any]] = {}
+        for key, rows in sorted(groups.items()):
+            group_metrics = [metrics_by_case[row["case_id"]] for row in rows if row["case_id"] in metrics_by_case]
+            if not group_metrics:
+                continue
+            summary[key] = {
+                "sample_size": len(group_metrics),
+                **{
+                    name: round(
+                        sum(float(row[name]) for row in group_metrics) / len(group_metrics), 4
+                    )
+                    for name in ("recall_at_k", "precision_at_k", "mrr", "ndcg_at_k")
+                },
+            }
+        stratified[dimension] = summary
+    return stratified
+
+
 def evaluate_retrieval_cases(
     cases: list[dict[str, Any]], retrieve: Callable[[dict[str, Any]], RetrievalTrace], *,
     top_k: int = 5, include_questions: bool = False, dataset_digest: str | None = None,
@@ -364,6 +403,7 @@ def evaluate_retrieval_cases(
     }
     summary["p50_retrieval_ms"] = _percentile(total_latencies_ms, 0.50)
     summary["p95_retrieval_ms"] = _percentile(total_latencies_ms, 0.95)
+    summary["stratified"] = _stratified_metrics(cases, scored)
     failures = [row for row in scored if row["metrics"]["recall_at_k"] < 1.0]
     graph_limitations: list[str] = []
     if graph_enabled_cases == 0:

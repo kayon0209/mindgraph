@@ -90,7 +90,8 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_settings.cors_origin_list,
-    allow_credentials=True,
+    # 通配符 origin 时必须关闭凭据（P2-8）：否则任意网页可携带凭据跨域调用。
+    allow_credentials=_settings.cors_allow_credentials,
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["Content-Type", "Authorization", "X-Request-ID", "X-API-Key"],
     expose_headers=["X-Request-ID", "X-RateLimit-Remaining", "X-RateLimit-Reset"],
@@ -105,8 +106,9 @@ app.add_middleware(TimingMiddleware)
 app.add_middleware(LoggingMiddleware)  # 必须在 RateLimit 之后添加（内层），以确保 request_id 已设置
 
 # ── 速率限制 ──
+# 生产环境强制开启（settings.rate_limit_effective）；非生产默认关闭可显式打开。
 
-if _settings.RATE_LIMIT_ENABLED:
+if _settings.rate_limit_effective:
     app.add_middleware(
         RateLimitMiddleware,
         max_requests=_settings.RATE_LIMIT_MAX_REQUESTS,

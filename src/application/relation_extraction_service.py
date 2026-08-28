@@ -338,39 +338,50 @@ class RelationExtractionService:
             for r in self.db.fetch_all("SELECT source_note_id, target_note_id FROM note_relations WHERE status='confirmed'")
         }
         if not dry_run:
+            from infrastructure.date_utils import parse_date_safe
+
             ts = _now_iso()
+            rows_to_insert = []
             for c in deduped:
                 pair = frozenset({c["source"], c["target"]})
                 if pair in confirmed_pairs:
                     conflicts += 1
                 relation_id = f"auto-{uuid.uuid4().hex[:12]}"
-                self.db.execute(
-                    """INSERT INTO note_relations
-                       (relation_id, source_note_id, target_note_id, relation_type, direction, status,
-                        evidence_chunk_id, confidence, model_version, prompt_version, proposed_at,
-                        evidence_span, evidence_section, source_document_version, effective_from, effective_to, extraction_method)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (
-                        relation_id,
-                        c["source"],
-                        c["target"],
-                        c["relation_type"],
-                        "outgoing",
-                        "proposed",
-                        c.get("evidence"),
-                        c["confidence"],
-                        MODEL_VERSION,
-                        PROMPT_VERSION,
-                        ts,
-                        c.get("evidence_span"),
-                        c.get("evidence_section"),
-                        c.get("source_document_version"),
-                        c.get("effective_from"),
-                        c.get("effective_to"),
-                        c.get("signal"),
-                    ),
-                )
-                inserted += 1
+                # 关系自身的有效期必须为 ISO 日期（图扩展按字符串比较生命周期），
+                # LLM/相似度来源可能给出非 ISO 值——写库前归一化，解析失败置空。
+                effective_from = parse_date_safe(c.get("effective_from"))
+                effective_to = parse_date_safe(c.get("effective_to"))
+                rows_to_insert.append((
+                    relation_id,
+                    c["source"],
+                    c["target"],
+                    c["relation_type"],
+                    "outgoing",
+                    "proposed",
+                    c.get("evidence"),
+                    c["confidence"],
+                    MODEL_VERSION,
+                    PROMPT_VERSION,
+                    ts,
+                    c.get("evidence_span"),
+                    c.get("evidence_section"),
+                    c.get("source_document_version"),
+                    effective_from.isoformat() if effective_from else None,
+                    effective_to.isoformat() if effective_to else None,
+                    c.get("signal"),
+                ))
+            if rows_to_insert:
+                # 批量落库走单事务：中途失败不留半成品候选集。
+                with self.db.transaction() as connection:
+                    connection.executemany(
+                        """INSERT INTO note_relations
+                           (relation_id, source_note_id, target_note_id, relation_type, direction, status,
+                            evidence_chunk_id, confidence, model_version, prompt_version, proposed_at,
+                            evidence_span, evidence_section, source_document_version, effective_from, effective_to, extraction_method)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        rows_to_insert,
+                    )
+                inserted = len(rows_to_insert)
 
         return {
             "ok": True,

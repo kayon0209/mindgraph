@@ -4,7 +4,10 @@ import math
 import re
 import time
 from collections import Counter, defaultdict
+from datetime import date
 from typing import Sequence
+
+from infrastructure.date_utils import parse_date_safe
 
 from .types import Chunk, RetrievalCandidate
 
@@ -64,9 +67,8 @@ class BM25Retriever:
         start = time.perf_counter()
         query_tokens = tokenize_zh(query)
         from application.access_control import chunk_acl_matches
-        from datetime import date
 
-        target_date = date.fromisoformat(query_date) if query_date else date.today()
+        target_date = parse_date_safe(query_date) or date.today()
 
         def visible(index: int) -> bool:
             metadata = self.chunks[index].metadata
@@ -77,10 +79,10 @@ class BM25Retriever:
                 return False
             if categories and metadata.get("knowledge_category") not in categories:
                 return False
-            effective = metadata.get("effective_date") or metadata.get("effective_from")
-            expiration = metadata.get("expiration_date") or metadata.get("effective_to")
-            return not (effective and date.fromisoformat(effective) > target_date) and not (
-                expiration and date.fromisoformat(expiration) < target_date and not include_historical
+            effective = parse_date_safe(metadata.get("effective_date") or metadata.get("effective_from"))
+            expiration = parse_date_safe(metadata.get("expiration_date") or metadata.get("effective_to"))
+            return not (effective and effective > target_date) and not (
+                expiration and expiration < target_date and not include_historical
             )
 
         ranked = sorted(

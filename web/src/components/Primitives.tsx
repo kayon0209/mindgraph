@@ -1,5 +1,5 @@
-import type { ReactNode } from "react";
-import { AlertTriangle, Inbox, LoaderCircle } from "lucide-react";
+import { useState, type ReactNode } from "react";
+import { AlertTriangle, Inbox, Lightbulb, LoaderCircle, X } from "lucide-react";
 
 export function PageHeader({
   eyebrow,
@@ -31,7 +31,7 @@ const STATUS_LABELS: Record<string, string> = {
   failed: "失败",
   cancelled: "已取消",
   interrupted: "已中断",
-  active: "在行",
+  active: "生效中",
   indexed: "已索引",
   confirmed: "已确认",
   rejected: "已拒绝",
@@ -104,5 +104,37 @@ export function MetricCard({ value, label, note }: { value: string | number; lab
       <span className="metric-label">{label}</span>
       {note ? <span className="metric-note">{note}</span> : null}
     </article>
+  );
+}
+
+/**
+ * I1：每个视图首次进入时给一行上下文解释，可关闭且关闭状态持久化。
+ * storageKey 各视图唯一，如 "mindgraph.hint.relations"。
+ */
+export function ContextHint({ storageKey, children }: { storageKey: string; children: ReactNode }) {
+  const [visible, setVisible] = useState(() => {
+    try {
+      return !window.localStorage.getItem(storageKey);
+    } catch {
+      return true;
+    }
+  });
+  if (!visible) return null;
+  const dismiss = () => {
+    setVisible(false);
+    try {
+      window.localStorage.setItem(storageKey, "1");
+    } catch {
+      // 存储失败可忽略：下次进入仍显示
+    }
+  };
+  return (
+    <div className="context-hint" role="note">
+      <Lightbulb size={16} />
+      <p>{children}</p>
+      <button className="context-hint-dismiss" onClick={dismiss} type="button" aria-label="关闭提示">
+        <X size={14} />
+      </button>
+    </div>
   );
 }

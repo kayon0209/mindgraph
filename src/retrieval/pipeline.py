@@ -4,6 +4,8 @@ import inspect
 import time
 from datetime import date
 
+from infrastructure.date_utils import parse_date_safe
+
 from .types import DenseRetriever, FusionStrategy, Reranker, RetrievalTrace, SparseRetriever
 
 
@@ -68,9 +70,10 @@ class RetrievalPipeline:
 
     def _filter_and_adjust(self, candidates, query_date, categories, include_historical, trace):
         selected = []
-        target_date = date.fromisoformat(query_date) if query_date else date.today()
+        target_date = parse_date_safe(query_date) or date.today()
         missing_date_metadata = False
         missing_status_metadata = False
+        invalid_date_metadata = False
         for candidate in candidates:
             metadata = candidate.chunk.metadata
             status = metadata.get("document_status")
@@ -80,11 +83,19 @@ class RetrievalPipeline:
                 continue
             if categories and metadata.get("knowledge_category") not in categories:
                 continue
-            effective = metadata.get("effective_date")
-            expiration = metadata.get("expiration_date")
-            if effective and date.fromisoformat(effective) > target_date:
+            effective = parse_date_safe(metadata.get("effective_date"))
+            expiration = parse_date_safe(metadata.get("expiration_date"))
+            # 非法日期元数据不再让整条检索 503：按"缺省日期"处理并告警（读侧容错，
+            # 写侧由 vault_sync_service 标记 invalid_effective_date_format）。
+            if (effective is None) != (metadata.get("effective_date") in (None, "")) or (
+                expiration is None
+            ) != (metadata.get("expiration_date") in (None, "")):
+                invalid_date_metadata = True
+            if effective and effective > target_date:
                 continue
-            if expiration and date.fromisoformat(expiration) < target_date:
+            # 与 dense/sparse/图扩展路径保持一致：include_historical=True 时
+            # 允许查看已过期文档（未生效的仍无条件排除）。
+            if expiration and expiration < target_date and not include_historical:
                 continue
             if query_date and not effective and not expiration:
                 missing_date_metadata = True
@@ -96,6 +107,8 @@ class RetrievalPipeline:
             trace.warnings.append("index_chunks_missing_document_status")
         if missing_date_metadata:
             trace.warnings.append("explicit_date_filter_has_incomplete_metadata")
+        if invalid_date_metadata:
+            trace.warnings.append("invalid_date_metadata_treated_as_missing")
         return sorted(selected, key=lambda item: (item.adjusted_score or 0.0, item.chunk.chunk_id), reverse=True)
 
     def _filter_by_access(self, candidates, access_scope: dict | None, trace: RetrievalTrace) -> list:

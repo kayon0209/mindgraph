@@ -29,15 +29,20 @@ router = APIRouter(prefix="/mindgraph/chat", tags=["mindgraph-chat"])
 def mindgraph_chat(request: Request, payload: ChatRequest):
     scope = resolve_access_scope(request)
     actor = current_actor(request)
+    container = get_container()
+    # 问题原文入审计需受 PRIVACY_LOG_QUESTIONS 门控（与 query_logs 行为一致）
+    audit_metadata = {"scope_user": (scope or {}).get("user")}
+    if container.privacy_log:
+        audit_metadata["question"] = payload.question[:80]
     record_access_audit(
-        get_container().database,
+        container.database,
         actor=actor,
         action="chat",
         resource="mindgraph/chat",
         decision="allow",
-        metadata={"scope_user": (scope or {}).get("user"), "question": payload.question[:80]},
+        metadata=audit_metadata,
     )
-    return get_container().mindgraph_chat.answer(payload, access_scope=scope)
+    return container.mindgraph_chat.answer(payload, access_scope=scope)
 
 
 @router.post("/stream")

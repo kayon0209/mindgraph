@@ -66,7 +66,10 @@ class MindGraphGraphStore:
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"{name} must be a positive integer")
 
-        target_date = date.fromisoformat(as_of).isoformat() if as_of else date.today().isoformat()
+        from infrastructure.date_utils import parse_date_safe
+
+        parsed_as_of = parse_date_safe(as_of)
+        target_date = parsed_as_of.isoformat() if parsed_as_of else date.today().isoformat()
         seen: set[str] = set(ids)
         frontier = set(ids)
         results: list[dict[str, Any]] = []

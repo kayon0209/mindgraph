@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+from types import SimpleNamespace
 
 import pytest
 
@@ -9,15 +10,25 @@ import local_embedder
 from retrieval.embeddings import DEFAULT_BGE_MODEL
 
 
-def test_rerank_top_n_uses_the_declared_environment_name(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("RERANK_TOP_N", "7")
-    monkeypatch.setenv("RETRANK_TOP_N", "19")
+def _patch_settings(monkeypatch: pytest.MonkeyPatch, **values) -> None:
+    """工厂统一经 get_settings() 读取检索配置（进程环境变量 > .env > 默认）。"""
+    defaults = {"RERANK_TOP_N": 10, "RETRIEVAL_CANDIDATE_COUNT": 20}
+    defaults.update(values)
+    monkeypatch.setattr(
+        retrieval_factory,
+        "get_settings",
+        lambda: SimpleNamespace(**defaults),
+    )
+
+
+def test_rerank_top_n_reads_the_declared_settings_field(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_settings(monkeypatch, RERANK_TOP_N=7)
 
     assert retrieval_factory._rerank_top_n() == 7
 
 
 def test_rerank_top_n_rejects_non_positive_values(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("RERANK_TOP_N", "0")
+    _patch_settings(monkeypatch, RERANK_TOP_N=0)
 
     with pytest.raises(ValueError, match="RERANK_TOP_N"):
         retrieval_factory._rerank_top_n()

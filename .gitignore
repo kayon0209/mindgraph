@@ -74,3 +74,6 @@ scripts/check_notes_status.py
 scripts/debug_retrieval.py
 scripts/fix_processing.py
 scripts/cleanup_external_html.py
+
+# One-off audit/debug outputs (logs, repro scripts, port dumps) — local only
+_audit_outputs/

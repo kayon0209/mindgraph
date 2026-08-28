@@ -4,6 +4,34 @@ from typing import Any, Iterable
 
 from zhipuai import ZhipuAI
 
+from infrastructure.openai_compatible_provider import NormalizedProviderError
+
+# F6：显式超时 + 有界重试（SDK 默认 max_retries=3 且无显式超时，曾出现长时间挂起）
+_REQUEST_TIMEOUT = 90.0
+_MAX_RETRIES = 2
+
+# F3：把 SDK 异常归一为带 .code 的错误，chat_service 通过 getattr(exc, "code") 取用
+_ERROR_CODE_MAP = {
+    "400": "invalid_request",
+    "401": "authentication_failed",
+    "402": "quota_exhausted",
+    "403": "authentication_failed",
+    "404": "model_not_found",
+    "429": "rate_limited",
+}
+
+
+def _normalize_error(exc: Exception) -> NormalizedProviderError:
+    raw_code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    code_str = str(raw_code) if raw_code is not None else ""
+    if code_str in _ERROR_CODE_MAP:
+        return NormalizedProviderError(_ERROR_CODE_MAP[code_str], str(exc))
+    if code_str.isdigit() and int(code_str) >= 500:
+        return NormalizedProviderError("provider_unavailable", str(exc))
+    if isinstance(exc, TimeoutError) or "timeout" in str(exc).lower() or "timed out" in str(exc).lower():
+        return NormalizedProviderError("timeout", f"Provider request timed out: {exc}")
+    return NormalizedProviderError("provider_error", str(exc))
+
 
 class ZhipuChatProvider:
     provider_name = "zhipu"
@@ -11,7 +39,7 @@ class ZhipuChatProvider:
         self.api_key = api_key
         self.model_name = model_name
         self.verified = verified
-        self._client = ZhipuAI(api_key=api_key) if api_key else None
+        self._client = ZhipuAI(api_key=api_key, timeout=_REQUEST_TIMEOUT, max_retries=_MAX_RETRIES) if api_key else None
 
     @property
     def available(self) -> bool:
@@ -32,28 +60,33 @@ class ZhipuChatProvider:
 
     def complete(self, messages: list[dict[str, str]]) -> tuple[str, dict[str, Any]]:
         if not self._client:
-            raise RuntimeError("Zhipu provider is not configured")
+            raise NormalizedProviderError("provider_not_configured", "Zhipu provider is not configured")
         try:
             response = self._client.chat.completions.create(model=self.model_name, messages=messages, temperature=0.2)
         except Exception as exc:
-            code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
-            if code and str(code) in ("401", "403", "authentication_error"):
-                raise RuntimeError("authentication_failed: Invalid API key")
-            if code and str(code) == "429":
-                raise RuntimeError("rate_limited: Too many requests")
-            raise RuntimeError(f"provider_error: {exc}")
+            raise _normalize_error(exc) from exc
         if not response.choices or not response.choices[0].message:
-            raise RuntimeError("provider_error: Empty response from model")
+            raise NormalizedProviderError("provider_error", "Empty response from model")
         return (response.choices[0].message.content or "").strip(), self._usage(getattr(response, "usage", None))
 
     def stream(self, messages: list[dict[str, str]]) -> Iterable[dict[str, Any]]:
         if not self._client:
-            raise RuntimeError("Zhipu provider is not configured")
+            raise NormalizedProviderError("provider_not_configured", "Zhipu provider is not configured")
         try:
             response = self._client.chat.completions.create(model=self.model_name, messages=messages, temperature=0.2, stream=True)
         except Exception as exc:
-            raise RuntimeError(f"provider_error: {exc}")
-        for chunk in response:
+            raise _normalize_error(exc) from exc
+        try:
+            iterator = iter(response)
+        except TypeError as exc:
+            raise NormalizedProviderError("provider_error", str(exc)) from exc
+        while True:
+            try:
+                chunk = next(iterator)
+            except StopIteration:
+                break
+            except Exception as exc:
+                raise _normalize_error(exc) from exc
             try:
                 if not chunk.choices:
                     continue

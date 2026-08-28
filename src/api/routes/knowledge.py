@@ -1,8 +1,11 @@
-from fastapi import APIRouter, Depends, File, Form, UploadFile, Query, Request
+import json
 
-from api.auth import require_role, resolve_access_scope
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+
+from api.auth import current_actor, require_role, resolve_access_scope
 from api.dependencies import get_container
 from api.schemas.knowledge import DocumentRecord, IndexStatus
+from application.access_control import note_acl_matches, record_access_audit
 
 
 router = APIRouter(prefix="/knowledge", tags=["knowledge"])
@@ -55,6 +58,12 @@ async def upload_document_version(file: UploadFile = File(...), logical_document
     VALID_AUTHORITY = {"official_policy", "official_guideline", "approved_faq", "user_uploaded_reference", "external_reference"}
     if authority_level not in VALID_AUTHORITY:
         raise ValueError(f"Invalid authority_level. Allowed: {', '.join(sorted(VALID_AUTHORITY))}")
+    try:
+        parsed_acl = json.loads(acl_json) if acl_json else {}
+    except json.JSONDecodeError as exc:
+        raise ValueError("acl_json must be a valid JSON object") from exc
+    if not isinstance(parsed_acl, dict):
+        raise ValueError("acl_json must be a JSON object")
     return get_container().document_lifecycle.create_version(file.filename or "document", await file.read(), logical_document_id,
         version, category, authority_level, effective_date, expiration_date,
         workspace=workspace, department=department, acl_json=acl_json, acl_public=acl_public).model_dump(mode="json")
@@ -67,13 +76,29 @@ def list_document_versions(request: Request, status: str | None = None, category
 
 
 @router.get("/versions/{document_id}")
-def get_document_version(document_id: str):
-    return get_container().document_lifecycle.get(document_id).model_dump(mode="json")
+def get_document_version(document_id: str, request: Request):
+    # 与 list 接口保持一致的 ACL 语义：无权限时 404（不泄漏存在性）
+    scope = resolve_access_scope(request)
+    record = get_container().document_lifecycle.get(document_id)
+    if scope is not None and not note_acl_matches(record.model_dump(mode="python"), scope):
+        raise HTTPException(status_code=404, detail="Document version not found")
+    return record.model_dump(mode="json")
 
 
 @router.post("/versions/{document_id}/transition")
-def transition_document(document_id: str, target: str = Query(...), _auth: dict = Depends(require_role("write"))):
-    return get_container().document_lifecycle.transition(document_id, target).model_dump(mode="json")
+def transition_document(document_id: str, request: Request, target: str = Query(...),
+                        _auth: dict = Depends(require_role("write"))):
+    container = get_container()
+    record = container.document_lifecycle.transition(document_id, target)
+    record_access_audit(
+        container.database,
+        actor=current_actor(request),
+        action="transition_document",
+        resource=f"document_versions/{document_id}",
+        decision="allow",
+        metadata={"target": target},
+    )
+    return record.model_dump(mode="json")
 
 
 @router.post("/index/incremental-rebuild")

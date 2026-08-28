@@ -39,7 +39,10 @@ mindgraph/
 ## 常用命令
 
 ```powershell
-# API
+# API（推荐：一键启动脚本，自动设置 PYTHONPATH 并使用项目 venv）
+powershell -ExecutionPolicy Bypass -File scripts\start-dev.ps1
+
+# API（手动启动；AUTH_MODE 等配置按 "进程环境变量 > .env > 默认" 动态解析）
 .\.venv\Scripts\python.exe -m uvicorn api.main:app --app-dir src --host 127.0.0.1 --port 8000
 
 # 测试

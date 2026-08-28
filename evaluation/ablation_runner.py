@@ -74,6 +74,60 @@ def evaluate_ablation(
     }
 
 
+def _stratified_deltas(
+    data: dict,
+    graph_strategy: str | None,
+    baseline_strategy: str | None,
+    *,
+    metric: str = "recall_at_5",
+    dimension: str = "category",
+) -> dict[str, dict[str, float]]:
+    """计划 5：按子集（category）统计 Graph 增益，而非只看整体均值。
+
+    details 结构：{strategy: [{case_id, category, metrics: {...}}, ...]}。
+    缺少可比数据时返回空 dict（调用方保留 limitations 说明）。
+    """
+    if not graph_strategy or not baseline_strategy:
+        return {}
+    details = data.get("details")
+    if not isinstance(details, dict):
+        return {}
+    graph_rows = details.get(graph_strategy) or []
+    baseline_rows = details.get(baseline_strategy) or []
+    if not graph_rows or not baseline_rows:
+
+        return {}
+    baseline_by_case = {str(row.get("case_id")): row for row in baseline_rows if isinstance(row, dict)}
+    groups: dict[str, dict[str, list[float]]] = {}
+    for row in graph_rows:
+        if not isinstance(row, dict):
+            continue
+        baseline_row = baseline_by_case.get(str(row.get("case_id")))
+        if baseline_row is None:
+            continue
+        graph_metrics = row.get("metrics") or {}
+        baseline_metrics = baseline_row.get("metrics") or {}
+        graph_value = graph_metrics.get(metric)
+        baseline_value = baseline_metrics.get(metric)
+        if graph_value is None or baseline_value is None:
+            continue
+        key = str(row.get(dimension) or "uncategorized")
+        bucket = groups.setdefault(key, {"graph": [], "baseline": []})
+        bucket["graph"].append(float(graph_value))
+        bucket["baseline"].append(float(baseline_value))
+    stratified: dict[str, dict[str, float]] = {}
+    for key, values in sorted(groups.items()):
+        graph_mean = sum(values["graph"]) / len(values["graph"])
+        baseline_mean = sum(values["baseline"]) / len(values["baseline"])
+        stratified[key] = {
+            "sample_size": float(len(values["graph"])),
+            f"graph_{metric}": round(graph_mean, 4),
+            f"baseline_{metric}": round(baseline_mean, 4),
+            "delta": round(graph_mean - baseline_mean, 4),
+        }
+    return stratified
+
+
 def run(source: Path) -> dict:
     data = json.loads(source.read_text(encoding="utf-8"))
     rows = [{"retrieval_strategy": strategy, **{metric: values.get(metric) for metric in METRICS}}
@@ -90,9 +144,11 @@ def run(source: Path) -> dict:
             "results": rows,
             "decision": {"eligible": False, "reasons": ["no_comparable_graph_and_baseline_rows"], "statistical_significance": False, "default_route_recommendation": "keep_graph_disabled"},
             "deltas": {},
+            "stratified": {},
             "limitations": ["The source contains no explicitly comparable graph and baseline rows; no gate decision was inferred."],
         }
     decision = evaluate_ablation(rows, graph_strategy=graph_strategy, baseline_strategy=baseline_strategy)
+    stratified = _stratified_deltas(data, graph_strategy, baseline_strategy)
     return {
         "source": str(source),
         "dataset_version": data["dataset_version"],
@@ -102,6 +158,7 @@ def run(source: Path) -> dict:
         "results": rows,
         "decision": decision["decision"],
         "deltas": decision["deltas"],
+        "stratified": stratified,
         "limitations": [
             "Uses the existing development/regression-derived 23 retrieval-eligible cases, not an independent holdout.",
             "Only retrieval strategy changes; no generation-model conclusion is supported.",
@@ -123,7 +180,7 @@ def main() -> None:
     markdown_path = ROOT / "docs" / "evaluation" / "retrieval-ablation.md"
     json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     with csv_path.open("w", newline="", encoding="utf-8-sig") as handle:
-        writer = csv.DictWriter(handle, fieldnames=result["results"][0])
+        writer = csv.DictWriter(handle, fieldnames=list(result["results"][0]) if result["results"] else METRICS)
         writer.writeheader()
         writer.writerows(result["results"])
     lines = [
