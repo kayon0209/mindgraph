@@ -124,8 +124,8 @@ export function RelationsPage() {
     <div className="page relations-page">
       <PageHeader
         eyebrow="制度关系审核"
-        title="相似只是候选，确认才是关系"
-        description="默认 BGE 路径只能发现相似笔记。审核者确认之后，关系才有资格进入一跳扩展。"
+        title="关系审核"
+        description="系统发现可能相关的制度对，经你确认后才成为正式关联。"
         actions={
           <button className="button secondary" onClick={() => void load()} type="button">
             <RefreshCw size={16} className={loading ? "spin" : ""} /> 刷新队列
@@ -134,22 +134,22 @@ export function RelationsPage() {
       />
 
       <ContextHint storageKey="mindgraph.hint.relations">
-        候选（proposed）来自 BGE 相似度发现的相似制度对，不参与检索；审核者填写原因并确认后，才成为 confirmed 关系并进入一跳扩展。拒绝同样需要原因，便于追溯。
+        候选关系来自系统对制度相似度的自动判断，不会自动参与检索。填写原因并确认后才会成为正式关联；拒绝也需要原因，便于追溯。
       </ContextHint>
 
       <div className="metrics-grid reveal reveal-2">
-        <MetricCard label="待人工判断" note="proposed，不参与检索" value={proposed.length} />
-        <MetricCard label="已确认关系" note="可参与一跳扩展" value={confirmed.length} />
-        <MetricCard label="冲突候选" note="同一文档对已有确认边" value={conflicts} />
-        <MetricCard label="默认候选来源" note="BGE 相似度 + 提问共同提问" value="BGE / CO_ASKED" />
+        <MetricCard label="待确认" note="不会自动参与检索" value={proposed.length} />
+        <MetricCard label="已确认关联" note="可用于扩展检索" value={confirmed.length} />
+        <MetricCard label="冲突候选" note="该制度对已有确认关联" value={conflicts} />
+        <MetricCard label="候选来源" note="相似度分析 + 提问记录" value="自动分析" />
       </div>
 
       <section className="mine-bar reveal reveal-2" aria-label="问题概念挖掘">
         <p>
-          真实提问里同时涉及多篇制度的场景会被挖掘为「共同提问」候选（纯规则、无 LLM）；提问中引用但知识库未收录的概念会累计到下方覆盖缺口。聊天累计到阈值后会自动挖掘，也可以立即手动运行。
+          同一提问涉及多篇制度时，系统会自动生成候选关系；提问中出现但知识库没有的概念，会记录在下方缺口列表。
         </p>
         <button className="button secondary" disabled={mining} onClick={() => void runMine()} type="button">
-          <Sparkles size={15} className={mining ? "spin" : ""} /> {mining ? "挖掘中…" : "从提问中挖掘"}
+          <Sparkles size={15} className={mining ? "spin" : ""} /> {mining ? "查找中…" : "从提问中查找候选"}
         </button>
       </section>
       {mineMessage ? <p className="mine-bar-message reveal reveal-2" role="status">{mineMessage}</p> : null}
@@ -192,8 +192,8 @@ export function RelationsPage() {
             <EmptyState
               title={tab === "proposed" ? "没有待审核候选" : "还没有已确认关系"}
               detail={tab === "proposed"
-                ? "当前没有等待人工判断的关系候选。系统发现相似制度时会先进入这里，确认后才会参与检索。"
-                : "候选关系必须经过人工确认才会出现在这里。确认后的关系可参与一跳扩展。"}
+                ? "当前没有待确认的候选关系。系统发现可能相关的制度时会出现在这里。"
+                : "确认过的关联关系会显示在这里。"}
             />
           ) : null}
 
@@ -218,8 +218,8 @@ export function RelationsPage() {
                 </div>
                 <div className="relation-meta">
                   <span>置信度 <strong>{typeof relation.confidence === "number" ? `${(relation.confidence * 100).toFixed(0)}%` : "—"}</strong></span>
-                  {relation.proposed_at ? <span>提出于 {relation.proposed_at}</span> : null}
-                  {relation.conflict ? <span className="conflict-label"><AlertOctagon size={14} /> 已有确认边</span> : null}
+                  {relation.proposed_at ? <span>发现于 {relation.proposed_at}</span> : null}
+                  {relation.conflict ? <span className="conflict-label"><AlertOctagon size={14} /> 已有确认关联</span> : null}
                 </div>
                 {relation.evidence_span || relation.evidence_section ? (
                   /* P3-24：审核者必须能对照证据原文，而不是只有 chunk id */
@@ -228,7 +228,7 @@ export function RelationsPage() {
                     <p>{relation.evidence_span || relation.evidence_chunk_id}</p>
                   </blockquote>
                 ) : relation.evidence_chunk_id ? (
-                  <div className="relation-meta"><span>证据片段 {relation.evidence_chunk_id}</span></div>
+                  <div className="relation-meta"><span>证据片段</span></div>
                 ) : null}
                 {tab === "proposed" ? (
                   <div className="relation-review-controls">
@@ -275,10 +275,10 @@ export function RelationsPage() {
       <section className="gap-panel reveal reveal-4" aria-label="知识覆盖缺口">
         <div className="gap-panel-head">
           <h2>知识覆盖缺口</h2>
-          <span>{gapTotal} 个未收录概念（按提问出现次数降序）</span>
+          <span>{gapTotal} 个未收录概念（按提问次数排序）</span>
         </div>
         <p className="gap-panel-description">
-          以下概念来自真实提问中的《》引用，但知识库尚未收录对应制度。把它们补充进知识库并重建索引后，相应提问就能命中证据；再次挖掘时这些缺口会自然收敛。
+          以下概念在提问中被引用，但知识库还没有对应内容。补充后会提升相关问题的回答质量。
         </p>
         {gaps.length === 0 ? (
           <EmptyState
@@ -300,7 +300,7 @@ export function RelationsPage() {
 
       <div className="semantic-warning reveal reveal-4">
         <AlertOctagon size={19} />
-        <p><strong>当前不是完整知识图谱。</strong> 默认候选来自两两余弦相似度；只有后续引入制度条款、条件、例外、替代和冲突的 typed edge，才形成企业制度断言图。</p>
+        <p><strong>当前展示的是制度之间的关联关系。</strong> 还不包含条款、例外、替代等更细的规则连接。</p>
       </div>
     </div>
   );

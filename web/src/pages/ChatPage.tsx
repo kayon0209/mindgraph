@@ -10,6 +10,7 @@ import {
   GitBranch,
   History,
   LoaderCircle,
+  PanelRightClose,
   Plus,
   RotateCcw,
   ShieldQuestion,
@@ -237,6 +238,8 @@ export function ChatPage() {
   const [degradedReason, setDegradedReason] = useState<string | null>(null);
   // U6：证据链轨道定位到的轮次（null = 跟随最新一轮）
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
+  // 证据轨默认折叠成一条窄边栏，只在用户主动查看时展开
+  const [railOpen, setRailOpen] = useState(false);
   // 研究项①：答案内引用角标点击后，证据链滚动并闪烁定位的目标
   const [citationFocus, setCitationFocus] = useState<{ rank: number; nonce: number } | null>(null);
   // I3：生成计时
@@ -532,9 +535,10 @@ export function ChatPage() {
     );
   };
 
-  /** 研究项①：答案内角标 → 轨道定位到该轮并闪烁对应引用卡 */
+  /** 研究项①：答案内角标 → 轨道定位到该轮并闪烁对应引用卡（自动展开折叠的证据轨） */
   const focusCitation = (turnId: string, rank: number) => {
     setActiveTurnId(turnId);
+    setRailOpen(true);
     setCitationFocus({ rank, nonce: Date.now() });
   };
 
@@ -662,11 +666,11 @@ export function ChatPage() {
     <div className="page chat-page">
       <PageHeader
         eyebrow="基于制度证据的问答"
-        title="先给结论，再交付证据"
-        description="面向制度判断，不追求聊天感。每个回答都必须留下来源、版本与检索轨迹。"
+        title="可信问答"
+        description="基于制度内容回答问题，每个回答都会标注来源，方便追溯。"
       />
 
-      <div className="chat-layout reveal reveal-2">
+      <div className={railOpen ? "chat-layout rail-open reveal reveal-2" : "chat-layout reveal reveal-2"}>
         <section className="conversation-panel">
           <div className="conversation-topbar">
             {/* 研究项⑥：历史会话（本地工作留痕）——新建/切换/删除/整段导出 */}
@@ -746,10 +750,10 @@ export function ChatPage() {
               <span>检索方式</span>
               <select aria-label="检索方式" value={strategy} onChange={(event) => setStrategy(event.target.value as ChatRequest["retrieval_strategy"])}>
                 <option value="auto">自动匹配（推荐）</option>
-                <option value="hybrid">混合检索</option>
-                <option value="hybrid_rerank">混合检索 + 精排</option>
-                <option value="dense">语义检索</option>
-                <option value="bm25">关键词检索</option>
+                <option value="hybrid">综合检索</option>
+                <option value="hybrid_rerank">综合检索 + 精准排序</option>
+                <option value="dense">按意思检索</option>
+                <option value="bm25">按关键词检索</option>
               </select>
             </label>
             <label>
@@ -767,7 +771,7 @@ export function ChatPage() {
               <summary>高级设置</summary>
               <div className="advanced-settings-body">
                 <label className="switch-control" title="开启后，例外/冲突类问题会用人工确认过的制度关系补充证据；默认关闭">
-                  <span>受控关系扩展</span>
+                  <span>关联制度扩展</span>
                   <button
                     aria-pressed={graphEnabled}
                     className={graphEnabled ? "switch on" : "switch"}
@@ -777,16 +781,16 @@ export function ChatPage() {
                     <i />
                   </button>
                 </label>
-                <label title="2 跳用于版本继承/冲突来源追溯，速度稍慢；默认 1 跳">
-                  <span>关系跳数</span>
+                <label title="深入追溯用于版本变化与冲突来源追溯，速度稍慢；默认标准">
+                  <span>追溯深度</span>
                   <select
-                    aria-label="关系跳数"
+                    aria-label="追溯深度"
                     value={graphHops}
                     disabled={!graphEnabled}
                     onChange={(event) => setGraphHops(Number(event.target.value))}
                   >
-                    <option value={1}>1 跳（默认）</option>
-                    <option value={2}>2 跳（版本/冲突追溯）</option>
+                    <option value={1}>标准（默认）</option>
+                    <option value={2}>深入（追溯版本变化与冲突）</option>
                   </select>
                 </label>
                 <label title="按此日期判断制度是否生效/过期，用于版本与冲突判定">
@@ -823,8 +827,8 @@ export function ChatPage() {
             {turns.length === 0 ? (
               <div className="chat-intro">
                 <span className="intro-seal">可审计</span>
-                <h2>问一个会影响审批决定的问题。</h2>
-                <p>系统会区分现行版本、历史规则、例外条件与证据不足，而不是只返回相似文本。</p>
+                <h2>问一个和制度相关的问题。</h2>
+                <p>回答会区分现行版本、历史规则与例外情形，拿不准时会明确告诉你。</p>
                 <div className="quick-question-list">
                   {QUICK_QUESTIONS.map((item) => (
                     <button key={item} onClick={() => void submit(undefined, item)} type="button">
@@ -854,14 +858,17 @@ export function ChatPage() {
                           </span>
                         </>
                       ) : (
-                        /* U6：任意历史轮次都可以把证据链轨道定位到自己 */
+                        /* U6：任意历史轮次都可以把证据轨定位到自己（并自动展开折叠的证据轨） */
                         <button
                           className={activeTurnId === turn.id ? "answer-evidence-toggle active" : "answer-evidence-toggle"}
-                          onClick={() => setActiveTurnId((current) => (current === turn.id ? null : turn.id))}
+                          onClick={() => {
+                            setActiveTurnId((current) => (current === turn.id ? null : turn.id));
+                            setRailOpen(true);
+                          }}
                           type="button"
                           aria-pressed={activeTurnId === turn.id}
                         >
-                          {activeTurnId === turn.id ? "证据链已定位本轮" : "定位本轮证据链"}
+                          {activeTurnId === turn.id ? "正在查看本回答的证据" : "查看本回答的证据"}
                         </button>
                       )}
                     </div>
@@ -883,11 +890,19 @@ export function ChatPage() {
                     {turn.state === "complete" ? (
                       <div className="answer-meta-line">
                         {turn.elapsedMs != null ? <span>耗时 {(turn.elapsedMs / 1000).toFixed(1)}s</span> : null}
-                        {turn.usage && turn.usage.input_tokens != null ? <span>输入 {turn.usage.input_tokens} tokens</span> : null}
-                        {turn.usage && turn.usage.output_tokens != null ? <span>输出 {turn.usage.output_tokens} tokens</span> : null}
+                        {turn.usage && (turn.usage.input_tokens != null || turn.usage.output_tokens != null) ? (
+                          <details className="answer-usage-fold">
+                            <summary>本次用量</summary>
+                            <span>
+                              {turn.usage.input_tokens != null ? `输入 ${turn.usage.input_tokens} tokens` : ""}
+                              {turn.usage.input_tokens != null && turn.usage.output_tokens != null ? " · " : ""}
+                              {turn.usage.output_tokens != null ? `输出 ${turn.usage.output_tokens} tokens` : ""}
+                            </span>
+                          </details>
+                        ) : null}
                         {turn.degraded ? (
                           <span className="degraded-badge">
-                            <AlertTriangle size={12} /> 生成已降级：{turn.degraded}
+                            <AlertTriangle size={12} /> 回答质量已降低：{turn.degraded}
                           </span>
                         ) : null}
                       </div>
@@ -976,44 +991,49 @@ export function ChatPage() {
                 </button>
               ) : (
                 <button className="button primary" disabled={!question.trim()} type="submit">
-                  提交判断 <ArrowUp size={16} />
+                  提问 <ArrowUp size={16} />
                 </button>
               )}
             </div>
           </form>
         </section>
 
-        <aside className="evidence-rail" ref={railRef}>
+        <aside className={railOpen ? "evidence-rail" : "evidence-rail collapsed"} ref={railRef} aria-label="回答依据">
+          {railOpen ? (
+            <>
           <div className="rail-heading">
             <p className="eyebrow">证据链</p>
-            <h2>证据链轨道</h2>
-            {selectedTurn ? <p className="rail-pinned">已定位到所选轮次 · 再次点击该轮「定位本轮证据链」可返回最新</p> : null}
+            <h2>回答依据</h2>
+            {selectedTurn ? <p className="rail-pinned">已定位到所选轮次 · 再次点击该轮「查看本回答的证据」可返回最新</p> : null}
+            <button className="rail-collapse" onClick={() => setRailOpen(false)} type="button" aria-label="收起回答依据面板">
+              <PanelRightClose size={16} />
+            </button>
           </div>
 
           <div className="trace-steps">
-            <TraceStep label="范围与拒答检查" state={railSteps.scope} />
-            <TraceStep label="混合检索与筛选" state={railSteps.retrieval} />
-            <TraceStep label="依据约束下生成" state={railSteps.generation} last />
+            <TraceStep label="确认问题范围" state={railSteps.scope} />
+            <TraceStep label="查找相关制度" state={railSteps.retrieval} />
+            <TraceStep label="生成回答" state={railSteps.generation} last />
           </div>
 
           {/* I4：降级时给出显式横幅，说明降级原因，而不是静默改变行为 */}
           {railDegraded ? (
             <div className="rail-degraded" role="status">
               <AlertTriangle size={14} />
-              <span>本次生成已降级：{railDegraded}</span>
+              <span>本次回答质量已降低：{railDegraded}</span>
             </div>
           ) : null}
 
           <section className="rail-section route-section">
             <div className="rail-section-title">
               <Gauge size={16} />
-              <strong>检索路由</strong>
+              <strong>检索方式</strong>
               <span>{railRoute ? (railRoute.mode === "adaptive" ? "自动" : "手动") : "—"}</span>
             </div>
             {routeView ? (
               /* UI 审计 #4：路由决策细节默认折叠，仅保留一行摘要 */
               <details className="technical-details route-decision-fold">
-                <summary>{routeView.routeLabel} · {routeView.strategyLabel}{routeView.degraded ? " · 已降级" : ""}</summary>
+                <summary>{routeView.routeLabel} · {routeView.strategyLabel}{routeView.degraded ? " · 已降低质量" : ""}</summary>
                 <div className="route-decision-card">
                   <div className="route-decision-heading">
                     <strong>{routeView.routeLabel}</strong>
@@ -1024,20 +1044,20 @@ export function ChatPage() {
                   <small>检索路径：{routeView.strategyLabel}</small>
                   {routeView.degraded ? (
                     <div className="route-decision-tags">
-                      <span>已降级</span>
+                      <span>已降低质量</span>
                     </div>
                   ) : null}
                 </div>
               </details>
             ) : (
-              <p className="rail-placeholder">提交问题后，系统会说明为何选择当前检索成本与证据路径。</p>
+              <p className="rail-placeholder">提交问题后，这里会说明系统用了哪种检索方式。</p>
             )}
           </section>
 
           <section className="rail-section">
             <div className="rail-section-title">
               <BookOpenCheck size={16} />
-              <strong>引用原文</strong>
+              <strong>引用来源</strong>
               <span>{railCitations.length}</span>
             </div>
             {railCitations.length ? (
@@ -1055,12 +1075,12 @@ export function ChatPage() {
                             {validity.label}
                           </span>
                         </div>
-                        <small>{citation.section_path || "Document body"}</small>
+                        <small>{citation.section_path || "正文"}</small>
                         {citation.policy_key || citation.document_version || citation.effective_from ? (
                           <span className="citation-policy-meta">
                             {citation.policy_key ? `${citation.policy_key} · ` : ""}
-                            {citation.document_version ? `V${citation.document_version}` : "Version unregistered"}
-                            {citation.effective_from ? ` · Effective from ${citation.effective_from}` : ""}
+                            {citation.document_version ? `V${citation.document_version}` : "版本未登记"}
+                            {citation.effective_from ? ` · 生效日期：${citation.effective_from}` : ""}
                           </span>
                         ) : null}
                         <p>{citation.excerpt}</p>
@@ -1070,7 +1090,7 @@ export function ChatPage() {
                 })}
               </ol>
             ) : railResultState === "out_of_scope" ? (
-              <p className="rail-placeholder">问题已被范围检查拦截，因此没有引用原文。</p>
+              <p className="rail-placeholder">这个问题不在制度范围内，已停止回答。</p>
             ) : railResultState === "permission_denied" ? (
               <p className="rail-placeholder"><ShieldQuestion size={14} /> 你当前的账号权限看不到相关制度，因此没有任何引用。请联系管理员开通对应工作区/部门。</p>
             ) : railResultState === "insufficient_evidence" ? (
@@ -1082,7 +1102,7 @@ export function ChatPage() {
             ) : railResultState === "aborted" ? (
               <p className="rail-placeholder">本次生成已手动中止，未产生完整引用。可回到对话重新提交。</p>
             ) : (
-              <p className="rail-placeholder">回答完成后，这里会显示实际引用，而不是预设示例。</p>
+              <p className="rail-placeholder">提交问题后，这里会显示实际引用的制度。</p>
             )}
           </section>
 
@@ -1093,7 +1113,7 @@ export function ChatPage() {
                 <strong>有效版本冲突</strong>
                 <span>{conflictItems.length}</span>
               </div>
-              <p className="conflict-guidance">系统已停止生成。请制度责任人确认查询日期应适用的唯一版本。</p>
+              <p className="conflict-guidance">多个版本的规则可能同时适用，已暂停回答。请确认按哪个版本判断。</p>
               <div className="conflict-list">
                 {conflictItems.map((item) => (
                   <article className="conflict-item" key={item.key}>
@@ -1126,7 +1146,7 @@ export function ChatPage() {
           <section className="rail-section">
             <div className="rail-section-title">
               <GitBranch size={16} />
-              <strong>确认关系</strong>
+              <strong>关联制度</strong>
               <span>{railTrace?.graph_links.length || 0}</span>
             </div>
             {railTrace?.graph_links.length ? (
@@ -1141,7 +1161,7 @@ export function ChatPage() {
                 ))}
               </div>
             ) : (
-              <p className="rail-placeholder">只有 confirmed 关系会出现在这里并参与一跳扩展。</p>
+              <p className="rail-placeholder">这里只显示已确认的关联制度，可用来扩展检索范围。</p>
             )}
           </section>
 
@@ -1157,10 +1177,23 @@ export function ChatPage() {
                 {railUsage.input_tokens != null ? `输入 ${railUsage.input_tokens} tokens` : ""}
                 {railUsage.input_tokens != null && railUsage.output_tokens != null ? " · " : ""}
                 {railUsage.output_tokens != null ? `输出 ${railUsage.output_tokens} tokens` : ""}
-                {railUsage.usage_source === "unavailable" ? "（Provider 未上报用量）" : ""}
+                {railUsage.usage_source === "unavailable" ? "（模型服务未上报用量）" : ""}
               </p>
             </section>
           ) : null}
+            </>
+          ) : (
+            <button
+              className="rail-collapsed-toggle"
+              onClick={() => setRailOpen(true)}
+              type="button"
+              aria-label="展开回答依据面板"
+            >
+              <BookOpenCheck size={16} />
+              <span>回答依据</span>
+              {railCitations.length ? <em>{railCitations.length}</em> : null}
+            </button>
+          )}
         </aside>
       </div>
     </div>
@@ -1200,7 +1233,7 @@ function VersionWarning({ citations, asOf }: { citations: Citation[]; asOf?: str
         <AlertTriangle size={16} />
         <div>
           <strong>
-            本回答引用了 {stale.length} 条非现行有效的制度版本，采纳前请核实现行版本。
+            {stale.length} 条引用来自已失效或已更新的制度版本，采纳前请核对现行版本。
           </strong>
           <ul>
             {stale.map(({ citation, validity }) => (

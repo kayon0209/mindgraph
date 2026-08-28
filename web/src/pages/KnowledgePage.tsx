@@ -4,7 +4,7 @@ import { BookMarked, ChevronLeft, ChevronRight, FileText, Search, Sparkles, Uplo
 import { ContextHint, EmptyState, ErrorState, LoadingState, MetricCard, PageHeader, StatusPill } from "../components/Primitives";
 import { PolicyGovernance } from "../components/PolicyGovernance";
 import { api } from "../lib/api";
-import { relationTypeColor, relationTypeLabel } from "../lib/graph-meta";
+import { categoryLabel, relationTypeColor, relationTypeLabel } from "../lib/graph-meta";
 import type { EvaluationResponse, NoteDetail, NoteItem } from "../types";
 
 /** U2：台账分页——后端 notes 接口支持 offset/limit，前端不再一次性拉全量 */
@@ -157,8 +157,8 @@ export function KnowledgePage() {
     <div className="page knowledge-page">
       <PageHeader
         eyebrow="制度台账与版本"
-        title="制度不是文件堆，是有状态的台账"
-        description="查看真实同步状态、分块数量与已确认关系。索引数字直接来自当前激活 manifest。"
+        title="制度台账"
+        description="查看已同步的制度文件与状态。数据实时来自最新索引。"
         actions={
           <form className="search-box" onSubmit={search}>
             <Search size={17} />
@@ -175,7 +175,7 @@ export function KnowledgePage() {
       />
 
       <ContextHint storageKey="mindgraph.hint.knowledge">
-        台账数字实时来自数据库与当前激活索引 manifest，不是静态占位。点击任意一行可查看制度档案与已确认关系；「当前索引」一行可核对索引版本与构建时间。
+        数据实时来自最新索引，不是示例。点击任意一行可查看制度档案与关联关系。
       </ContextHint>
 
       {/* 材料上传与融合（阶段A需求3）：.md 上传 → 自动增量重建 → 引导融入图谱（HITL） */}
@@ -197,8 +197,8 @@ export function KnowledgePage() {
         >
           <UploadCloud size={22} />
           <div>
-            <strong>上传 .md 材料</strong>
-            <span>点击选择或拖拽 Markdown 文件到此处；上传后自动增量重建索引（后端仅接收 .md）</span>
+            <strong>上传制度文件</strong>
+            <span>点击选择或拖拽 .md 文件到此处，上传后自动更新检索。</span>
           </div>
           <input
             ref={fileInputRef}
@@ -220,7 +220,7 @@ export function KnowledgePage() {
             ) : null}
             {upload.phase === "done" ? (
               <button className="button secondary small" onClick={() => void fuseIntoGraph()} type="button">
-                <Sparkles size={14} /> 融入图谱（发现候选关系）
+                <Sparkles size={14} /> 发现关联关系
               </button>
             ) : null}
             {upload.phase === "extracted" ? (
@@ -238,17 +238,16 @@ export function KnowledgePage() {
       </section>
 
       <div className="metrics-grid reveal reveal-2">
-        <MetricCard label="已同步制度" note="notes 表真实数量" value={total} />
-        <MetricCard label="已进入当前索引" note={statsUnavailable ? "评测看板暂不可用，展示台账主数据" : "读取 CURRENT manifest"} value={stats?.indexed_notes ?? "—"} />
-        <MetricCard label="有效分块" note={statsUnavailable ? "评测看板暂不可用，展示台账主数据" : "当前索引版本"} value={stats?.chunks_total ?? "—"} />
-        <MetricCard label="已确认关系" note="可参与一跳扩展" value={stats?.relations_confirmed ?? "—"} />
+        <MetricCard label="已入库制度" note="文件总数" value={total} />
+        <MetricCard label="可被检索" note={statsUnavailable ? "评测看板暂不可用，展示台账主数据" : "实时索引状态"} value={stats?.indexed_notes ?? "—"} />
+        <MetricCard label="已整理内容段" note={statsUnavailable ? "评测看板暂不可用，展示台账主数据" : "可检索的段落数"} value={stats?.chunks_total ?? "—"} />
+        <MetricCard label="已确认关联" note="可用于扩展检索" value={stats?.relations_confirmed ?? "—"} />
       </div>
 
       {/* P1：索引新鲜度——用户能直接判断"答案依据的是哪一版索引、什么时候建的" */}
-      {stats?.index_version ? (
+      {stats?.index_built_at ? (
         <p className="index-freshness reveal reveal-2">
-          当前索引 <code>{stats.index_version}</code>
-          {stats.index_built_at ? <span> · 构建于 {new Date(stats.index_built_at).toLocaleString("zh-CN")}</span> : null}
+          数据更新时间：{new Date(stats.index_built_at).toLocaleString("zh-CN")}
         </p>
       ) : null}
 
@@ -279,7 +278,7 @@ export function KnowledgePage() {
                   <strong>{note.title}</strong>
                   <small>{note.vault_path}</small>
                 </span>
-                <span className="note-category">{note.category}</span>
+                <span className="note-category">{categoryLabel(note.category)}</span>
                 <PolicyGovernance compact value={note.governance} />
                 <StatusPill value={note.status} />
                 <ChevronRight size={17} />
@@ -324,13 +323,13 @@ export function KnowledgePage() {
             <h2>{selected.title}</h2>
             <p className="drawer-path">{selected.vault_path}</p>
             <div className="drawer-metadata">
-              <span><small>制度族标识</small><strong>{selected.governance.policy_key || "未设置"}</strong></span>
+              <span><small>制度编号</small><strong>{selected.governance.policy_key || "未设置"}</strong></span>
               <span><small>责任部门</small><strong>{selected.governance.owner || "未设置"}</strong></span>
               <span><small>制度版本</small><strong>{selected.governance.version ? `V${selected.governance.version}` : "未设置"}</strong></span>
               <span><small>制度状态</small><PolicyGovernance compact value={selected.governance} /></span>
               <span><small>生效区间</small><strong>{selected.governance.effective_from || "未设置"}<br />— {selected.governance.effective_to || "长期有效"}</strong></span>
-              <span><small>索引状态</small><StatusPill value={selected.status} /></span>
-              <span><small>访问级别 / 分块</small><strong>{selected.access_level} · {selected.chunk_count}</strong></span>
+              <span><small>数据状态</small><StatusPill value={selected.status} /></span>
+              <span><small>可见范围 / 内容段数</small><strong>{selected.access_level} · {selected.chunk_count}</strong></span>
             </div>
 
             <PolicyGovernance value={selected.governance} />
@@ -338,7 +337,7 @@ export function KnowledgePage() {
             <section className="drawer-section">
               <div className="drawer-section-title"><BookMarked size={17} /> 已确认关系</div>
               {selected.outgoing_relations.length + selected.incoming_relations.length === 0 ? (
-                <p className="rail-placeholder">当前文档没有 confirmed 关系。</p>
+                <p className="rail-placeholder">当前制度还没有已确认的关联关系。</p>
               ) : (
                 <div className="relation-mini-list">
                   {selected.outgoing_relations.map((relation) => (

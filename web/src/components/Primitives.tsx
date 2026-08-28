@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { AlertTriangle, Inbox, Lightbulb, LoaderCircle, X } from "lucide-react";
+import { AlertTriangle, Inbox, LoaderCircle, X } from "lucide-react";
 
 export function PageHeader({
   eyebrow,
@@ -130,7 +130,6 @@ export function ContextHint({ storageKey, children }: { storageKey: string; chil
   };
   return (
     <div className="context-hint" role="note">
-      <Lightbulb size={16} />
       <p>{children}</p>
       <button className="context-hint-dismiss" onClick={dismiss} type="button" aria-label="关闭提示">
         <X size={14} />

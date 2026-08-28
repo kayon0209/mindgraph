@@ -379,8 +379,8 @@ export function GraphPage() {
       <div className="page graph-page">
         <PageHeader
           eyebrow="制度知识图谱"
-          title="图谱是确认出来的，不是画出来的"
-          description="节点=台账制度，边=人工确认过的制度关系。滚轮缩放、拖拽平移、点节点看档案与双向链接。"
+          title="制度关系图谱"
+          description="每个节点是一份制度，连线表示人工确认过的关联。滚轮缩放，拖拽平移，点击节点查看详情。"
         />
         <EmptyState title="还没有图谱数据" detail="请先在「制度台账」上传或同步制度材料，确认关系后这里才会出现节点与边。" />
       </div>
@@ -396,22 +396,22 @@ export function GraphPage() {
     <div className="page graph-page">
       <PageHeader
         eyebrow="制度知识图谱"
-        title="图谱是确认出来的，不是画出来的"
-        description="节点=台账制度，边=人工确认过的制度关系。滚轮缩放、拖拽平移、点节点看档案与双向链接；待审关系仅虚线展示，不参与检索。"
+        title="制度关系图谱"
+        description="每个节点是一份制度，连线表示人工确认过的关联。滚轮缩放，拖拽平移，点击节点查看详情。"
       />
 
       <ContextHint storageKey="mindgraph.hint.graph">
-        图谱默认关闭的是「检索时图路由」（ADR-002），本页只做可视化与数据积累。待审关系（虚线）来自相似度发现与问题挖掘，必须在「关系审核」确认后才会成为实线并具备进入一跳扩展的资格。
+        虚线表示待确认的候选关系，到「关系审核」确认后才会成为正式关系。
       </ContextHint>
 
       <div className="graph-toolbar reveal reveal-2">
         <div className="graph-counts" aria-live="polite">
-          <span><strong>{data.notes.length}</strong> 节点</span>
+          <span><strong>{data.notes.length}</strong> 份制度</span>
           <span><strong>{data.confirmed.length}</strong> 已确认关系</span>
           {showProposed ? <span className="graph-counts-proposed"><strong>{data.proposed.length}</strong> 待审（虚线）</span> : null}
         </div>
-        <label className="switch-control graph-switch" title="待审关系仅可视化展示，不参与检索；确认后才入图">
-          <span>显示待审关系</span>
+        <label className="switch-control graph-switch" title="候选关系仅可视化展示，不参与检索；确认后才入图">
+          <span>显示候选关系</span>
           <button
             aria-pressed={showProposed}
             className={showProposed ? "switch on" : "switch"}
@@ -422,14 +422,14 @@ export function GraphPage() {
           </button>
         </label>
         <div className="graph-toolbar-actions">
-          <button className="button ghost small" disabled={mineBusy} onClick={() => void runMine()} type="button" title="从历史提问中规则式挖掘概念共现，只产待审关系">
-            <Sparkles size={14} /> {mineBusy ? "挖掘中…" : "挖掘问题概念"}
+          <button className="button ghost small" disabled={mineBusy} onClick={() => void runMine()} type="button" title="从历史提问中发现可能相关的制度">
+            <Sparkles size={14} /> {mineBusy ? "分析中…" : "发现新关系"}
           </button>
           <button className="button ghost small" onClick={resetLayout} type="button">
             <RefreshCw size={14} /> 重置布局
           </button>
           <button className="button ghost small" onClick={fitView} type="button">
-            <Maximize size={14} /> 适配视图
+            <Maximize size={14} /> 居中显示
           </button>
           <button className="button ghost small" onClick={() => void load(false)} type="button">
             <RefreshCw size={14} /> 刷新
@@ -443,7 +443,7 @@ export function GraphPage() {
         <div className="graph-canvas" ref={canvasRef}>
           {data.confirmed.length === 0 ? (
             <div className="graph-empty-banner" role="note">
-              <p>还没有已确认关系，图谱暂时只有孤立节点。可先在「关系审核」确认候选，或运行离线关系抽取生成候选。</p>
+              <p>还没有已确认的关联关系，图谱目前只有单独的制度。可到「关系审核」确认候选关系。</p>
               <button className="button secondary small" onClick={() => { window.location.hash = "#/relations"; }} type="button">
                 去关系审核
               </button>
@@ -522,7 +522,7 @@ export function GraphPage() {
                       onPointerUp={(event) => onNodePointerUp(event, node)}
                       onPointerCancel={(event) => onNodePointerUp(event, node)}
                     >
-                      <title>{`${node.title} · ${categoryLabel(node.category)} · 已确认关系 ${node.degree}`}</title>
+                      <title>{`${node.title} · ${categoryLabel(node.category)} · 关联数 ${node.degree}`}</title>
                     </circle>
                     <text className="graph-node-label" textAnchor="middle" y={r + 14}>
                       {truncateLabel(node.title)}
@@ -541,7 +541,7 @@ export function GraphPage() {
             ))}
             <span className="graph-legend-item">
               <i className="graph-legend-line" />
-              待审关系（虚线）
+              候选关系（虚线）
             </span>
           </div>
         </div>
@@ -550,7 +550,7 @@ export function GraphPage() {
           {selectedId === null ? (
             <div className="graph-detail-placeholder">
               <Network size={22} />
-              <p>点击节点查看制度档案与双向链接</p>
+              <p>点击节点查看制度详情与关联关系</p>
             </div>
           ) : detailLoading ? (
             <LoadingState label="读取制度档案" />
@@ -572,15 +572,15 @@ export function GraphPage() {
               <div className="graph-detail-meta">
                 <span><small>版本</small><strong>{detail.governance.version ? `V${detail.governance.version}` : "未设置"}</strong></span>
                 <span><small>责任人</small><strong>{detail.governance.owner || "未设置"}</strong></span>
-                <span><small>制度状态</small><strong>{detail.governance.policy_status || "unspecified"}</strong></span>
+                <span><small>制度状态</small><strong>{detail.governance.policy_status && detail.governance.policy_status !== "unspecified" ? detail.governance.policy_status : "未设置"}</strong></span>
                 <span><small>生效区间</small><strong>{detail.governance.effective_from || "未设置"} — {detail.governance.effective_to || "长期"}</strong></span>
               </div>
               <section className="graph-detail-links">
                 <div className="drawer-section-title">
-                  <BookMarked size={16} /> 双向链接（{detail.outgoing_relations.length + detail.incoming_relations.length}）
+                  <BookMarked size={16} /> 关联关系（{detail.outgoing_relations.length + detail.incoming_relations.length}）
                 </div>
                 {detail.outgoing_relations.length + detail.incoming_relations.length === 0 ? (
-                  <p className="rail-placeholder">当前文档没有 confirmed 关系。</p>
+                  <p className="rail-placeholder">当前制度还没有已确认的关联关系。</p>
                 ) : (
                   <div className="graph-link-list">
                     {detail.outgoing_relations.map((relation) => (

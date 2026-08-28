@@ -371,12 +371,17 @@ h2,
   height: calc(100vh - 240px);
   min-height: 600px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(300px, 365px);
+  /* 证据轨默认折叠为 52px 窄边栏；展开态由 .rail-open 恢复宽轨 */
+  grid-template-columns: minmax(0, 1fr) 52px;
   border: 1px solid var(--line-dark);
   border-radius: var(--radius-lg);
   background: var(--paper-bright);
   box-shadow: var(--shadow);
   overflow: hidden;
+}
+
+.chat-layout.rail-open {
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 365px);
 }
 
 .conversation-panel {
@@ -643,9 +648,74 @@ h2,
   overflow-y: auto;
 }
 
+/* 折叠态：整轨收成一条可点击的窄边栏 */
+.evidence-rail.collapsed {
+  padding: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.rail-collapsed-toggle {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border: 0;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+  writing-mode: vertical-rl;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+}
+
+.rail-collapsed-toggle:hover {
+  background: rgb(29 28 23 / 6%);
+  color: var(--ink);
+}
+
+.rail-collapsed-toggle em {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 10px;
+  background: var(--amber);
+  color: #fff7ee;
+  font: 700 10px/1 "IBM Plex Mono", monospace;
+  font-style: normal;
+}
+
 .rail-heading {
+  position: relative;
   padding-left: 22px;
   margin-bottom: 27px;
+}
+
+.rail-collapse {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.rail-collapse:hover {
+  background: rgb(29 28 23 / 8%);
+  color: var(--ink);
 }
 
 .rail-heading h2 {
@@ -990,21 +1060,25 @@ h2,
   border-color: var(--ink);
 }
 
+/* 指标卡三层视觉拉齐：值仍是主角，标签与说明按 13px/11px 阶梯递进，
+   说明从 9px 提到可读尺寸，颜色加深一档 */
 .metric-value {
-  margin-bottom: 14px;
+  margin-bottom: 10px;
   font-size: clamp(27px, 3vw, 40px);
   line-height: 1;
 }
 
 .metric-label {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
+  line-height: 1.4;
 }
 
 .metric-note {
-  margin-top: 5px;
-  color: #8c877d;
-  font-size: 9px;
+  margin-top: 6px;
+  color: #77736b;
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .metric-card:first-child .metric-note {
@@ -1527,6 +1601,20 @@ h2,
   font-size: 11px;
 }
 
+/* 横向滚动时策略列保持可见 */
+.run-table th:first-child,
+.run-table td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: #f7f4ec;
+}
+
+.run-table th:first-child {
+  z-index: 2;
+  background: #efebe2;
+}
+
 .run-table th,
 .run-table td {
   padding: 13px 16px;
@@ -1540,6 +1628,12 @@ h2,
   background: #efebe2;
   font-size: 9px;
   letter-spacing: 0.08em;
+}
+
+.runs-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .evaluation-notes {
@@ -1848,7 +1942,8 @@ h2,
 }
 
 @media (max-width: 920px) {
-  .chat-layout {
+  .chat-layout,
+  .chat-layout.rail-open {
     grid-template-columns: 1fr;
   }
 
@@ -1858,6 +1953,14 @@ h2,
 
   .evidence-rail {
     border-top: 1px solid var(--line);
+  }
+
+  /* 折叠态窄条在移动端改为横向一条 */
+  .rail-collapsed-toggle {
+    flex-direction: row;
+    min-height: 44px;
+    writing-mode: horizontal-tb;
+    letter-spacing: 0.06em;
   }
 
   .metrics-grid,
@@ -2312,6 +2415,23 @@ h2,
   gap: 4px;
 }
 
+/* token 用量折叠：默认只露「本次用量」一词，点开才见数字 */
+.answer-usage-fold {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.answer-usage-fold summary {
+  cursor: pointer;
+  list-style: none;
+  border-bottom: 1px dashed var(--line-dark);
+}
+
+.answer-usage-fold summary::-webkit-details-marker {
+  display: none;
+}
+
 /* I4：降级徽标与轨道横幅 */
 .degraded-badge {
   color: var(--amber);
@@ -2447,30 +2567,26 @@ h2,
   font-size: 12.5px;
 }
 
-/* I1：视图上下文提示 */
+/* I1：视图上下文提示——收口为左侧细色条 + 一行字 + 可关闭，
+   不再是每页顶部一条满版虚线框（全站最重的视觉噪音） */
 .context-hint {
   display: flex;
-  align-items: flex-start;
-  gap: 9px;
+  align-items: center;
+  gap: 8px;
   margin: 0 0 16px;
-  padding: 10px 14px;
-  border: 1px dashed var(--line-dark);
-  border-radius: var(--radius-md);
-  background: rgb(255 253 248 / 60%);
+  padding: 7px 10px 7px 13px;
+  border-left: 3px solid var(--amber);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: rgb(255 253 248 / 42%);
   font-size: 12.5px;
-  line-height: 1.6;
+  line-height: 1.55;
   color: var(--ink-soft);
-}
-
-.context-hint svg {
-  flex-shrink: 0;
-  margin-top: 3px;
-  color: var(--amber);
 }
 
 .context-hint p {
   margin: 0;
   flex: 1;
+  min-width: 0;
 }
 
 .context-hint-dismiss {
