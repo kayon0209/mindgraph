@@ -13,14 +13,14 @@
 """
 from __future__ import annotations
 
+from datetime import UTC, datetime
 import json
 import logging
 import os
 import sys
 import time
-import uuid
-from datetime import datetime, timezone
 from typing import Any
+import uuid
 
 from api.dependencies import get_container
 from application.access_control import (
@@ -49,7 +49,7 @@ class MCPAuthenticationRequired(PermissionError):
 
 
 def _utc_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class MCPToolDeadlineExceeded(TimeoutError):
@@ -67,8 +67,23 @@ def _deadline_remaining(deadline: float | None = None) -> float:
     return deadline - time.monotonic()
 
 
+def _assist_mcp_enabled() -> bool:
+    """Assist MCP 工具开关（默认关；启动期读 .env，运行时经 get_settings 缓存）。"""
+    from infrastructure.settings import get_settings
+
+    return bool(get_settings().ASSIST_MCP_ENABLED)
+
+
+def _assist_max_top_k() -> int:
+    """Assist 通道的 top_k 上限（单一数据源：settings.ASSIST_MAX_TOP_K）。"""
+    from infrastructure.settings import get_settings
+
+    value = get_settings().ASSIST_MAX_TOP_K
+    return max(1, int(value))
+
+
 def _tools() -> list[dict[str, Any]]:
-    return [
+    tools = [
         {
             "name": "mindgraph_list_notes",
             "description": "列出当前主体有权访问的笔记（台账）。按 workspace/department ACL 裁剪。",
@@ -122,6 +137,29 @@ def _tools() -> list[dict[str, Any]]:
             },
         },
     ]
+    # M1：Assist 只读工具（默认关闭，见 settings.ASSIST_MCP_ENABLED）——
+    # 复用同一应用服务，审计/ACL 与 REST Assist 一致。
+    if _assist_mcp_enabled():
+        tools.append({
+            "name": "mindgraph_assist",
+            "description": "受治理的只读问答（Assist）：复用与 /assist 相同的应用服务，返回机器可判定 verdict。不写回任何数据。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "question": {"type": "string", "minLength": 1, "maxLength": 2000},
+                    "retrieval_strategy": {
+                        "type": "string", "default": "auto",
+                        "enum": ["auto", "dense", "bm25", "hybrid", "hybrid_rerank"],
+                    },
+                    "final_top_k": {"type": "integer", "default": 5, "minimum": 1, "maximum": _assist_max_top_k()},
+                    "query_date": {"type": "string", "description": "YYYY-MM-DD；缺省按今天判定版本时效"},
+                    "include_historical": {"type": "boolean", "default": False},
+                },
+                "required": ["question"],
+                "additionalProperties": False,
+            },
+        })
+    return tools
 
 
 def _validate_tool_arguments(name: object, arguments: object) -> tuple[str, dict[str, Any]]:
@@ -342,6 +380,54 @@ def _call_tool(
                 break
         _audit("mcp_list_relations", "note_relations/confirmed", "allow", {"count": len(items)})
         return {"relations": items}
+
+    if name == "mindgraph_assist":
+        # flag 双重校验：工具列表已按 ASSIST_MCP_ENABLED 过滤，调用侧再校验一次
+        # （fail-closed：即使绕过 tools/list 直呼，未开启也拒绝执行）。
+        if not _assist_mcp_enabled():
+            raise ValueError(f"Unknown tool: {name}")
+        if _deadline_remaining(deadline) <= 0:
+            raise MCPToolDeadlineExceeded
+        from domain.models import ChatRequest
+
+        question = arguments.get("question") or ""
+        if not question.strip():
+            raise InvalidToolArguments
+        request = ChatRequest(
+            question=question,
+            retrieval_strategy=arguments.get("retrieval_strategy") or "auto",
+            final_top_k=min(max(int(arguments.get("final_top_k", 5)), 1), _assist_max_top_k()),
+            query_date=arguments.get("query_date"),
+            include_historical=bool(arguments.get("include_historical", False)),
+        )
+        container = get_container()
+        chat_service = getattr(container, "mindgraph_chat", None)
+        if chat_service is None:
+            raise ValueError(f"Unknown tool: {name}")
+        result = chat_service.answer(request, access_scope=scope)
+        _audit(
+            "mcp_assist",
+            "assist",
+            "allow",
+            {
+                "scope_user": (scope or {}).get("user"),
+                "result_state": result.result_state.value,
+                "verdict": result.error_code.value if result.error_code else result.result_state.value,
+                "citations": len(result.citations),
+            },
+        )
+        return {
+            "request_id": result.request_id,
+            "verdict": result.error_code.value if result.error_code else result.result_state.value,
+            "result_state": result.result_state.value,
+            "question": result.question,
+            "answer": result.answer,
+            "citations": [item.model_dump(mode="json") for item in result.citations],
+            "degraded": result.degraded,
+            "model": result.model,
+            "actual_strategy": result.actual_strategy,
+            "index_version": result.index_version,
+        }
 
     raise ValueError(f"Unknown tool: {name}")
 

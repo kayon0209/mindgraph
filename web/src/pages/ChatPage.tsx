@@ -23,7 +23,7 @@ import {
 
 import { AnswerBody } from "../components/AnswerBody";
 import { api, streamChat } from "../lib/api";
-import { citationValidity, summarizeCitationValidity } from "../lib/citation-status";
+import { citationValidity, fidelityMissingMarks as citationFidelityMarks, summarizeCitationValidity } from "../lib/citation-status";
 import { buildEvidenceMarkdown, downloadTextFile, evidenceFilename } from "../lib/export-evidence";
 import { completionGenerationState, completionViewState, policyConflictItems } from "../lib/policy-conflicts";
 import { routeDecisionView } from "../lib/route-decision";
@@ -46,6 +46,8 @@ type Turn = {
   steps?: Record<string, StepState>;
   usage?: UsageInfo | null;
   degraded?: string | null;
+  /** M0 契约基线：回答中 [citation-N] 是否全部命中本次引用集（true/false/null=不可判定） */
+  citationFidelity?: boolean | null;
   elapsedMs?: number;
   /** 版本时效判定所需的查询日期（缺省按今天）与轮次创建时间 */
   queryDate?: string;
@@ -86,7 +88,6 @@ function normalizeRestoredTurns(turns: Turn[]): Turn[] {
       : turn,
   );
 }
-
 function randomId(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID();
@@ -231,6 +232,7 @@ export function ChatPage() {
   const [trace, setTrace] = useState<RetrievalTrace | null>(null);
   const [routeDecision, setRouteDecision] = useState<RouteDecision | null>(null);
   const [resultState, setResultState] = useState<string | null>(null);
+  const [citationFidelity, setCitationFidelity] = useState<boolean | null>(null);
   const [steps, setSteps] = useState(INITIAL_STEPS);
   const [running, setRunning] = useState(false);
   // I5：展示本次生成的 token 用量；I4：降级原因可见
@@ -408,6 +410,7 @@ export function ChatPage() {
         trace: result.retrieval_trace || null,
         route: result.retrieval_trace?.route_decision || null,
         resultState: completionViewState(result),
+        citationFidelity: typeof result.citation_fidelity === "boolean" ? result.citation_fidelity : null,
         steps: finalSteps,
         usage: usageRef.current,
         degraded: degradedRef.current ?? (result.degraded ? result.degradation_reason || "已降级" : null),
@@ -419,6 +422,7 @@ export function ChatPage() {
       setTrace(result.retrieval_trace || null);
       setRouteDecision(result.retrieval_trace?.route_decision || null);
       setResultState(completionViewState(result));
+      setCitationFidelity(typeof result.citation_fidelity === "boolean" ? result.citation_fidelity : null);
       setSteps(finalSteps);
     }
     if (event.event === "error") {
@@ -449,6 +453,7 @@ export function ChatPage() {
   const railResultState = selectedTurn ? selectedTurn.resultState ?? null : resultState;
   const railUsage = selectedTurn ? selectedTurn.usage ?? null : usage;
   const railDegraded = selectedTurn ? selectedTurn.degraded ?? null : degradedReason;
+  const railFidelity = selectedTurn ? selectedTurn.citationFidelity ?? null : citationFidelity;
   const conflictItems = policyConflictItems(railTrace);
   const routeView = railRoute ? routeDecisionView(railRoute) : null;
   // 研究项②：版本时效判定基准日——所选轮次的查询日期，未选时跟随当前设置
@@ -461,6 +466,7 @@ export function ChatPage() {
     setTrace(last?.trace ?? null);
     setRouteDecision(last?.route ?? null);
     setResultState(last?.resultState ?? null);
+    setCitationFidelity(last?.citationFidelity ?? null);
     setSteps(last?.steps ?? INITIAL_STEPS);
     setUsage(last?.usage ?? null);
     setDegradedReason(last?.degraded ?? null);
@@ -665,9 +671,10 @@ export function ChatPage() {
   return (
     <div className="page chat-page">
       <PageHeader
-        eyebrow="基于制度证据的问答"
         title="可信问答"
         description="基于制度内容回答问题，每个回答都会标注来源，方便追溯。"
+        eyebrow="提问 · 治理式问答"
+        meta={["可直接开始提问，或按 / 快速聚焦", "回答带来源与版本，可一键导出证据"]}
       />
 
       <div className={railOpen ? "chat-layout rail-open reveal reveal-2" : "chat-layout reveal reveal-2"}>
@@ -887,9 +894,19 @@ export function ChatPage() {
                     {turn.state === "complete" && (turn.citations?.length ?? 0) > 0 ? (
                       <VersionWarning asOf={turn.queryDate} citations={turn.citations ?? []} />
                     ) : null}
+                    {/* M0：确定性引用保真核验——回答标注全部命中本次引用集才通过；
+                        warning-first：不阻断，只在失真时给出可行动警示 */}
+                    {turn.state === "complete" && turn.citationFidelity === false ? (
+                      <FidelityWarning turn={turn} />
+                    ) : null}
                     {turn.state === "complete" ? (
                       <div className="answer-meta-line">
                         {turn.elapsedMs != null ? <span>耗时 {(turn.elapsedMs / 1000).toFixed(1)}s</span> : null}
+                        {turn.citationFidelity === true ? (
+                          <span className="fidelity-ok" title="回答中的引用标注全部命中本次返回的证据">
+                            <Check size={13} /> 引用标注已核验
+                          </span>
+                        ) : null}
                         {turn.usage && (turn.usage.input_tokens != null || turn.usage.output_tokens != null) ? (
                           <details className="answer-usage-fold">
                             <summary>本次用量</summary>
@@ -1002,7 +1019,6 @@ export function ChatPage() {
           {railOpen ? (
             <>
           <div className="rail-heading">
-            <p className="eyebrow">证据链</p>
             <h2>回答依据</h2>
             {selectedTurn ? <p className="rail-pinned">已定位到所选轮次 · 再次点击该轮「查看本回答的证据」可返回最新</p> : null}
             <button className="rail-collapse" onClick={() => setRailOpen(false)} type="button" aria-label="收起回答依据面板">
@@ -1061,35 +1077,42 @@ export function ChatPage() {
               <span>{railCitations.length}</span>
             </div>
             {railCitations.length ? (
-              <ol className="citation-list">
-                {railCitations.map((citation) => {
-                  const validity = citationValidity(citation, railAsOf);
-                  return (
-                    <li data-citation-rank={citation.final_rank} key={citation.citation_id}>
-                      <span className="citation-rank">{citation.final_rank}</span>
-                      <div>
-                        <div className="citation-heading-row">
-                          <strong>{citation.document_name}</strong>
-                          {/* Research item ②: validity badge on the evidence card (current / draft / expired / unregistered) */}
-                          <span className={`citation-validity-pill ${validity.level}`} title={validity.detail}>
-                            {validity.label}
-                          </span>
-                        </div>
-                        <small>{citation.section_path || "正文"}</small>
-                        {citation.policy_key || citation.document_version || citation.effective_from ? (
-                          <span className="citation-policy-meta">
-                            {citation.policy_key ? `${citation.policy_key} · ` : ""}
-                            {citation.document_version ? `V${citation.document_version}` : "版本未登记"}
-                            {citation.effective_from ? ` · 生效日期：${citation.effective_from}` : ""}
-                          </span>
-                        ) : null}
-                        <p>{citation.excerpt}</p>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ol>
-            ) : railResultState === "out_of_scope" ? (
+                <>
+                  <ol className="citation-list">
+                    {railCitations.map((citation) => {
+                      const validity = citationValidity(citation, railAsOf);
+                      return (
+                        <li data-citation-rank={citation.final_rank} key={citation.citation_id}>
+                          <span className="citation-rank">{citation.final_rank}</span>
+                          <div>
+                            <div className="citation-heading-row">
+                              <strong>{citation.document_name}</strong>
+                              {/* Research item ②: validity badge on the evidence card (current / draft / expired / unregistered) */}
+                              <span className={`citation-validity-pill ${validity.level}`} title={validity.detail}>
+                                {validity.label}
+                              </span>
+                            </div>
+                            <small>{citation.section_path || "正文"}</small>
+                            {citation.policy_key || citation.document_version || citation.effective_from ? (
+                              <span className="citation-policy-meta">
+                                {citation.policy_key ? `${citation.policy_key} · ` : ""}
+                                {citation.document_version ? `V${citation.document_version}` : "版本未登记"}
+                                {citation.effective_from ? ` · 生效日期：${citation.effective_from}` : ""}
+                              </span>
+                            ) : null}
+                            <p>{citation.excerpt}</p>
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ol>
+                  {railFidelity === false ? (
+                    <p className="rail-fidelity-warning">
+                      <AlertTriangle size={13} /> 本回答存在未命中引用集的标注，请以引文原文为准。
+                    </p>
+                  ) : null}
+                </>
+              ) : railResultState === "out_of_scope" ? (
               <p className="rail-placeholder">这个问题不在制度范围内，已停止回答。</p>
             ) : railResultState === "permission_denied" ? (
               <p className="rail-placeholder"><ShieldQuestion size={14} /> 你当前的账号权限看不到相关制度，因此没有任何引用。请联系管理员开通对应工作区/部门。</p>
@@ -1265,6 +1288,20 @@ function VersionWarning({ citations, asOf }: { citations: Citation[]; asOf?: str
     );
   }
   return null;
+}
+
+/** M0：引用保真核验警示。后端已完成确定性检查（warning-first），
+ *  失真时这里把缺失标注还原成用户可行动的提示，不阻断回答。 */
+function FidelityWarning({ turn }: { turn: Turn }) {
+  const marks = citationFidelityMarks(turn.trace?.warnings);
+  return (
+    <div className="fidelity-warning" role="status">
+      <AlertTriangle size={14} />
+      <span>
+        引用保真警示：回答中有{marks ? `引用标注 ${marks}` : "引用标注"}未命中本次返回的证据，请核对后使用。
+      </span>
+    </div>
+  );
 }
 
 /**

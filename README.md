@@ -87,7 +87,7 @@ The first vertical is policy-heavy knowledge such as expense, finance and compli
 | API | FastAPI (REST + SSE), MCP server |
 | Retrieval | BGE embeddings · FAISS (dense) · BM25 (sparse) · RRF fusion |
 | Storage | SQLite (WAL), versioned FAISS index |
-| Clients | Web workspace (Streamlit), Obsidian plugin |
+| Clients | React/Vite web workspace (`web/`), Obsidian plugin |
 | Quality | pytest, Ruff, mypy (see `docs/DEPLOYMENT.md`) |
 
 ## Quickstart

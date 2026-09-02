@@ -1,5 +1,5 @@
-import { FormEvent, useEffect, useRef, useState } from "react";
-import { BookMarked, ChevronLeft, ChevronRight, FileText, Search, Sparkles, UploadCloud, X } from "lucide-react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { BookMarked, ChevronDown, ChevronLeft, ChevronRight, FileText, Search, Sparkles, UploadCloud, X } from "lucide-react";
 
 import { ContextHint, EmptyState, ErrorState, LoadingState, MetricCard, PageHeader, StatusPill } from "../components/Primitives";
 import { PolicyGovernance } from "../components/PolicyGovernance";
@@ -99,6 +99,29 @@ export function KnowledgePage() {
     }
   };
 
+  // ── D 方案：台账目录树（语雀式左树右文）──
+  // 分组依据 = note.category（vault 目录名），纯前端重排，数据逻辑不变
+  const catalogGroups = useMemo(() => {
+    const map = new Map<string, NoteItem[]>();
+    for (const note of notes) {
+      const key = note.category?.trim() || "unfiled";
+      const list = map.get(key);
+      if (list) list.push(note);
+      else map.set(key, [note]);
+    }
+    return Array.from(map.entries()).map(([key, items]) => ({ key, items }));
+  }, [notes]);
+
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const toggleGroup = (key: string) => {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
   // ── 材料上传与融合（阶段A需求3）──
   const [upload, setUpload] = useState<UploadState>({ phase: "idle", message: "" });
   const [dragOver, setDragOver] = useState(false);
@@ -156,9 +179,10 @@ export function KnowledgePage() {
   return (
     <div className="page knowledge-page">
       <PageHeader
-        eyebrow="制度台账与版本"
         title="制度台账"
         description="查看已同步的制度文件与状态。数据实时来自最新索引。"
+        eyebrow="知识 · 制度材料"
+        meta={["上传 · 索引 · 治理一条链", "选择材料查看版本与责任信息"]}
         actions={
           <form className="search-box" onSubmit={search}>
             <Search size={17} />
@@ -254,7 +278,6 @@ export function KnowledgePage() {
       <section className="ledger-section reveal reveal-3">
         <div className="section-heading">
           <div>
-            <p className="eyebrow">当前登记</p>
             <h2>制度登记册</h2>
           </div>
           <span>
@@ -268,110 +291,135 @@ export function KnowledgePage() {
           <EmptyState title="没有匹配制度" detail="当前筛选没有返回真实文档，请调整关键词。" />
         ) : null}
 
+        {/* D 方案：左树（按类别分组折叠）+ 右详情面板，抽屉退役 */}
         {!loading && !error && notes.length ? (
-          <div className="note-ledger">
-            {notes.map((note, index) => (
-              <button className="note-row" key={note.id} onClick={() => void openDetail(note.id)} type="button">
-                <span className="row-number">{String(offset + index + 1).padStart(2, "0")}</span>
-                <span className="note-icon"><FileText size={18} /></span>
-                <span className="note-primary">
-                  <strong>{note.title}</strong>
-                  <small>{note.vault_path}</small>
-                </span>
-                <span className="note-category">{categoryLabel(note.category)}</span>
-                <PolicyGovernance compact value={note.governance} />
-                <StatusPill value={note.status} />
-                <ChevronRight size={17} />
-              </button>
-            ))}
-          </div>
-        ) : null}
+          <div className="ledger-body">
+            <nav className="catalog-tree" aria-label="制度目录">
+              {catalogGroups.map((group) => {
+                const collapsed = collapsedGroups.has(group.key);
+                return (
+                  <div className="catalog-group" key={group.key}>
+                    <button
+                      className="catalog-group-toggle"
+                      onClick={() => toggleGroup(group.key)}
+                      type="button"
+                      aria-expanded={!collapsed}
+                    >
+                      {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+                      <span>{categoryLabel(group.key)}</span>
+                      <small>{group.items.length}</small>
+                    </button>
+                    {!collapsed ? (
+                      <div className="catalog-items">
+                        {group.items.map((note) => (
+                          <button
+                            className={selected?.id === note.id ? "catalog-item active" : "catalog-item"}
+                            key={note.id}
+                            onClick={() => void openDetail(note.id)}
+                            type="button"
+                            title={note.title}
+                          >
+                            <FileText size={14} />
+                            <span>{note.title}</span>
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
 
-        {/* U2：分页控件——仅在有数据且超过一页时出现 */}
-        {!loading && !error && total > PAGE_SIZE ? (
-          <div className="ledger-pagination">
-            <button className="button ghost small" disabled={offset <= 0} onClick={() => goPage(-1)} type="button">
-              <ChevronLeft size={15} /> 上一页
-            </button>
-            <span>第 {Math.floor(offset / PAGE_SIZE) + 1} / {Math.ceil(total / PAGE_SIZE)} 页</span>
-            <button
-              className="button ghost small"
-              disabled={offset + notes.length >= total}
-              onClick={() => goPage(1)}
-              type="button"
-            >
-              下一页 <ChevronRight size={15} />
-            </button>
+              {/* U2：分页控件——目录数据超过一页时出现在树栏底部 */}
+              {total > PAGE_SIZE ? (
+                <div className="catalog-pagination">
+                  <button className="button ghost small" disabled={offset <= 0} onClick={() => goPage(-1)} type="button">
+                    <ChevronLeft size={15} /> 上一页
+                  </button>
+                  <span>第 {Math.floor(offset / PAGE_SIZE) + 1} / {Math.ceil(total / PAGE_SIZE)} 页</span>
+                  <button
+                    className="button ghost small"
+                    disabled={offset + notes.length >= total}
+                    onClick={() => goPage(1)}
+                    type="button"
+                  >
+                    下一页 <ChevronRight size={15} />
+                  </button>
+                </div>
+              ) : null}
+            </nav>
+
+            <div className="catalog-detail" aria-live="polite">
+              {detailError ? (
+                <div className="detail-error" role="alert">
+                  制度详情读取失败：{detailError}
+                  <button className="button secondary" onClick={() => setDetailError("")} type="button">知道了</button>
+                </div>
+              ) : null}
+              {detailLoading ? <LoadingState label="读取制度关系" /> : null}
+              {!detailLoading && !selected ? (
+                <div className="catalog-placeholder">
+                  <FileText size={22} />
+                  <strong>从左侧选择一份制度</strong>
+                  <p>查看治理信息、生效区间与关联关系。</p>
+                </div>
+              ) : null}
+              {selected ? (
+                <>
+                  <h2>{selected.title}</h2>
+                  <p className="drawer-path">{selected.vault_path}</p>
+                  <div className="drawer-metadata">
+                    <span><small>制度编号</small><strong>{selected.governance.policy_key || "未设置"}</strong></span>
+                    <span><small>责任部门</small><strong>{selected.governance.owner || "未设置"}</strong></span>
+                    <span><small>制度版本</small><strong>{selected.governance.version ? `V${selected.governance.version}` : "未设置"}</strong></span>
+                    <span><small>制度状态</small><PolicyGovernance compact value={selected.governance} /></span>
+                    <span><small>生效区间</small><strong>{selected.governance.effective_from || "未设置"}<br />— {selected.governance.effective_to || "长期有效"}</strong></span>
+                    <span><small>数据状态</small><StatusPill value={selected.status} /></span>
+                    <span><small>可见范围 / 内容段数</small><strong>{selected.access_level} · {selected.chunk_count}</strong></span>
+                  </div>
+
+                  <PolicyGovernance value={selected.governance} />
+
+                  <section className="drawer-section">
+                    <div className="drawer-section-title"><BookMarked size={17} /> 已确认关系</div>
+                    {selected.outgoing_relations.length + selected.incoming_relations.length === 0 ? (
+                      <p className="rail-placeholder">当前制度还没有已确认的关联关系。</p>
+                    ) : (
+                      <div className="relation-mini-list">
+                        {selected.outgoing_relations.map((relation) => (
+                          <button
+                            className="relation-mini-item"
+                            key={`${relation.target_id}-${relation.relation_type}`}
+                            onClick={() => void openDetail(relation.target_id)}
+                            title="查看对端制度档案"
+                            type="button"
+                          >
+                            <span>{selected.title}</span>
+                            <i style={{ color: relationTypeColor(relation.relation_type) }}>{relationTypeLabel(relation.relation_type)}</i>
+                            <strong>{relation.target_title}</strong>
+                          </button>
+                        ))}
+                        {selected.incoming_relations.map((relation) => (
+                          <button
+                            className="relation-mini-item"
+                            key={`${relation.source_id}-${relation.relation_type}`}
+                            onClick={() => void openDetail(relation.source_id)}
+                            title="查看对端制度档案"
+                            type="button"
+                          >
+                            <strong>{relation.source_title}</strong>
+                            <i style={{ color: relationTypeColor(relation.relation_type) }}>{relationTypeLabel(relation.relation_type)}</i>
+                            <span>{selected.title}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+                </>
+              ) : null}
+            </div>
           </div>
         ) : null}
       </section>
-
-      {detailError ? (
-        <div className="detail-error" role="alert">
-          制度详情读取失败：{detailError}
-          <button className="button secondary" onClick={() => setDetailError("")} type="button">知道了</button>
-        </div>
-      ) : null}
-      {detailLoading ? <div className="detail-loading"><LoadingState label="读取制度关系" /></div> : null}
-      {selected ? (
-        <div className="drawer-backdrop" onMouseDown={() => setSelected(null)} role="presentation">
-          <aside className="detail-drawer" onMouseDown={(event) => event.stopPropagation()}>
-            <button className="drawer-close" onClick={() => setSelected(null)} type="button" aria-label="关闭详情">
-              <X size={19} />
-            </button>
-            <p className="eyebrow">制度档案</p>
-            <h2>{selected.title}</h2>
-            <p className="drawer-path">{selected.vault_path}</p>
-            <div className="drawer-metadata">
-              <span><small>制度编号</small><strong>{selected.governance.policy_key || "未设置"}</strong></span>
-              <span><small>责任部门</small><strong>{selected.governance.owner || "未设置"}</strong></span>
-              <span><small>制度版本</small><strong>{selected.governance.version ? `V${selected.governance.version}` : "未设置"}</strong></span>
-              <span><small>制度状态</small><PolicyGovernance compact value={selected.governance} /></span>
-              <span><small>生效区间</small><strong>{selected.governance.effective_from || "未设置"}<br />— {selected.governance.effective_to || "长期有效"}</strong></span>
-              <span><small>数据状态</small><StatusPill value={selected.status} /></span>
-              <span><small>可见范围 / 内容段数</small><strong>{selected.access_level} · {selected.chunk_count}</strong></span>
-            </div>
-
-            <PolicyGovernance value={selected.governance} />
-
-            <section className="drawer-section">
-              <div className="drawer-section-title"><BookMarked size={17} /> 已确认关系</div>
-              {selected.outgoing_relations.length + selected.incoming_relations.length === 0 ? (
-                <p className="rail-placeholder">当前制度还没有已确认的关联关系。</p>
-              ) : (
-                <div className="relation-mini-list">
-                  {selected.outgoing_relations.map((relation) => (
-                    <button
-                      className="relation-mini-item"
-                      key={`${relation.target_id}-${relation.relation_type}`}
-                      onClick={() => void openDetail(relation.target_id)}
-                      title="查看对端制度档案"
-                      type="button"
-                    >
-                      <span>{selected.title}</span>
-                      <i style={{ color: relationTypeColor(relation.relation_type) }}>{relationTypeLabel(relation.relation_type)}</i>
-                      <strong>{relation.target_title}</strong>
-                    </button>
-                  ))}
-                  {selected.incoming_relations.map((relation) => (
-                    <button
-                      className="relation-mini-item"
-                      key={`${relation.source_id}-${relation.relation_type}`}
-                      onClick={() => void openDetail(relation.source_id)}
-                      title="查看对端制度档案"
-                      type="button"
-                    >
-                      <strong>{relation.source_title}</strong>
-                      <i style={{ color: relationTypeColor(relation.relation_type) }}>{relationTypeLabel(relation.relation_type)}</i>
-                      <span>{selected.title}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </section>
-          </aside>
-        </div>
-      ) : null}
     </div>
   );
 }

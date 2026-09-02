@@ -42,7 +42,10 @@ export const CATEGORY_LABELS: Record<string, string> = {
   workflows: "流程",
   cases: "案例",
   external: "外部手册",
+  public: "公开资料",
+  knowledge: "知识库",
   根目录: "根目录",
+  unfiled: "未分类",
 };
 
 export function categoryColor(category: string): string {

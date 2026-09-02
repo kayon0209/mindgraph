@@ -1,23 +1,29 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
+from datetime import UTC, datetime
 import hashlib
 import inspect
 import logging
 import time
+from typing import Any
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Callable, Iterable
 
 from application.adaptive_retrieval_router import AdaptiveRetrievalRouter, RetrievalRouteDecision
 from application.policy_conflict_service import PolicyConflictService
 from application.query_understanding import QueryUnderstandingService
+from domain.contracts import error_event_data
 from domain.errors import RetrievalUnavailableError
 from domain.models import (
-    AnswerResult, ChatRequest, Citation, ResultState, RetrievalTraceModel,
-    TimingMetrics, UsageMetrics,
+    AnswerResult,
+    ChatRequest,
+    Citation,
+    ResultState,
+    RetrievalTraceModel,
+    TimingMetrics,
+    UsageMetrics,
 )
 from infrastructure.database import ProductDatabase, dumps
-
 
 OUT_OF_SCOPE = ("工资", "薪资", "年终奖", "股票", "请假", "年假", "辞职", "离职", "wifi", "食堂", "系统提示词", "ignore previous", "system prompt")
 REFUSAL = "抱歉，我只能回答公司报销相关问题。"
@@ -282,6 +288,20 @@ class ChatService:
         )
 
     def _persist(self, result: AnswerResult) -> None:
+        # M0 引用保真：所有终态结果（answer/stream 的每一条路径）都汇入
+        # _persist，在这里统一做确定性标注检查——warning-first，不阻断。
+        try:
+            from application.evidence_fidelity import check_citation_fidelity, fidelity_warning
+
+            report = check_citation_fidelity(result.answer, [item.final_rank for item in result.citations])
+            result.citation_fidelity = report.ok if report.applicable else None
+            if not report.ok and result.retrieval_trace is not None:
+                warning = fidelity_warning(report)
+                if warning and warning not in result.retrieval_trace.warnings:
+                    result.retrieval_trace.warnings.append(warning)
+        except Exception:
+            # 保真检查是纯函数，理论上不会失败；万一失败绝不影响应答主路径。
+            logger.exception("citation_fidelity_check_failed", extra={"request_id": result.request_id})
         # 持久化失败不应让已经算出的答案/引用在客户端面前炸掉：
         # 记录错误并继续（query_logs 仅用于审计与回归，丢失一条可接受）。
         try:
@@ -401,7 +421,7 @@ class ChatService:
         started = time.perf_counter()
         request_id = str(uuid.uuid4())
         provider = self._provider(request.chat_provider, request.chat_model)
-        timestamp = lambda: datetime.now(timezone.utc).isoformat()
+        timestamp = lambda: datetime.now(UTC).isoformat()
         event = lambda name, data: {"request_id": request_id, "event": name, "timestamp": timestamp(), "data": data}
         yield event("request_started", {"strategy": request.retrieval_strategy})
         out_of_scope = self._is_out_of_scope(request.question)
@@ -421,11 +441,10 @@ class ChatService:
             decision, routing_ms = self._route(request)
         except Exception as exc:
             logger.exception("mindgraph_routing_failed", extra={"request_id": request_id})
-            yield event("error", {
-                "code": "retrieval_unavailable",
-                "message": "检索服务暂不可用，请稍后重试。",
-                "detail": f"{type(exc).__name__}: {exc}",
-            })
+            yield event("error", error_event_data(
+                "retrieval_unavailable", "检索服务暂不可用，请稍后重试。",
+                detail=f"{type(exc).__name__}: {exc}",
+            ))
             return
         yield event("retrieval_routed", {**decision.to_dict(), "routing_ms": routing_ms})
         yield event("retrieval_started", {"strategy": decision.selected_strategy})
@@ -433,11 +452,10 @@ class ChatService:
             trace = self._retrieve(request, decision, routing_ms, access_scope=access_scope)
         except Exception as exc:
             logger.exception("mindgraph_retrieval_unavailable", extra={"request_id": request_id})
-            yield event("error", {
-                "code": "retrieval_unavailable",
-                "message": "检索服务暂不可用，请稍后重试。",
-                "detail": f"{type(exc).__name__}: {exc}",
-            })
+            yield event("error", error_event_data(
+                "retrieval_unavailable", "检索服务暂不可用，请稍后重试。",
+                detail=f"{type(exc).__name__}: {exc}",
+            ))
             return
         yield event("retrieval_completed", {
             "actual_strategy": trace.actual_strategy,

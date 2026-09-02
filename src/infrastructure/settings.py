@@ -122,6 +122,19 @@ class Settings(BaseSettings):
     # 覆盖缺口面板只展示出现次数 ≥ 该值的未收录概念
     CONCEPT_MINE_GAP_MIN_SEEN: int = 2
 
+    # ── Assist（M0/M1 受治理的 agent 交付面） ──
+    # 特性开关模式：默认关闭（off 态与既有 REST/SSE/MCP/Chat 行为字节兼容），
+    # 由部署方在 .env 显式开启。开启后：
+    # - ASSIST_ENABLED=True：挂载 /api/v1/assist（REST + SSE），进程内复用
+    #   ChatService 应用服务（无 HTTP/MCP 自调用），ACL + 审计与 /chat 一致；
+    # - ASSIST_MCP_ENABLED=True：额外把 Assist 暴露为只读 MCP 工具
+    #   mindgraph_assist（复用同一应用服务）。
+    ASSIST_ENABLED: bool = False
+    ASSIST_MCP_ENABLED: bool = False
+    # Assist 通道的时限与上限（沿用 chat 检索语义，仅作为通道级护栏）
+    ASSIST_TIMEOUT_SECONDS: float = 60.0
+    ASSIST_MAX_TOP_K: int = 10
+
     # ── 数据库 ──
     DATABASE_PATH: str = str(PROJECT_ROOT / "data" / "product" / "product.sqlite3")
     SQLITE_JOURNAL_MODE: str = "WAL"

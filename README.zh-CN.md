@@ -87,7 +87,7 @@ MindGraph 把 Markdown 或 Obsidian Vault 变成人与 AI Agent 都能使用的�
 | API | FastAPI（REST + SSE）、MCP Server |
 | 检索 | BGE 向量 · FAISS（Dense）· BM25（Sparse）· RRF 融合 |
 | 存储 | SQLite（WAL）、版本化 FAISS 索引 |
-| 客户端 | Web 工作台（Streamlit）、Obsidian 插件 |
+| 客户端 | React/Vite Web 工作台（`web/`）、Obsidian 插件 |
 | 质量 | pytest、Ruff、mypy（见 `docs/DEPLOYMENT.md`） |
 
 ## 快速开始

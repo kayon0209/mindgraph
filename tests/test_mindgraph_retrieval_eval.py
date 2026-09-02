@@ -280,8 +280,8 @@ def test_candidate_dataset_contract_requires_pending_review_and_is_separate_from
 
 def test_candidate_dataset_path_is_separate_from_golden():
     assert DEFAULT_CANDIDATE_DATASET_PATH.name == "mindgraph_candidates_v2.jsonl"
-    assert DEFAULT_CANDIDATE_DATASET_PATH != Path(
-        __file__).resolve().parent.parent / "evaluation" / "datasets" / "mindgraph_golden.jsonl"
+    assert Path(
+        __file__).resolve().parent.parent / "evaluation" / "datasets" / "mindgraph_golden.jsonl" != DEFAULT_CANDIDATE_DATASET_PATH
 
 
 def test_dataset_sha256_is_deterministic_and_stable(tmp_path: Path):
@@ -447,6 +447,54 @@ def test_graph_enabled_report_without_expansion_is_not_comparable_for_gain():
     assert result["graph_diagnostics"]["activated_cases"] == 0
     assert result["graph_diagnostics"]["comparable_for_graph_gain"] is False
     assert result["graph_diagnostics"]["limitations"] == ["graph_enabled_but_no_expansion_observed"]
+
+
+def test_graph_split_and_full_set_metrics_observe_appended_evidence():
+    """图扩展追加证据在 top_k 之外仍被完整证据集指标观测到。"""
+    graph_chunk = Chunk(
+        "linked.md::0", "text", "doc-linked", 0, None,
+        {"vault_path": "linked.md", "graph_evidence": {"relation_id": "rel-1", "hop": 1}},
+    )
+    base_chunk = Chunk("base.md::0", "text", "doc-base", 0, None, {"vault_path": "base.md"})
+    value = trace([], [], [], [], ["base.md"])
+    value.final_selected_chunks = [
+        RetrievalCandidate(chunk=base_chunk, final_rank=1),
+        RetrievalCandidate(chunk=graph_chunk, final_rank=2),
+    ]
+    value.candidate_counts["graph_expanded"] = 1
+
+    target = case("graph-gain", paths=["linked.md"])
+    target["graph_needed"] = True
+    target["expected_relations"] = [
+        {"source_path": "base.md", "target_path": "linked.md", "relation_type": "references"}
+    ]
+    result = evaluate_retrieval_cases([target], lambda _case: value, top_k=1)
+    detail = result["details"][0]
+
+    # top_k 截断口径看不到追加证据……
+    assert detail["metrics"]["recall_at_k"] == 0.0
+    # ……但完整证据集口径能看到；图扩展候选被正确拆分
+    assert detail["evidence_graph_split"] == {"base": 1, "graph": 1}
+    assert detail["evidence_full_set"]["recall"] == 1.0
+    assert detail["evidence_full_set"]["evidence_size"] == 2
+    # 汇总均值口径同样涵盖追加证据
+    assert result["summary"]["full_set_recall"] == 1.0
+    assert result["summary"]["mean_evidence_size"] == 2.0
+
+
+def test_full_set_metrics_are_additive_and_leave_existing_report_unchanged():
+    """既有 detail 关键字段（metrics/evidence_stages/failure_stage）不受影响，
+    新字段只做加法；无图扩展时 graph 拆分为 0。"""
+    value = trace(["gold.md"], [], ["gold.md"], ["gold.md"], ["gold.md"])
+    result = evaluate_retrieval_cases([case()], lambda _case: value, top_k=1)
+
+    detail = result["details"][0]
+    assert detail["metrics"] == {"recall_at_k": 1.0, "precision_at_k": 1.0, "mrr": 1.0, "ndcg_at_k": 1.0}
+    assert detail["evidence_stages"] == {"gold.md": "final"}
+    assert "failure_stage" not in detail
+    assert detail["evidence_graph_split"] == {"base": 1, "graph": 0}
+    assert detail["evidence_full_set"]["recall"] == 1.0
+    assert result["failed_cases"] == []
 
 
 def test_abstain_is_visible_but_not_scored_and_questions_are_opt_in():

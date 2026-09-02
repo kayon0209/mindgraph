@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import date
 import math
 from statistics import fmean
@@ -13,6 +14,8 @@ ANSWER_METRICS = (
     "citation_correctness",
     "refusal_correctness",
     "version_validity",
+    "citation_fidelity",
+    "citation_marker_validity",
     "required_fact_coverage",
     "forbidden_fact_avoidance",
     "acl_leakage",
@@ -28,6 +31,59 @@ def _citation_f1(expected_paths: set[str], actual_paths: set[str]) -> float:
     precision = overlap / len(actual_paths)
     recall = overlap / len(expected_paths)
     return 2 * precision * recall / (precision + recall) if overlap else 0.0
+
+
+def _citation_ranks(citations: list[dict[str, Any]]) -> set[int]:
+    """从评测预测的 citation 列表还原 final_rank 序号集合。
+
+    MindGraph 的 citation_id 形如 citation-N（N=final_rank）；两者都缺失时
+    视为序号 0（永远不在 [citation-N] 的合法取值内，即引用不可命中）。
+    """
+    ranks: set[int] = set()
+    for item in citations:
+        rank = item.get("final_rank")
+        if isinstance(rank, int) and rank and rank > 0:
+            ranks.add(rank)
+            continue
+        citation_id = item.get("citation_id")
+        if isinstance(citation_id, str) and citation_id.startswith("citation-"):
+            suffix = citation_id[len("citation-"):]
+            if suffix.isdigit():
+                ranks.add(int(suffix))
+    return ranks
+
+
+def _citation_fidelity(answer: str, citations: list[dict[str, Any]]) -> float | None:
+    """确定性引用一致性：答案中的 [citation-N] 必须全部命中实际引用集。
+
+    与运行时 evidence_fidelity.check_citation_fidelity 语义一致（M0，warning-first）。
+    无引用且无标注 → None（不可判定，不计入聚合分母）。
+    """
+    from application.evidence_fidelity import check_citation_fidelity
+
+    report = check_citation_fidelity(answer, _citation_ranks(citations))
+    if not report.applicable:
+        return None
+    return float(report.ok)
+
+
+def _citation_marker_validity(answer: str, citations: list[dict[str, Any]]) -> float | None:
+    """引用标注完整性：格式合法、无越界、无重复、无未使用引用。
+
+    与 ``citation_fidelity`` 互补：后者只检查「标注→引用集合」单向缺失；
+    此函数检查更严格的完整视图（含畸形、重复、未用引用）。
+
+    无引用且无标注 → None（不可判定，不计入聚合分母）。
+    """
+    from application.citation_integrity import CitationIntegrityValidator
+
+    ranks = _citation_ranks(citations)
+    citation_ids = {item.get("citation_id") for item in citations if isinstance(item.get("citation_id"), str)}
+    validator = CitationIntegrityValidator(citation_ids=citation_ids, citation_ranks=ranks)
+    report = validator.validate(answer)
+    if not report.applicable:
+        return None
+    return float(report.passed)
 
 
 def _is_version_valid(citation: dict[str, Any], case: dict[str, Any]) -> bool:
@@ -84,6 +140,8 @@ def evaluate_answer_case(case: dict[str, Any], prediction: dict[str, Any]) -> di
             "citation_correctness": None,
             "refusal_correctness": refusal_correctness,
             "version_validity": None,
+            "citation_fidelity": None,
+            "citation_marker_validity": None,
             "required_fact_coverage": None,
             "forbidden_fact_avoidance": None,
             "acl_leakage": acl_leakage,
@@ -97,6 +155,14 @@ def evaluate_answer_case(case: dict[str, Any], prediction: dict[str, Any]) -> di
     citation_correctness = _citation_f1(expected_paths, actual_paths)
     if citation_correctness < 1:
         failures.append("citation_mismatch")
+
+    citation_fidelity = _citation_fidelity(str(prediction.get("answer") or ""), citations)
+    if citation_fidelity == 0.0:
+        failures.append("citation_fidelity_violation")
+
+    citation_marker_validity = _citation_marker_validity(str(prediction.get("answer") or ""), citations)
+    if citation_marker_validity == 0.0:
+        failures.append("citation_marker_integrity")
 
     version_validity = float(bool(citations) and all(_is_version_valid(item, case) for item in citations))
     if not version_validity:
@@ -119,6 +185,8 @@ def evaluate_answer_case(case: dict[str, Any], prediction: dict[str, Any]) -> di
         "citation_correctness": citation_correctness,
         "refusal_correctness": refusal_correctness,
         "version_validity": version_validity,
+        "citation_fidelity": citation_fidelity,
+        "citation_marker_validity": citation_marker_validity,
         "required_fact_coverage": required_fact_coverage,
         "forbidden_fact_avoidance": forbidden_fact_avoidance,
         "acl_leakage": acl_leakage,
@@ -150,6 +218,159 @@ def evaluate_answer_predictions(cases: list[dict[str, Any]], predictions: list[d
     summary = summarize_answer_evaluations(results)
     summary["metrics"].update(_operational_metrics(predictions))
     return summary
+
+
+# 答案级图消融对比的信任指标（operational 指标单独处理）
+_GRAPH_ABLATION_COMPARED_METRICS = (
+    "citation_correctness",
+    "citation_fidelity",
+    "citation_marker_validity",
+    "version_validity",
+    "required_fact_coverage",
+    "forbidden_fact_avoidance",
+    "refusal_correctness",
+    "conflict_accuracy",
+    "acl_leakage",
+)
+_GRAPH_ABLATION_OPERATIONAL_METRICS = ("mean_total_latency_ms", "mean_total_tokens")
+
+
+def _aligned_metric_pairs(
+    off_results: list[dict[str, Any]],
+    on_results: list[dict[str, Any]],
+    name: str,
+) -> list[tuple[float | None, float | None]]:
+    """按 case 对齐两条 arm 的同一指标值（不可判定时为 None）。"""
+    return [
+        (off.get(name), on.get(name))
+        for off, on in zip(off_results, on_results, strict=True)
+    ]
+
+
+def _mean(values: Iterable[float]) -> float | None:
+    applicable = [value for value in values if value is not None]
+    return fmean(applicable) if applicable else None
+
+
+def _paired_delta(pairs: list[tuple[float | None, float | None]]) -> tuple[float | None, int]:
+    deltas = [on - off for off, on in pairs if off is not None and on is not None]
+    return (fmean(deltas) if deltas else None, len(deltas))
+
+
+def compare_graph_ablation(
+    cases: list[dict[str, Any]],
+    predictions: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """同一 case、同一模型/配置下 graph off/on 双跑的配对答案级消融。
+
+    每条 prediction 必须带布尔 ``graph_enabled``；每个 case 必须恰好各有一条
+    off 与 on 预测。只比较确定性指标（citation F1、fact coverage、refusal/
+    conflict correctness、版本、延迟与 token），不修改任何 case 标签。
+
+    ``paired_delta`` 语义为 on-off：正值表示开启图谱后指标上升；延迟/token 为
+    正向成本指标，正值表示开启后更慢/更贵（读法需区分，勿与质量指标混读）。
+    """
+    by_case: dict[str, dict[bool, dict[str, Any]]] = {}
+    for prediction in predictions:
+        case_id = prediction.get("case_id")
+        if not case_id:
+            raise ValueError("prediction is missing case_id")
+        graph_enabled = prediction.get("graph_enabled")
+        if not isinstance(graph_enabled, bool):
+            raise ValueError(f"prediction case_id {case_id!r} requires bool graph_enabled for graph ablation")
+        arm = by_case.setdefault(case_id, {})
+        if graph_enabled in arm:
+            raise ValueError(f"duplicate graph_enabled={graph_enabled!r} prediction for case_id: {case_id}")
+        arm[graph_enabled] = prediction
+
+    case_ids = {case["case_id"] for case in cases}
+    unknown = sorted(by_case.keys() - case_ids)
+    if unknown:
+        raise ValueError(f"unknown prediction case_id: {', '.join(unknown)}")
+    incomplete = [
+        case_id
+        for case_id in sorted(case_ids)
+        if by_case.get(case_id) is None or set(by_case[case_id]) != {False, True}
+    ]
+    if incomplete:
+        raise ValueError(
+            "graph ablation requires graph off/on predictions for every case; "
+            f"incomplete case_id: {', '.join(incomplete)}"
+        )
+
+    ordered_off = [by_case[case["case_id"]][False] for case in cases]
+    ordered_on = [by_case[case["case_id"]][True] for case in cases]
+    off_results = [evaluate_answer_case(case, prediction) for case, prediction in zip(cases, ordered_off, strict=True)]
+    on_results = [evaluate_answer_case(case, prediction) for case, prediction in zip(cases, ordered_on, strict=True)]
+
+    off_summary = summarize_answer_evaluations(off_results)
+    off_summary["metrics"].update(_operational_metrics(ordered_off))
+    on_summary = summarize_answer_evaluations(on_results)
+    on_summary["metrics"].update(_operational_metrics(ordered_on))
+
+    metrics: dict[str, dict[str, Any]] = {}
+    pairs_by_index: dict[str, list[tuple[float | None, float | None]]] = {}
+    for name in _GRAPH_ABLATION_COMPARED_METRICS:
+        pairs = _aligned_metric_pairs(off_results, on_results, name)
+        pairs_by_index[name] = pairs
+        delta, paired_cases = _paired_delta(pairs)
+        metrics[name] = {
+            "graph_off_mean": _mean([off for off, _on in pairs]),
+            "graph_on_mean": _mean([on for _off, on in pairs]),
+            "paired_delta": round(delta, 4) if delta is not None else None,
+            "paired_cases": paired_cases,
+        }
+    for name in _GRAPH_ABLATION_OPERATIONAL_METRICS:
+        off_value = off_summary["metrics"].get(name)
+        on_value = on_summary["metrics"].get(name)
+        delta = round(on_value - off_value, 4) if off_value is not None and on_value is not None else None
+        metrics[name] = {
+            "graph_off_mean": off_value,
+            "graph_on_mean": on_value,
+            "paired_delta": delta,
+            "paired_cases": len(cases) if delta is not None else 0,
+        }
+
+    stratified: dict[str, dict[str, dict[str, Any]]] = {}
+    for dimension in ("category", "query_type"):
+        groups: dict[str, list[int]] = {}
+        for index, case in enumerate(cases):
+            raw_value = case.get(dimension)
+            key = "unset" if raw_value is None else str(raw_value)
+            groups.setdefault(key, []).append(index)
+        per_dimension: dict[str, dict[str, Any]] = {}
+        for key, indices in sorted(groups.items()):
+            group_metrics: dict[str, Any] = {"sample_size": len(indices)}
+            for name in _GRAPH_ABLATION_COMPARED_METRICS:
+                pairs = [pairs_by_index[name][index] for index in indices]
+                delta, paired_cases = _paired_delta(pairs)
+                group_metrics[f"{name}_paired_delta"] = round(delta, 4) if delta is not None else None
+                group_metrics[f"{name}_paired_cases"] = paired_cases
+            per_dimension[key] = group_metrics
+        stratified[dimension] = per_dimension
+
+    regressions = []
+    for case, off_result, on_result in zip(cases, off_results, on_results, strict=True):
+        new_failures = sorted(set(on_result.get("failures", [])) - set(off_result.get("failures", [])))
+        recovered_failures = sorted(set(off_result.get("failures", [])) - set(on_result.get("failures", [])))
+        if new_failures or recovered_failures:
+            regressions.append({
+                "case_id": case["case_id"],
+                "category": case.get("category"),
+                "query_type": case.get("query_type"),
+                "expected_behavior": case.get("expected_behavior"),
+                "new_failures_with_graph": new_failures,
+                "recovered_failures_with_graph": recovered_failures,
+            })
+
+    return {
+        "evaluator_version": "mindgraph-answer-v2-graph-ablation",
+        "sample_size": len(cases),
+        "arms": {"graph_off": off_summary, "graph_on": on_summary},
+        "metrics": metrics,
+        "stratified_paired_delta": stratified,
+        "failure_changes": regressions,
+    }
 
 
 def _optional_nonnegative_number(container: dict[str, Any], key: str, label: str) -> float | None:

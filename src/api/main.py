@@ -35,7 +35,19 @@ from api.middleware import (
     SecurityHeadersMiddleware,
     TimingMiddleware,
 )
-from api.routes import chat, connectors, evaluation, feedback, governance, health, knowledge, mcp, mindgraph_chat, mindgraph_readonly
+from api.routes import (
+    assist,
+    chat,
+    connectors,
+    evaluation,
+    feedback,
+    governance,
+    health,
+    knowledge,
+    mcp,
+    mindgraph_chat,
+    mindgraph_readonly,
+)
 from domain.errors import (
     AuthenticationError,
     AuthorizationError,
@@ -132,6 +144,11 @@ API_PREFIX = "/api/v1"
 app.include_router(health.router, prefix=API_PREFIX)
 for route in (chat.router, connectors.router, knowledge.router, evaluation.router, feedback.router, governance.router, mindgraph_chat.router, mindgraph_readonly.router, mcp.router):
     app.include_router(route, prefix=API_PREFIX, dependencies=[Depends(require_authenticated)])
+
+# M1：Assist（受治理的 agent 交付面）——默认关闭，仅在配置显式开启时挂载
+# （特性开关在启动期读取，与 ServiceContainer 一致；off 态完全不暴露路由）。
+if _settings.ASSIST_ENABLED:
+    app.include_router(assist.router, prefix=API_PREFIX, dependencies=[Depends(require_authenticated)])
 
 
 # ── 根路径 ──

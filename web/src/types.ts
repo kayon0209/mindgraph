@@ -106,6 +106,8 @@ export type RetrievalTrace = {
   degraded: boolean;
   degradation_reason?: string | null;
   index_version?: string | null;
+  /** M0：确定性检查产生的告警条目（如 citation_fidelity:missing_marks=9） */
+  warnings?: string[];
   graph_enabled: boolean;
   graph_hops?: number;
   graph_evidence?: { relation_id?: string; evidence_chunk_id?: string | null; evidence_span?: string | null; evidence_section?: string | null; status?: string | null }[];
@@ -119,6 +121,11 @@ export type AnswerResult = {
   question: string;
   answer: string;
   result_state: string;
+  /** M0 契约基线：机器可判定错误码，取值见后端 ErrorCode（additive） */
+  error_code?: string | null;
+  /** M0 契约基线：回答中的 [citation-N] 全部命中返回引用集为 true；无引用且
+   *  无标注时为 null（warning-first，M2 前不阻断） */
+  citation_fidelity?: boolean | null;
   citations: Citation[];
   retrieval_trace?: RetrievalTrace | null;
   timing: { total_ms: number; ttft_ms?: number | null };

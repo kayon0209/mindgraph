@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from enum import Enum
 from typing import Any, Literal
 
@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class UsageSource(str, Enum):
@@ -26,6 +26,53 @@ class ResultState(str, Enum):
     model_unavailable = "model_unavailable"
     retrieval_unavailable = "retrieval_unavailable"
     system_error = "system_error"
+
+
+class ErrorCode(str, Enum):
+    """机器可判定的错误/判定码（M0 契约基线）。
+
+    取值与现有 REST/SSE/MCP 使用的 code 字符串一致，避免引入第二套命名；
+    Assist 等 agent 面向通道以本枚举作为 `verdict` 的取值面。只做加法：
+    新增值不影响既有客户端（客户端按名称 switch，未知值安全忽略）。
+    """
+
+    answered = "answered"
+    out_of_scope = "out_of_scope"
+    insufficient_evidence = "insufficient_evidence"
+    permission_denied = "permission_denied"
+    conflicting_evidence = "conflicting_evidence"
+    model_unavailable = "model_unavailable"
+    retrieval_unavailable = "retrieval_unavailable"
+    system_error = "system_error"
+    # ── 传输 / 生成层错误（SSE error 事件与 HTTP 错误面） ──
+    aborted = "aborted"
+    stream_error = "stream_error"
+    provider_error = "provider_error"
+    provider_unavailable = "provider_unavailable"
+    quota_exhausted = "quota_exhausted"
+    rate_limited = "rate_limited"
+    authentication_failed = "authentication_failed"
+    model_not_found = "model_not_found"
+    invalid_request = "invalid_request"
+    timeout = "timeout"
+
+
+# ResultState → ErrorCode：取值一一对应，避免两套字符串漂移。
+_RESULT_STATE_TO_ERROR_CODE: dict[ResultState, ErrorCode] = {
+    ResultState.answered: ErrorCode.answered,
+    ResultState.out_of_scope: ErrorCode.out_of_scope,
+    ResultState.insufficient_evidence: ErrorCode.insufficient_evidence,
+    ResultState.permission_denied: ErrorCode.permission_denied,
+    ResultState.conflicting_evidence: ErrorCode.conflicting_evidence,
+    ResultState.model_unavailable: ErrorCode.model_unavailable,
+    ResultState.retrieval_unavailable: ErrorCode.retrieval_unavailable,
+    ResultState.system_error: ErrorCode.system_error,
+}
+
+
+def error_code_for_result_state(state: ResultState) -> ErrorCode:
+    """由终态推导机器可判定的错误码（全部终态均有一一对应值）。"""
+    return _RESULT_STATE_TO_ERROR_CODE[state]
 
 
 class Citation(BaseModel):
@@ -99,6 +146,11 @@ class AnswerResult(BaseModel):
     question: str
     answer: str
     result_state: ResultState
+    # M0 契约基线：机器可判定的错误码（由 result_state 自动推导，additive）
+    error_code: ErrorCode | None = None
+    # M0 契约基线：引用保真检查结果（回答中 [citation-N] 全部命中引用集为 True；
+    # 无引用且无标注时为 None；M2 前仅提示不阻断，见 ADR-003）
+    citation_fidelity: bool | None = None
     citations: list[Citation] = Field(default_factory=list)
     retrieval_trace: RetrievalTraceModel | None = None
     usage: UsageMetrics = Field(default_factory=UsageMetrics)
@@ -113,6 +165,12 @@ class AnswerResult(BaseModel):
     index_version: str | None = None
     prompt_version: str = "expense-policy-v1"
     created_at: datetime = Field(default_factory=utc_now)
+
+    @model_validator(mode="after")
+    def fill_error_code(self) -> AnswerResult:
+        if self.error_code is None:
+            self.error_code = error_code_for_result_state(self.result_state)
+        return self
 
 
 class ChatRequest(BaseModel):

@@ -24,6 +24,24 @@ const NAV_ITEMS = [
   { id: "relations" as const, label: "关系审核", icon: GitPullRequestArrow },
 ];
 
+/** 各视图的角色定位（填入 PageHeader eyebrow），帮助用户理解视图边界 */
+const VIEW_EYEBROWS: Record<ViewId, string> = {
+  chat: "提问 · 治理式问答",
+  knowledge: "知识 · 制度材料",
+  graph: "关系 · 确认与展示",
+  evaluation: "衡量 · 证据质量",
+  relations: "裁决 · 人机共治",
+};
+
+/** 各视图的核心动作快速链路（填入 PageHeader meta） */
+const VIEW_META: Record<ViewId, string[]> = {
+  chat: ["可直接开始提问，或按 / 快速聚焦", "回答带来源与版本，可一键导出证据"],
+  knowledge: ["上传 · 索引 · 治理一条链", "选择材料查看版本与责任信息"],
+  graph: ["所有连线均已由人确认", "滚轮缩放 · 拖拽平移"],
+  evaluation: ["每个指标对应一次真实运行", "参考脚本 run_answer_evaluation.py"],
+  relations: ["候选不自动进检索", "确认/拒绝都需填写原因"],
+};
+
 const VIEW_IDS: ViewId[] = ["chat", "knowledge", "graph", "evaluation", "relations"];
 
 /** U7：从 location.hash 解析视图（如 #/knowledge），非法值回退 chat */
@@ -102,6 +120,9 @@ export function App() {
 
   return (
     <div className="app-shell">
+      <a className="skip-link" href="#main-content">
+        跳到主内容
+      </a>
       <aside className="sidebar">
         <div className="brand-lockup">
           <span className="brand-mark" aria-hidden="true">
@@ -146,7 +167,7 @@ export function App() {
         </div>
       </aside>
 
-      <main className="workspace">
+      <main className="workspace" id="main-content">
         <div className="workspace-topline">
           {/* 研究项⑭：连接指示同时披露当前生成模型，未配置/不可用时前置提醒，而不是等提问后才发现 */}
           {(() => {
