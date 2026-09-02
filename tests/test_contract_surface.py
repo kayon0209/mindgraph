@@ -22,6 +22,8 @@ from domain.models import ErrorCode, ResultState, error_code_for_result_state
 
 
 def test_sse_event_names_are_frozen():
+    # 既有 14 个事件 + M2 agent-assist 6 个新事件（flag 门控，默认关闭不产出；
+    # 旧客户端按契约忽略未知事件名）
     assert SSE_EVENT_NAMES == (
         "request_started",
         "scope_check_completed",
@@ -37,10 +39,43 @@ def test_sse_event_names_are_frozen():
         "usage",
         "completed",
         "error",
+        "plan_created",
+        "tool_call_started",
+        "tool_call_finished",
+        "clarification_required",
+        "loop_fell_back",
+        "citation_integrity_checked",
     )
-    # 与报告 D 节的 14 个事件一一对应
-    assert len(SSE_EVENT_NAMES) == 14
+    assert len(SSE_EVENT_NAMES) == 20
     assert len(set(SSE_EVENT_NAMES)) == len(SSE_EVENT_NAMES)
+
+
+def test_sse_event_names_split_by_generation():
+    """基线 14 事件与 M2 新 6 事件的分界冻结：assist 事件只增不改。"""
+    assert SSE_EVENT_NAMES[:14] == (
+        "request_started",
+        "scope_check_completed",
+        "retrieval_routed",
+        "retrieval_started",
+        "retrieval_completed",
+        "rerank_completed",
+        "degraded",
+        "policy_conflict_detected",
+        "generation_started",
+        "answer_delta",
+        "citations",
+        "usage",
+        "completed",
+        "error",
+    )
+    assert set(SSE_EVENT_NAMES[14:]) == {
+        "plan_created",
+        "tool_call_started",
+        "tool_call_finished",
+        "clarification_required",
+        "loop_fell_back",
+        "citation_integrity_checked",
+    }
 
 
 def test_sse_envelope_keys_are_frozen():

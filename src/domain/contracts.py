@@ -17,6 +17,9 @@ from __future__ import annotations
 from typing import Any, Final
 
 # ── SSE 事件名（按 ChatService.stream 的产出顺序） ──
+# M2 起新增 agent-assist 事件（AGENTS assist 模式，flag 门控；旧客户端必须忽略未知事件）：
+# plan_created / tool_call_started / tool_call_finished / clarification_required /
+# loop_fell_back / citation_integrity_checked。默认关闭时不产生。
 SSE_EVENT_NAMES: Final[tuple[str, ...]] = (
     "request_started",
     "scope_check_completed",
@@ -32,6 +35,13 @@ SSE_EVENT_NAMES: Final[tuple[str, ...]] = (
     "usage",
     "completed",
     "error",
+    # ── M2 agent-assist 事件（AGENT_ASSIST_ENABLED 才会产出） ──
+    "plan_created",
+    "tool_call_started",
+    "tool_call_finished",
+    "clarification_required",
+    "loop_fell_back",
+    "citation_integrity_checked",
 )
 
 # SSE 信封外层键（ChatService.stream 的事件包装，各通道共用）
