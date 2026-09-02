@@ -144,6 +144,49 @@ export type StreamEvent = {
   data: Record<string, unknown>;
 };
 
+/** M2：确定性 Assist 的执行步骤（plan_created.data.steps 元素；label 为用户语言） */
+export type AssistStep = {
+  name: string;
+  label: string;
+};
+
+/** M2：plan_created 事件数据 */
+export type AssistPlan = {
+  steps: AssistStep[];
+  route: string;
+  reason_codes?: string[];
+  routing_ms?: number;
+};
+
+/** M2：单条工具执行记录（tool_call_started/finished 累积） */
+export type AssistToolCall = {
+  step: string;
+  label: string;
+  status: "running" | "ok" | "failed" | "denied" | "timeout";
+  result_state?: string;
+  latency_ms?: number;
+};
+
+/** M2：clarification_required 事件数据（提交后经新请求 resume_from 恢复） */
+export type AssistClarification = {
+  clarification_id: string;
+  questions: string[];
+  context_hash: string;
+  expires_at: string;
+};
+
+/** M2：citation_integrity_checked 事件数据 */
+export type AssistIntegrity = {
+  passed: boolean;
+  applicable: boolean;
+  checks?: {
+    unknown_markers?: string[];
+    duplicate_markers?: string[];
+    malformed_markers?: string[];
+    unused_citations?: string[];
+  };
+};
+
 /** SSE usage 事件（后端 UsageMetrics 的 JSON 形态） */
 export type UsageInfo = {
   input_tokens?: number | null;

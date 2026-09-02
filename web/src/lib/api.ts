@@ -103,6 +103,37 @@ export async function streamChat(
   tail.events.forEach(onEvent);
 }
 
+/** M2：确定性 Assist Agent 流（AGENT_ASSIST_ENABLED 开启时可用；404 = 服务端未开） */
+export async function streamAssistAgent(
+  payload: ChatRequest & { resume_from?: string; clarification_answers?: Record<string, string> },
+  onEvent: (event: StreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch(`${API_BASE}/assist/agent/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    signal,
+  });
+  if (!response.ok || !response.body) {
+    throw new ApiError(response.statusText || "Assist stream unavailable", response.status);
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const parsed = parseSseFrames(buffer);
+    buffer = parsed.remainder;
+    parsed.events.forEach(onEvent);
+  }
+  buffer += decoder.decode();
+  const tail = parseSseFrames(`${buffer}\n\n`);
+  tail.events.forEach(onEvent);
+}
+
 export const api = {
   health: () => request<HealthStatus>("/health"),
   publicConfig: () => request<PublicConfig>("/config/public"),

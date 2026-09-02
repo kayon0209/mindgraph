@@ -3904,3 +3904,115 @@ h2,
     max-height: none;
   }
 }
+
+/* ── M2 Assist（UI-G 设计规格；复用既有 token，无新框架） ── */
+
+.agent-execution-summary {
+  font-size: var(--text-xs, 12px);
+  color: var(--muted, #6b7280);
+  margin: 4px 0 0;
+}
+
+.loop-fallback {
+  margin-top: 8px;
+}
+
+.clarification-card {
+  border: 1px solid var(--border, #d1d5db);
+  border-radius: 8px;
+  background: var(--surface, #f9fafb);
+  padding: 12px 14px;
+  margin: 10px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.clarification-card.expired {
+  border-color: var(--warning, #d97706);
+}
+.clarification-card ol {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding-inline-start: 18px;
+}
+.clarification-card label {
+  display: block;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+.clarification-card input {
+  width: 100%;
+  border: 1px solid var(--border, #d1d5db);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font: inherit;
+  background: var(--bg, #fff);
+  color: inherit;
+}
+.clarification-context {
+  font-size: 12px;
+  color: var(--muted, #6b7280);
+}
+
+.citation-integrity-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--danger, #b91c1c);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin: 10px 0;
+  font-size: 13px;
+}
+
+.assist-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted, #6b7280);
+  cursor: pointer;
+}
+
+.assist-section .assist-fold {
+  margin-top: 6px;
+}
+.assist-plan-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 6px 0 0;
+  padding-inline-start: 4px;
+  list-style: none;
+}
+.assist-plan-list li[data-status="ok"] {
+  color: var(--muted, #6b7280);
+}
+.assist-plan-list li[data-status="running"] {
+  font-weight: 600;
+}
+.assist-tool-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 6px 0 0;
+  padding-inline-start: 4px;
+  list-style: none;
+}
+.assist-tool-status {
+  font-size: 12px;
+  border: 1px solid var(--border, #d1d5db);
+  border-radius: 4px;
+  padding: 1px 6px;
+  margin-right: 6px;
+}
+.assist-tool-status.running { font-weight: 600; }
+.assist-tool-status.failed, .assist-tool-status.denied, .assist-tool-status.timeout {
+  border-color: var(--danger, #b91c1c);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .assist-plan-list li[data-status="running"] { animation: none; }
+}

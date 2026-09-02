@@ -87,6 +87,14 @@ class ServiceContainer:
         set_handler_database(self.database)
         self._register_builtin_datasets()
         self._init_mindgraph()
+        # M2：确定性 Assist 编排服务（AGENT_ASSIST_ENABLED 门控消费；默认关闭）。
+        # 必须在 _init_mindgraph 之后：编排的是 mindgraph_chat 服务。
+        from application.agent_service import AgentService
+
+        self.agent_service = AgentService(
+            self.mindgraph_chat,
+            max_tool_calls=settings.AGENT_MAX_TOOL_CALLS,
+        )
 
     def _init_mindgraph(self) -> None:
         """装配 MindGraph Graph RAG 管线（复用 ChatService + MindGraph 检索包装）。"""

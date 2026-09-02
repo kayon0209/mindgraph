@@ -22,12 +22,24 @@ import {
 } from "lucide-react";
 
 import { AnswerBody } from "../components/AnswerBody";
-import { api, streamChat } from "../lib/api";
+import { api, streamAssistAgent, streamChat } from "../lib/api";
 import { citationValidity, fidelityMissingMarks as citationFidelityMarks, summarizeCitationValidity } from "../lib/citation-status";
 import { buildEvidenceMarkdown, downloadTextFile, evidenceFilename } from "../lib/export-evidence";
 import { completionGenerationState, completionViewState, policyConflictItems } from "../lib/policy-conflicts";
 import { routeDecisionView } from "../lib/route-decision";
-import type { AnswerResult, Citation, ChatRequest, RetrievalTrace, RouteDecision, StreamEvent, UsageInfo } from "../types";
+import type {
+  AnswerResult,
+  AssistClarification,
+  AssistIntegrity,
+  AssistPlan,
+  AssistToolCall,
+  Citation,
+  ChatRequest,
+  RetrievalTrace,
+  RouteDecision,
+  StreamEvent,
+  UsageInfo,
+} from "../types";
 import { PageHeader } from "../components/Primitives";
 
 type Turn = {
@@ -55,6 +67,14 @@ type Turn = {
   /** 证据导出需要记录实际使用的模型与索引版本 */
   model?: string;
   indexVersion?: string | null;
+  /** M2 Assist：执行计划（步骤名+用户语言标签）、工具记录、澄清卡、引用校验结果 */
+  plan?: AssistPlan | null;
+  toolCalls?: AssistToolCall[];
+  clarification?: AssistClarification | null;
+  clarificationAnswered?: boolean;
+  citationIntegrity?: AssistIntegrity | null;
+  /** M2：loop_fell_back 的可见原因（一句话，见 COPY-DECK §6） */
+  fallbackReason?: string | null;
 };
 
 /** 会话历史（研究项⑥）：本地多会话，工作留痕定位，非审计级留存 */
@@ -223,6 +243,8 @@ export function ChatPage() {
   const [strategy, setStrategy] = useState<ChatRequest["retrieval_strategy"]>(() => loadSettings().strategy);
   const [topK, setTopK] = useState(() => loadSettings().topK);
   const [graphEnabled, setGraphEnabled] = useState(() => loadSettings().graphEnabled);
+  /** M2：本地 Assist 开关（后端 AGENT_ASSIST_ENABLED 关闭时端点 404，回落普通流） */
+  const [assistMode, setAssistMode] = useState(false);
   const [graphHops, setGraphHops] = useState(() => loadSettings().graphHops);
   const [queryDate, setQueryDate] = useState("");
   const [turns, setTurns] = useState<Turn[]>([]);
@@ -353,6 +375,80 @@ export function ChatPage() {
 
   const handleEvent = (turnId: string, event: StreamEvent) => {
     const data = asRecord(event.data);
+    /** 函数式读取该轮当前 assist 状态（setTurns 闭包内拿到的一定是最新值） */
+    const patchTurnWith = (patch: (turn: Turn) => Partial<Turn>) => {
+      setTurns((current) => current.map((turn) => (turn.id === turnId ? { ...turn, ...patch(turn) } : turn)));
+    };
+    // ── M2 assist 事件分支（UI-G 状态矩阵 §2；旧事件逻辑不变） ──
+    if (event.event === "plan_created" && Array.isArray(data.steps)) {
+      updateTurn(turnId, {
+        plan: {
+          steps: data.steps as AssistPlan["steps"],
+          route: typeof data.route === "string" ? data.route : "",
+          reason_codes: Array.isArray(data.reason_codes) ? (data.reason_codes as string[]) : [],
+          routing_ms: typeof data.routing_ms === "number" ? data.routing_ms : undefined,
+        },
+        toolCalls: [],
+      });
+      return;
+    }
+    if (event.event === "tool_call_started" && typeof data.step === "string") {
+      const entry: AssistToolCall = {
+        step: data.step,
+        label: typeof data.label === "string" ? data.label : data.step,
+        status: "running",
+      };
+      patchTurnWith((turn) => ({ toolCalls: [...(turn.toolCalls ?? []), entry] }));
+      return;
+    }
+    if (event.event === "tool_call_finished" && typeof data.step === "string") {
+      const status: AssistToolCall["status"] =
+        data.status === "ok" ? "ok" : data.status === "denied" ? "denied" : data.status === "timeout" ? "timeout" : "failed";
+      patchTurnWith((turn) => ({
+        toolCalls: (turn.toolCalls ?? []).map((item) =>
+          item.step === data.step && item.status === "running"
+            ? {
+                ...item,
+                status,
+                result_state: typeof data.result_state === "string" ? data.result_state : undefined,
+                latency_ms: typeof data.latency_ms === "number" ? data.latency_ms : undefined,
+              }
+            : item,
+        ),
+      }));
+      return;
+    }
+    if (event.event === "clarification_required") {
+      const clarification: AssistClarification = {
+        clarification_id: String(data.clarification_id ?? ""),
+        questions: Array.isArray(data.questions) ? (data.questions as string[]) : [],
+        context_hash: String(data.context_hash ?? ""),
+        expires_at: String(data.expires_at ?? ""),
+      };
+      updateTurn(turnId, { clarification, state: "complete" });
+      return;
+    }
+    if (event.event === "loop_fell_back") {
+      updateTurn(turnId, {
+        fallbackReason:
+          data.reason === "tool_budget_exceeded"
+            ? "查询步骤过多，已回到单次检索；以下回答基于一次直接查找"
+            : data.reason === "citation_integrity_failed"
+              ? "本次回答未通过引用校验，已改为仅显示证据"
+              : "已回到单次检索模式",
+      });
+      return;
+    }
+    if (event.event === "citation_integrity_checked") {
+      const integrity: AssistIntegrity = {
+        passed: data.passed === true,
+        applicable: data.applicable !== false,
+        checks: (data.checks as AssistIntegrity["checks"]) ?? {},
+      };
+      updateTurn(turnId, { citationIntegrity: integrity });
+      return;
+    }
+    // ── 既有 14 事件（行为不变） ──
     if (event.event === "request_started") {
       setSteps({ scope: "running", retrieval: "waiting", generation: "waiting" });
     }
@@ -454,6 +550,10 @@ export function ChatPage() {
   const railUsage = selectedTurn ? selectedTurn.usage ?? null : usage;
   const railDegraded = selectedTurn ? selectedTurn.degraded ?? null : degradedReason;
   const railFidelity = selectedTurn ? selectedTurn.citationFidelity ?? null : citationFidelity;
+  // M2：实时轮次的 assist 轨道数据（selectedTurn 覆盖历史轮次快照）
+  const latestAssistPlan = turns.find((turn) => turn.state === "streaming")?.plan ?? [...turns].reverse().find((turn) => turn.plan)?.plan ?? null;
+  const latestAssistToolCalls =
+    turns.find((turn) => turn.state === "streaming")?.toolCalls ?? [...turns].reverse().find((turn) => turn.toolCalls?.length)?.toolCalls ?? [];
   const conflictItems = policyConflictItems(railTrace);
   const routeView = railRoute ? routeDecisionView(railRoute) : null;
   // 研究项②：版本时效判定基准日——所选轮次的查询日期，未选时跟随当前设置
@@ -548,7 +648,7 @@ export function ChatPage() {
     setCitationFocus({ rank, nonce: Date.now() });
   };
 
-  const submit = async (event?: FormEvent, preset?: string, retryId?: string) => {
+  const submit = async (event?: FormEvent, preset?: string, retryId?: string, resumeFrom?: string) => {
     event?.preventDefault();
     const finalQuestion = (preset ?? question).trim();
     if (!finalQuestion || running) return;
@@ -590,7 +690,10 @@ export function ChatPage() {
     controller.current = new AbortController();
 
     try {
-      await streamChat(
+      // M2：Assist 开关（本地状态；后端 AGENT_ASSIST_ENABLED 关闭时端点 404，
+      // 前端捕获后回落到普通流并提示一次）。resume 场景走同一入口（新请求语义）。
+      const streamer = assistMode ? streamAssistAgent : streamChat;
+      await streamer(
         {
           question: finalQuestion,
           retrieval_strategy: strategy,
@@ -600,6 +703,7 @@ export function ChatPage() {
           graph_enabled: graphEnabled,
           graph_hops: graphHops,
           ...(queryDate ? { query_date: queryDate } : {}),
+          ...(resumeFrom ? { resume_from: resumeFrom } : {}),
         },
         (streamEvent) => handleEvent(id, streamEvent),
         controller.current.signal,
@@ -879,6 +983,48 @@ export function ChatPage() {
                         </button>
                       )}
                     </div>
+                    {/* ── M2 Assist 增量渲染（UI-G 设计规格 §3；flag off 时不出现） ── */}
+                    {turn.plan ? (
+                      <p className="agent-execution-summary">
+                        {turn.toolCalls?.length
+                          ? turn.toolCalls.every((call) => call.status !== "running")
+                            ? `已完成 ${turn.toolCalls.length} 步查询`
+                            : `正在执行 ${turn.toolCalls.length} 个查询步骤…`
+                          : `已制定 ${turn.plan.steps.length} 个查询步骤`}
+                      </p>
+                    ) : null}
+                    {turn.fallbackReason ? (
+                      <div className="rail-degraded loop-fallback" role="status">
+                        <AlertTriangle size={14} />
+                        <span>{turn.fallbackReason}</span>
+                      </div>
+                    ) : null}
+                    {turn.clarification && !turn.clarificationAnswered ? (
+                      <ClarificationCard
+                        clarification={turn.clarification}
+                        onResolved={(answers) => {
+                          const clarificationId = turn.clarification?.clarification_id;
+                          updateTurn(turn.id, { clarificationAnswered: true });
+                          const joined = Object.values(answers).filter(Boolean).join("；");
+                          void submit(undefined, `${turn.question}（补充：${joined}）`, undefined, clarificationId);
+                        }}
+                      />
+                    ) : null}
+                    {turn.citationIntegrity && !turn.citationIntegrity.passed && turn.citationIntegrity.applicable ? (
+                      <div className="citation-integrity-notice" role="alert">
+                        <AlertTriangle size={14} />
+                        <span>回答未通过引用校验：本次只提供证据原文，避免误导。</span>
+                        {(turn.citations?.length ?? 0) > 0 ? (
+                          <button
+                            className="button secondary"
+                            onClick={() => focusCitation(turn.id, turn.citations?.[0]?.final_rank ?? 1)}
+                            type="button"
+                          >
+                            查看证据原文
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : null}
                     {/* 研究项①⑤：Markdown 渲染 + [citation-N] 内联锚点（点击定位证据链） */}
                     {turn.answer ? (
                       <AnswerBody
@@ -1001,6 +1147,15 @@ export function ChatPage() {
             />
             <div className="composer-foot">
               <span>{question.length}/2000</span>
+              {/* M2：Assist 本地开关（后端未开启时端点 404，会回落普通流并提示） */}
+              <label className="assist-toggle" title="多步查询会先核对版本与关联制度，回答更慢但依据更完整">
+                <input
+                  checked={assistMode}
+                  onChange={(event) => setAssistMode(event.target.checked)}
+                  type="checkbox"
+                />
+                多步查询
+              </label>
               {running ? (
                 /* U9：中止血用停止图标（Square），RotateCcw 保留给"重试" */
                 <button className="button secondary" onClick={() => controller.current?.abort()} type="button">
@@ -1031,6 +1186,44 @@ export function ChatPage() {
             <TraceStep label="查找相关制度" state={railSteps.retrieval} />
             <TraceStep label="生成回答" state={railSteps.generation} last />
           </div>
+
+          {/* M2：执行步骤/执行记录（默认折叠，flag 或轮次无数据时不渲染） */}
+          {selectedTurn?.plan ?? (!activeTurnId && latestAssistPlan) ? (
+            <section className="rail-section assist-section">
+              <details className="technical-details assist-fold">
+                <summary>
+                  执行步骤（{((selectedTurn?.plan ?? latestAssistPlan)?.steps.length ?? 0)}）
+                </summary>
+                <ol className="assist-plan-list">
+                  {(selectedTurn?.plan ?? latestAssistPlan)?.steps.map((step) => {
+                    const call = (selectedTurn?.toolCalls ?? []).find((item) => item.step === step.name);
+                    return (
+                      <li data-status={call?.status ?? "pending"} key={step.name}>
+                        <span>{call?.status === "ok" ? "✓" : call?.status === "running" ? "…" : call ? "×" : "·"}</span>
+                        {step.label}
+                      </li>
+                    );
+                  })}
+                </ol>
+              </details>
+              {(selectedTurn?.toolCalls ?? latestAssistToolCalls)?.length ? (
+                <details className="technical-details assist-fold">
+                  <summary>执行记录（{(selectedTurn?.toolCalls ?? latestAssistToolCalls)?.length}）</summary>
+                  <ul className="assist-tool-list">
+                    {(selectedTurn?.toolCalls ?? latestAssistToolCalls)?.map((call) => (
+                      <li key={`${call.step}-${call.label}`}>
+                        <span className={`assist-tool-status ${call.status}`}>
+                          {call.status === "running" ? "进行中" : call.status === "ok" ? "完成" : call.status === "timeout" ? "超时" : call.status === "denied" ? "需权限" : "失败"}
+                        </span>
+                        <span className="assist-tool-label">{call.label}</span>
+                        {call.latency_ms != null ? <small>{(call.latency_ms / 1000).toFixed(1)}s</small> : null}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              ) : null}
+            </section>
+          ) : null}
 
           {/* I4：降级时给出显式横幅，说明降级原因，而不是静默改变行为 */}
           {railDegraded ? (
@@ -1336,6 +1529,51 @@ function FollowUpSuggestions({ turn, onSubmit }: { turn: Turn; onSubmit: (questi
           {item}
         </button>
       ))}
+    </div>
+  );
+}
+
+/** M2：澄清卡（UI-G 设计规格 §4.2）——提交即新请求（resume_from），不复用 error retry 语义 */
+function ClarificationCard({
+  clarification,
+  onResolved,
+}: {
+  clarification: AssistClarification;
+  onResolved: (answers: Record<string, string>) => void;
+}) {
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const expired = clarification.expires_at ? new Date(clarification.expires_at).getTime() < Date.now() : false;
+  const allFilled = clarification.questions.every((item) => (answers[item] ?? "").trim().length > 0);
+
+  if (expired) {
+    return (
+      <div className="clarification-card expired" role="status">
+        <strong>补充信息已过期</strong>
+        <span>补充链接有时效（30 分钟内有效），请重新提问。</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="clarification-card" aria-live="polite">
+      <strong>为了准确回答，请补充 {clarification.questions.length} 个信息</strong>
+      <span className="clarification-context">以上对话内容已保留，补充后将一起作为依据。</span>
+      <ol>
+        {clarification.questions.map((item) => (
+          <li key={item}>
+            <label htmlFor={`clarify-${clarification.clarification_id}-${item}`}>{item}</label>
+            <input
+              id={`clarify-${clarification.clarification_id}-${item}`}
+              onChange={(event) => setAnswers((current) => ({ ...current, [item]: event.target.value }))}
+              type="text"
+              value={answers[item] ?? ""}
+            />
+          </li>
+        ))}
+      </ol>
+      <button className="button primary" disabled={!allFilled} onClick={() => onResolved(answers)} type="button">
+        补充并继续
+      </button>
     </div>
   );
 }

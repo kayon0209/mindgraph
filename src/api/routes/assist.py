@@ -146,3 +146,52 @@ async def assist_stream(payload: AssistRequest, request: Request):
         metadata={"scope_user": (scope or {}).get("user"), "stream": True},
     )
     return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@router.post("/agent/stream")
+async def assist_agent_stream(payload: AssistRequest, request: Request):
+    """M2：确定性 Assist Agent 流（AGENT_ASSIST_ENABLED 默认关闭时 404）。
+
+    与 /assist/stream 的差异：经 AgentService 确定性编排（plan/tool 轨迹/
+    澄清协议/引用完整性门），复用同一应用服务层，无 HTTP/MCP 自调用。
+    事件序列见 domain/contracts.SSE_EVENT_NAMES 的 M2 段；旧客户端忽略未知事件。
+    """
+    from fastapi import HTTPException
+
+    from infrastructure.settings import get_settings
+
+    if not get_settings().AGENT_ASSIST_ENABLED:
+        raise HTTPException(status_code=404, detail="assist agent is disabled")
+
+    scope = resolve_access_scope(request)
+    container = get_container()
+    record_access_audit(
+        container.database,
+        actor=current_actor(request),
+        action="assist_stream",
+        resource="assist/agent/stream",
+        decision="allow",
+        metadata={"scope_user": (scope or {}).get("user"), "mode": "agent"},
+    )
+
+    async def generate():
+        try:
+            async for item in iter_sync_events(
+                lambda: get_container().agent_service.stream_assist(payload, access_scope=scope),
+                executor=_executor,
+            ):
+                if await request.is_disconnected():
+                    break
+                yield f"event: {item['event']}\ndata: {json.dumps(item, ensure_ascii=False, default=str)}\n\n"
+        except Exception as exc:
+            request_id = getattr(request.state, "request_id", None)
+            logger.exception("assist_agent_stream_error", extra={"request_id": request_id, "error": str(exc)})
+            error_payload = {
+                "request_id": request_id,
+                "event": "error",
+                "timestamp": datetime.now(UTC).isoformat(),
+                "data": error_event_data("stream_error", "Stream failed — check server logs for details."),
+            }
+            yield f"event: error\ndata: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

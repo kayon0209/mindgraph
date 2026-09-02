@@ -330,3 +330,41 @@ def test_multi_surface_reuse_dispatch_and_audit_fail_closed(tmp_path: Path):
         chat_client.close()
         assist_client.close()
         override_container(None)
+
+
+def test_agent_stream_disabled_by_default_and_enabled_returns_events(tmp_path: Path, monkeypatch):
+    """M2 通道门控：AGENT_ASSIST_ENABLED 默认关闭 → /assist/agent/stream 404；
+    开启后返回 agent 事件序列（plan/tool/integrity/completed）。"""
+    from api.schemas.assist import AssistRequest
+    from application.agent_service import AgentService
+
+    service, database = _build_service(tmp_path)
+    agent = AgentService(service)
+    override_container(SimpleNamespace(database=database, mindgraph_chat=service, agent_service=agent, privacy_log=False))
+    client = TestClient(_mini_assist_app(), raise_server_exceptions=False)
+    try:
+        # 默认关闭：404（flag 未开）
+        with client.stream(
+            "POST", "/api/v1/assist/agent/stream",
+            json={"question": "报销时限是多少天？", "retrieval_strategy": "hybrid"},
+        ) as response:
+            assert response.status_code == 404
+
+        # 开启：事件序列包含 M2 新事件且以 completed 收尾
+        monkeypatch.setenv("AGENT_ASSIST_ENABLED", "true")
+        get_settings.cache_clear()
+        with client.stream(
+            "POST", "/api/v1/assist/agent/stream",
+            json={"question": "报销时限是多少天？", "retrieval_strategy": "hybrid"},
+        ) as response:
+            assert response.status_code == 200
+            events = [line[len("event: "):] for line in response.iter_lines() if line.startswith("event: ")]
+        assert "plan_created" in events
+        assert "tool_call_started" in events
+        assert "citation_integrity_checked" in events
+        assert events[-1] == "completed"
+    finally:
+        client.close()
+        override_container(None)
+        monkeypatch.delenv("AGENT_ASSIST_ENABLED", raising=False)
+        get_settings.cache_clear()
