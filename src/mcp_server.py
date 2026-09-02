@@ -74,6 +74,22 @@ def _assist_mcp_enabled() -> bool:
     return bool(get_settings().ASSIST_MCP_ENABLED)
 
 
+def _evidence_registry():
+    """获取容器内共享的 EvidenceToolRegistry（M1 起三个只读工具的统一执行面）。"""
+    container = get_container()
+    registry = getattr(container, "evidence_tool_registry", None)
+    return registry
+
+
+def _registry_tools() -> list[dict[str, Any]]:
+    """来自共享 registry 的 MCP 工具清单（M1：三个只读治理工具）。"""
+    registry = _evidence_registry()
+    if registry is None:
+        return []
+    manifest: list[dict[str, Any]] = registry.mcp_tool_manifest(context="external_mcp")
+    return manifest
+
+
 def _assist_max_top_k() -> int:
     """Assist 通道的 top_k 上限（单一数据源：settings.ASSIST_MAX_TOP_K）。"""
     from infrastructure.settings import get_settings
@@ -159,6 +175,10 @@ def _tools() -> list[dict[str, Any]]:
                 "additionalProperties": False,
             },
         })
+    # M1：共享 EvidenceToolRegistry 暴露的只读治理工具（policy 版本族/
+    # 概念缺口/引用完整性）。旧 5 工具保持原样；新工具经 registry 统一
+    # 执行（ACL/审计/deadline/脱敏），mcp_server 只做 envelope 映射。
+    tools.extend(_registry_tools())
     return tools
 
 
@@ -429,6 +449,26 @@ def _call_tool(
             "index_version": result.index_version,
         }
 
+    # M1：共享 EvidenceToolRegistry 的只读治理工具——统一执行面
+    # （principal→ACL→参数校验→deadline→handler→审计→脱敏），本函数
+    # 只做 MCP envelope 映射，不再写业务分支。
+    registry = _evidence_registry()
+    if registry is not None and registry.spec_for(name) is not None:
+        from application.evidence_tools.registry import ToolDeadlineExceeded, ToolValidationFailed
+
+        try:
+            tool_result: dict[str, Any] = registry.call(
+                name, arguments,
+                principal=principal,
+                context="external_mcp",
+                deadline=deadline,
+            )
+            return tool_result
+        except ToolValidationFailed as exc:
+            raise InvalidToolArguments(str(exc)) from exc
+        except ToolDeadlineExceeded as exc:
+            raise MCPToolDeadlineExceeded(name) from exc
+
     raise ValueError(f"Unknown tool: {name}")
 
 
@@ -536,5 +576,13 @@ def run_stdio(principal: dict[str, Any] | None = None) -> None:
 
 if __name__ == "__main__":
     env_principal = os.getenv("MCP_PRINCIPAL")
-    principal = {"name": env_principal, "authenticated": bool(env_principal)} if env_principal else None
+    # 本地调试主体的角色注入（逗号分隔，如 "admin" 或 "read,finance"）：
+    # 无角色主体的 allow/deny 均空 → build_access_scope 视为受限 scope
+    # （私有内容不可见）；smoke/联调用 MCP_PRINCIPAL_ROLES 显式提权。
+    env_roles = [item.strip() for item in os.getenv("MCP_PRINCIPAL_ROLES", "").split(",") if item.strip()]
+    principal = None
+    if env_principal:
+        principal = {"name": env_principal, "authenticated": bool(env_principal)}
+        if env_roles:
+            principal["roles"] = env_roles
     run_stdio(principal=principal)

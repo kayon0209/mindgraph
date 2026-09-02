@@ -79,6 +79,12 @@ class ServiceContainer:
         self.feedback = FeedbackService(self.database)
         self.evaluation = EvaluationService(self.database)
         self.governance = EvaluationGovernanceService(self.database)
+        # M1：共享证据工具注册表（三个只读治理工具的统一执行面；
+        # MCP tools/list 与 _call_tool 经它执行，后续 Assist/Task 通道复用）。
+        from application.evidence_tools.handlers import build_default_registry, set_handler_database
+
+        self.evidence_tool_registry = build_default_registry(self.database, question_miner=self.question_concept_miner)
+        set_handler_database(self.database)
         self._register_builtin_datasets()
         self._init_mindgraph()
 

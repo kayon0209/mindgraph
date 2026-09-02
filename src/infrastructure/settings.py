@@ -135,6 +135,22 @@ class Settings(BaseSettings):
     ASSIST_TIMEOUT_SECONDS: float = 60.0
     ASSIST_MAX_TOP_K: int = 10
 
+    # ── Agentic Evidence Layer 阶段开关（ADR-003；M0 仅登记，不消费） ──
+    # 依据《MindGraph Agent 化实施方案》M0 要求登记、后续里程碑按序消费：
+    # - AGENT_ASSIST_ENABLED：M2 内置确定性 Assist（计划/工具轨迹/澄清协议）；
+    # - AGENT_TASKS_ENABLED：M4 可恢复后台任务与 artifacts（Gate G1 之后）；
+    # - AGENT_WRITE_TOOLS_ENABLED：M5 受控 MCP 写工具（M4 稳定后）；
+    # - CONVERSATION_PERSISTENCE_ENABLED：M3 服务端会话持久化。
+    # 本阶段（M0/M1）打开这些开关不得产生任何运行时行为变化。
+    AGENT_ASSIST_ENABLED: bool = False
+    AGENT_TASKS_ENABLED: bool = False
+    AGENT_WRITE_TOOLS_ENABLED: bool = False
+    CONVERSATION_PERSISTENCE_ENABLED: bool = False
+    # Assist 单请求工具调用预算（M2 AgentExecutionPolicy 消费；M0 仅登记）
+    AGENT_MAX_TOOL_CALLS: int = 3
+    # Assist 请求 deadline（秒；M2 消费；MCP 通道沿用协作式 deadline 机制）
+    AGENT_REQUEST_DEADLINE_SECONDS: float = 45.0
+
     # ── 数据库 ──
     DATABASE_PATH: str = str(PROJECT_ROOT / "data" / "product" / "product.sqlite3")
     SQLITE_JOURNAL_MODE: str = "WAL"

@@ -156,3 +156,59 @@ def test_golden_sync_answer_exposes_error_code_and_fidelity(tmp_path: Path):
     assert result.error_code == "answered"
     assert result.citation_fidelity is True
     assert "citation-1" in result.answer
+
+
+def test_agent_stage_flags_registered_default_off():
+    """Agentic Evidence Layer 阶段开关（ADR-003 / 实施方案 M0）：登记即冻结。
+
+    这些开关在 M0/M1 不被任何运行时路径消费；本测试固化“已登记 + 默认关闭 +
+    预算默认值”，防止未来里程碑实现前被静默改默认或改名。
+    """
+    from infrastructure.settings import Settings
+
+    defaults = Settings(
+        _env_file=None,  # 不读 .env，只校验代码默认值
+    )
+    assert defaults.AGENT_ASSIST_ENABLED is False
+    assert defaults.AGENT_TASKS_ENABLED is False
+    assert defaults.AGENT_WRITE_TOOLS_ENABLED is False
+    assert defaults.CONVERSATION_PERSISTENCE_ENABLED is False
+    assert defaults.AGENT_MAX_TOOL_CALLS == 3
+    assert defaults.AGENT_REQUEST_DEADLINE_SECONDS == 45.0
+
+
+def test_agent_stage_flags_do_not_affect_boot_when_enabled():
+    """M0/M1 阶段红线：即使误开这些开关，也不得产生任何运行时行为变化。
+
+    以“开启全部阶段开关后 OpenAPI 路由面不变”为机器可判定的 off-态等价：
+    现有 app 的路由集只由 ASSIST_ENABLED 决定，阶段开关不参与挂载。
+    """
+    import os
+
+    from fastapi.testclient import TestClient
+
+    from api.main import app
+    from infrastructure.settings import get_settings
+
+    baseline_paths = set(app.openapi()["paths"])
+
+    os.environ["AGENT_ASSIST_ENABLED"] = "true"
+    os.environ["AGENT_TASKS_ENABLED"] = "true"
+    os.environ["AGENT_WRITE_TOOLS_ENABLED"] = "true"
+    os.environ["CONVERSATION_PERSISTENCE_ENABLED"] = "true"
+    get_settings.cache_clear()
+    try:
+        enabled_paths = set(app.openapi()["paths"])
+        client = TestClient(app, raise_server_exceptions=False)
+        resp = client.post("/api/v1/agent/tasks", json={})
+        assert enabled_paths == baseline_paths
+        assert resp.status_code == 404
+    finally:
+        for key in (
+            "AGENT_ASSIST_ENABLED",
+            "AGENT_TASKS_ENABLED",
+            "AGENT_WRITE_TOOLS_ENABLED",
+            "CONVERSATION_PERSISTENCE_ENABLED",
+        ):
+            os.environ.pop(key, None)
+        get_settings.cache_clear()
