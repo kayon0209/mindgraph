@@ -4016,3 +4016,14 @@ h2,
 @media (prefers-reduced-motion: reduce) {
   .assist-plan-list li[data-status="running"] { animation: none; }
 }
+
+/* M3：会话迁移入口（显式操作区，强调"主动迁移"而非自动同步） */
+.session-migration-block {
+  border: 1px solid var(--border, #d1d5db);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}

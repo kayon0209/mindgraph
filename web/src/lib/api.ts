@@ -190,4 +190,22 @@ export const api = {
   /** 覆盖缺口：用户问过但语料未覆盖的概念（指导补传材料） */
   conceptGaps: (limit = 50) =>
     request<ConceptGapsResponse>(`/mindgraph/concept-gaps?limit=${limit}`),
+  /** M3：服务端会话（CONVERSATION_PERSISTENCE_ENABLED 开启时可用） */
+  createConversation: (payload: { title: string; workspace?: string; department?: string }) =>
+    request<{ conversation_id: string; title: string; status: string; created_at: string; updated_at: string }>(
+      "/mindgraph/conversations", { method: "POST", body: JSON.stringify(payload) },
+    ),
+  listConversations: (cursor?: string, limit = 50) =>
+    request<{ items: Array<{ conversation_id: string; title: string; status: string; created_at: string; updated_at: string }>; next_cursor: string | null }>(
+      `/mindgraph/conversations${cursor ? `?cursor=${encodeURIComponent(cursor)}&limit=${limit}` : `?limit=${limit}`}`,
+    ),
+  getConversationMessages: (conversationId: string) =>
+    request<Array<{ message_id: string; sequence_no: number; role: string; content: string; created_at: string }>>(
+      `/mindgraph/conversations/${encodeURIComponent(conversationId)}/messages`,
+    ),
+  importConversationTurns: (conversationId: string, turns: Array<Record<string, unknown>>) =>
+    request<{ imported: number; skipped_existing: number; mapping: unknown[]; total_messages: number }>(
+      `/mindgraph/conversations/${encodeURIComponent(conversationId)}/import-turns`,
+      { method: "POST", body: JSON.stringify({ turns }) },
+    ),
 };

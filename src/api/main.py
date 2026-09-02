@@ -150,6 +150,11 @@ for route in (chat.router, connectors.router, knowledge.router, evaluation.route
 if _settings.ASSIST_ENABLED:
     app.include_router(assist.router, prefix=API_PREFIX, dependencies=[Depends(require_authenticated)])
 
+# M3：服务端会话——CONVERSATION_PERSISTENCE_ENABLED 默认关闭时完全不挂载。
+if _settings.CONVERSATION_PERSISTENCE_ENABLED:
+    from api.routes import conversations as conversations_route
+
+    app.include_router(conversations_route.router, prefix=API_PREFIX, dependencies=[Depends(require_authenticated)])
 
 # ── 根路径 ──
 

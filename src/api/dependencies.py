@@ -95,6 +95,11 @@ class ServiceContainer:
             self.mindgraph_chat,
             max_tool_calls=settings.AGENT_MAX_TOOL_CALLS,
         )
+        # M3：服务端会话（CONVERSATION_PERSISTENCE_ENABLED 在路由层门控挂载；
+        # 服务装配本身无副作用，schema v10 已就位）。
+        from application.conversation_service import ConversationService
+
+        self.conversation_service = ConversationService(self.database)
 
     def _init_mindgraph(self) -> None:
         """装配 MindGraph Graph RAG 管线（复用 ChatService + MindGraph 检索包装）。"""

@@ -12,7 +12,7 @@ from typing import Any, Iterator
 
 logger = logging.getLogger("mindgraph.database")
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 
 class ProductDatabase:
@@ -315,6 +315,58 @@ class ProductDatabase:
                 "effective_to": "TEXT",
                 "extraction_method": "TEXT",
             })
+            # ── schema v10（M3 服务端会话，ADR-003/实施方案 §6.1 修订版） ──
+            # 只新增表与索引，不改既有表；owner 校验一律用稳定 principal_id，
+            # 不用展示名。默认不保存完整工具参数/结果（脱敏字段承载）。
+            connection.executescript("""
+                CREATE TABLE IF NOT EXISTS conversations (
+                    conversation_id TEXT PRIMARY KEY,
+                    principal_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    workspace TEXT,
+                    department TEXT,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    retention_until TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS messages (
+                    message_id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL,
+                    sequence_no INTEGER NOT NULL,
+                    request_id TEXT,
+                    role TEXT NOT NULL CHECK (role IN ('user','assistant','system')),
+                    content TEXT NOT NULL,
+                    tool_call_id TEXT,
+                    citations_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL,
+                    UNIQUE(conversation_id, sequence_no),
+                    FOREIGN KEY(conversation_id) REFERENCES conversations(conversation_id)
+                );
+                CREATE TABLE IF NOT EXISTS tool_call_log (
+                    tool_call_id TEXT PRIMARY KEY,
+                    conversation_id TEXT,
+                    request_id TEXT,
+                    principal_id TEXT,
+                    tool_name TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    finished_at TEXT,
+                    arguments_redacted_json TEXT NOT NULL DEFAULT '{}',
+                    arguments_hash TEXT,
+                    result_summary_json TEXT NOT NULL DEFAULT '{}',
+                    error_code TEXT,
+                    FOREIGN KEY(conversation_id) REFERENCES conversations(conversation_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_conversations_owner
+                    ON conversations(principal_id, status, updated_at);
+                CREATE INDEX IF NOT EXISTS idx_messages_conversation
+                    ON messages(conversation_id, sequence_no);
+                CREATE INDEX IF NOT EXISTS idx_tool_call_log_conversation
+                    ON tool_call_log(conversation_id, started_at);
+                CREATE INDEX IF NOT EXISTS idx_tool_call_log_request
+                    ON tool_call_log(request_id);
+            """)
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_notes_policy_lifecycle "
                 "ON notes(policy_key, policy_status, effective_from, effective_to)"

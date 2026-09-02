@@ -27,6 +27,7 @@ import { citationValidity, fidelityMissingMarks as citationFidelityMarks, summar
 import { buildEvidenceMarkdown, downloadTextFile, evidenceFilename } from "../lib/export-evidence";
 import { completionGenerationState, completionViewState, policyConflictItems } from "../lib/policy-conflicts";
 import { routeDecisionView } from "../lib/route-decision";
+import { migrateAllSessions, sessionsPendingMigration, fetchServerConversationsEnabled } from "../lib/session-migration";
 import type {
   AnswerResult,
   AssistClarification,
@@ -245,6 +246,47 @@ export function ChatPage() {
   const [graphEnabled, setGraphEnabled] = useState(() => loadSettings().graphEnabled);
   /** M2：本地 Assist 开关（后端 AGENT_ASSIST_ENABLED 关闭时端点 404，回落普通流） */
   const [assistMode, setAssistMode] = useState(false);
+  /** M3：服务端会话迁移（显式、用户主动触发；服务端未开启时隐藏入口） */
+  const [serverConversationsEnabled, setServerConversationsEnabled] = useState(false);
+  const [migrating, setMigrating] = useState(false);
+  const [migrationDone, setMigrationDone] = useState(0);
+  const [migrationResult, setMigrationResult] = useState<{ migrated: string[]; failed: string[] } | null>(null);
+
+  /** M3：探测服务端会话是否开启（列表端点 404 = 未开启，入口隐藏） */
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const enabled = await fetchServerConversationsEnabled();
+        if (!cancelled) setServerConversationsEnabled(enabled);
+      } catch {
+        if (!cancelled) setServerConversationsEnabled(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  /** M3：逐会话迁移（migrateAllSessions 内部逐个上传-校验-清理；标记保证幂等重试） */
+  const runMigration = async (pending: Parameters<typeof migrateAllSessions>[0]) => {
+    setMigrating(true);
+    setMigrationDone(0);
+    try {
+      const result = await migrateAllSessions(pending, {
+        onProgress: (done) => setMigrationDone(done),
+      });
+      setMigrationResult(result);
+      // 迁移成功后同步本地会话列表（已迁移会话的正文已被清理）
+      if (result.migrated.length) {
+        const kept = sessions.filter((session) => !result.migrated.includes(session.id));
+        setSessions(kept);
+        if (kept.length === 0) startNewSession();
+      }
+    } finally {
+      setMigrating(false);
+    }
+  };
   const [graphHops, setGraphHops] = useState(() => loadSettings().graphHops);
   const [queryDate, setQueryDate] = useState("");
   const [turns, setTurns] = useState<Turn[]>([]);
@@ -801,6 +843,34 @@ export function ChatPage() {
                 <button className="button secondary small" disabled={running} onClick={startNewSession} type="button">
                   <Plus size={14} /> 新建对话
                 </button>
+                {/* M3：显式迁移到服务端（检测到待迁移会话且服务端开启时显示；
+                    用户确认后逐会话上传，成功即清理本地正文，保留迁移标记） */}
+                {serverConversationsEnabled && sessionsPendingMigration(sessions).length ? (
+                  <div className="session-migration-block">
+                    <p className="session-menu-note">
+                      检测到 {sessionsPendingMigration(sessions).length} 个本机会话可迁移到服务端留存。
+                      迁移是主动操作：逐个上传，校验通过后清理本机正文（保留迁移标记）。
+                    </p>
+                    {migrating ? (
+                      <p className="session-menu-note" role="status">迁移中… 已完成 {migrationDone}/{sessionsPendingMigration(sessions).length}</p>
+                    ) : (
+                      <button
+                        className="button secondary small"
+                        onClick={() => void runMigration(sessionsPendingMigration(sessions))}
+                        type="button"
+                      >
+                        <History size={14} /> 迁移到服务端
+                      </button>
+                    )}
+                    {migrationResult ? (
+                      <p className="session-menu-note" role="status">
+                        {migrationResult.failed.length
+                          ? `迁移完成：成功 ${migrationResult.migrated.length} 个，失败 ${migrationResult.failed.length} 个（可重试，已迁移的不会重复）`
+                          : `迁移完成：${migrationResult.migrated.length} 个会话已留存服务端。`}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
                 {sessions.length ? (
                   <ul className="session-list">
                     {sessions.map((session) => (
