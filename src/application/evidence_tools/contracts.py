@@ -32,3 +32,6 @@ class ToolSpec:
 
 # Registry 执行器的统一签名：handler(principal, scope, arguments, deadline) -> dict
 ToolHandler = Callable[[dict[str, Any], dict[str, Any] | None, dict[str, Any], float | None], dict[str, Any]]
+
+# 通道白名单值域（M5-A 起 write 工具仅 external_mcp）
+TOOL_CONTEXTS = ("external_mcp", "assist", "task")

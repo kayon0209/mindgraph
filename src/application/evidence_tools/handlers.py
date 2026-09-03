@@ -29,12 +29,97 @@ MAX_GAPS_LIMIT = 50
 
 
 def build_default_registry(database: ProductDatabase, *, question_miner=None) -> EvidenceToolRegistry:
-    """构造 M1 默认只读工具集。question_miner 为容器内 QuestionConceptMiner。"""
+    """构造默认工具集：M1 三个只读治理工具 + M5-A save_artifact 写工具
+    （后者经 AGENT_WRITE_TOOLS_ENABLED 双重门控——见 mcp_server 的
+    _registry_tools 过滤与 handler 内 fail-closed 校验）。"""
     registry = EvidenceToolRegistry(database)
     registry.register(POLICY_HISTORY_SPEC, _handle_policy_history)
     registry.register(CONCEPT_GAPS_SPEC, _make_concept_gaps_handler(question_miner))
     registry.register(VERIFY_CITATIONS_SPEC, _handle_verify_citations)
+    registry.register(SAVE_ARTIFACT_SPEC, _make_save_artifact_handler())
     return registry
+
+
+# ── mindgraph_save_artifact（M5-A 工具 A：低风险 private 保存） ──
+
+SAVE_ARTIFACT_SPEC = ToolSpec(
+    name="mindgraph_save_artifact",
+    description=(
+        "把一段回答及其证据快照保存到当前主体的私有空间（仅自己可见）。"
+        "保存草稿不等于发布；不提供共享/发布能力。幂等：相同保存键 + 相同内容"
+        "重复保存返回同一存档；同键不同内容会被拒绝（不静默覆盖）。"
+    ),
+    mode="write",
+    risk="low",
+    allowed_in=frozenset({"external_mcp"}),
+    timeout_seconds=5.0,
+    requires_approval=False,  # 低风险：操作者显式保存即确认（ADR-004/方案 M5-A）
+    # 标题与快照正文是用户内容，不进审计明文
+    redact_fields=frozenset({"title", "evidence_snapshot", "content"}),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "minLength": 1, "maxLength": 200},
+            "idempotency_key": {"type": "string", "minLength": 8, "maxLength": 64},
+            "content": {"type": "object", "description": "自由元数据（如来源说明）"},
+            "evidence_snapshot": {
+                "type": "array", "maxItems": 50,
+                "description": "回答所依据的证据快照（citation 对象列表）",
+            },
+            "citations": {"type": "array", "description": "回答的引用列表"},
+            "request_id": {"type": "string", "maxLength": 64},
+        },
+        "required": ["title", "idempotency_key", "evidence_snapshot", "citations"],
+        "additionalProperties": False,
+    },
+)
+
+
+def _make_save_artifact_handler():
+    from application.saved_artifact_service import (
+        SavedArtifactConflictError,
+        SavedArtifactService,
+        SavedArtifactValidationError,
+    )
+    from application.evidence_tools.registry import ToolExecutionRejected
+
+    def _handle_save_artifact(
+        principal: dict[str, Any],
+        scope: dict[str, Any] | None,
+        arguments: dict[str, Any],
+        deadline: float | None,
+    ) -> dict[str, Any]:
+        # fail-closed 双门控之二：未开 flag 直呼也拒绝（tools/list 已过滤，
+        # 这里防绕过）
+        from infrastructure.settings import get_settings
+
+        if not get_settings().AGENT_WRITE_TOOLS_ENABLED:
+            raise ToolExecutionRejected("write tools disabled (AGENT_WRITE_TOOLS_ENABLED=false)")
+        service = SavedArtifactService(_database())
+        try:
+            saved = service.save(
+                principal_id=(scope or {}).get("user") or principal.get("name") or "anonymous",
+                title=arguments["title"],
+                content=arguments.get("content") if isinstance(arguments.get("content"), dict) else {},
+                evidence_snapshot=arguments["evidence_snapshot"],
+                citations=arguments["citations"],
+                idempotency_key=arguments["idempotency_key"],
+                request_id=arguments.get("request_id"),
+                kind="chat_evidence_snapshot",
+            )
+        except SavedArtifactValidationError as exc:
+            raise ToolExecutionRejected(str(exc)) from exc
+        except SavedArtifactConflictError as exc:
+            raise ToolExecutionRejected(str(exc)) from exc
+        return {
+            "artifact_id": saved["artifact_id"],
+            "title": saved["title"],
+            "visibility": saved["visibility"],
+            "checksum": saved["checksum"],
+            "note": "已保存到你的私有空间；保存草稿不等于发布",
+        }
+
+    return _handle_save_artifact
 
 
 # ── mindgraph_get_policy_history ──

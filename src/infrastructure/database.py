@@ -12,7 +12,7 @@ from typing import Any, Iterator
 
 logger = logging.getLogger("mindgraph.database")
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 
 class ProductDatabase:
@@ -410,6 +410,28 @@ class ProductDatabase:
                     ON artifacts(owner_principal_id, created_at);
                 CREATE INDEX IF NOT EXISTS idx_artifacts_task
                     ON artifacts(task_id);
+                -- ── schema v12（M5-A：用户显式保存的私有证据存档，独立于任务 artifact 生命周期） ──
+                CREATE TABLE IF NOT EXISTS saved_artifacts (
+                    artifact_id TEXT PRIMARY KEY,
+                    owner_principal_id TEXT NOT NULL,
+                    kind TEXT NOT NULL DEFAULT 'chat_evidence_snapshot',
+                    title TEXT NOT NULL,
+                    content_json TEXT NOT NULL DEFAULT '{}',
+                    visibility TEXT NOT NULL DEFAULT 'private',
+                    request_id TEXT,
+                    conversation_id TEXT,
+                    evidence_snapshot_json TEXT NOT NULL DEFAULT '[]',
+                    citations_json TEXT NOT NULL DEFAULT '[]',
+                    checksum TEXT NOT NULL,
+                    idempotency_key TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(owner_principal_id, idempotency_key)
+                );
+                CREATE INDEX IF NOT EXISTS idx_saved_artifacts_owner
+                    ON saved_artifacts(owner_principal_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_saved_artifacts_request
+                    ON saved_artifacts(request_id);
             """)
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_notes_policy_lifecycle "

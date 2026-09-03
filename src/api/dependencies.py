@@ -114,6 +114,11 @@ class ServiceContainer:
             ).EvidenceQueryService(self.mindgraph_chat),
             policy_conflict_service=PolicyConflictService(self.database),
         )
+        # M5-A：用户显式保存的私有证据存档（SavedArtifactService；MCP 写工具
+        # mindgraph_save_artifact 经 registry 双门控复用同一服务）。
+        from application.saved_artifact_service import SavedArtifactService
+
+        self.saved_artifact_service = SavedArtifactService(self.database)
 
     def _init_mindgraph(self) -> None:
         """装配 MindGraph Graph RAG 管线（复用 ChatService + MindGraph 检索包装）。"""

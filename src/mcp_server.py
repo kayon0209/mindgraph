@@ -82,11 +82,21 @@ def _evidence_registry():
 
 
 def _registry_tools() -> list[dict[str, Any]]:
-    """来自共享 registry 的 MCP 工具清单（M1：三个只读治理工具）。"""
+    """来自共享 registry 的 MCP 工具清单（M1 三个只读治理工具；M5-A 写工具
+    仅在 AGENT_WRITE_TOOLS_ENABLED 开启时暴露——tools/list 过滤与 handler
+    内 fail-closed 校验双保险）。"""
     registry = _evidence_registry()
     if registry is None:
         return []
-    manifest: list[dict[str, Any]] = registry.mcp_tool_manifest(context="external_mcp")
+    from infrastructure.settings import get_settings
+
+    write_enabled = bool(get_settings().AGENT_WRITE_TOOLS_ENABLED)
+    manifest: list[dict[str, Any]] = []
+    for tool in registry.mcp_tool_manifest(context="external_mcp"):
+        spec = registry.spec_for(tool["name"])
+        if spec is not None and spec.mode == "write" and not write_enabled:
+            continue  # 写工具默认隐藏
+        manifest.append(tool)
     return manifest
 
 
@@ -449,12 +459,16 @@ def _call_tool(
             "index_version": result.index_version,
         }
 
-    # M1：共享 EvidenceToolRegistry 的只读治理工具——统一执行面
+    # M1/M5-A：共享 EvidenceToolRegistry 的治理工具——统一执行面
     # （principal→ACL→参数校验→deadline→handler→审计→脱敏），本函数
     # 只做 MCP envelope 映射，不再写业务分支。
     registry = _evidence_registry()
     if registry is not None and registry.spec_for(name) is not None:
-        from application.evidence_tools.registry import ToolDeadlineExceeded, ToolValidationFailed
+        from application.evidence_tools.registry import (
+            ToolDeadlineExceeded,
+            ToolExecutionRejected,
+            ToolValidationFailed,
+        )
 
         try:
             tool_result: dict[str, Any] = registry.call(
@@ -466,6 +480,10 @@ def _call_tool(
             return tool_result
         except ToolValidationFailed as exc:
             raise InvalidToolArguments(str(exc)) from exc
+        except ToolExecutionRejected:
+            # 业务级 fail-closed（flag 关闭/幂等冲突/审批未过）：以工具级
+            # 错误结果上抛（JSON-RPC -32603 通道），不与参数错误混淆
+            raise
         except ToolDeadlineExceeded as exc:
             raise MCPToolDeadlineExceeded(name) from exc
 

@@ -213,3 +213,27 @@ def test_v10_database_upgrades_to_v11_preserving_data(tmp_path: Path):
         assert row["principal_id"] == "keep-user"
     finally:
         database.close()
+
+
+# ── schema v12（M5-A saved_artifacts） ──
+
+def test_v11_upgrades_to_v12_preserving_tasks(tmp_path: Path):
+    database = ProductDatabase(tmp_path / "v11-to-v12.sqlite3")
+    database.initialize()
+    with database.connect() as connection:
+        connection.execute("DROP TABLE IF EXISTS saved_artifacts")
+        connection.execute("UPDATE schema_meta SET version=11")
+    # v11 数据保留：任务行原位升级不变
+    database.execute(
+        "INSERT INTO agent_tasks (task_id, principal_id, task_type, constraints_json, status,"
+        " idempotency_key, created_at, updated_at) VALUES ('keep-t1','keep-user','batch_policy_check',"
+        " '{}','completed','keep-key-0001','2026-09-03T00:00:00','2026-09-03T00:00:00')"
+    )
+    database.initialize()
+    try:
+        assert _stored_version(database) == SCHEMA_VERSION
+        row = database.fetch_one("SELECT principal_id FROM agent_tasks WHERE task_id='keep-t1'")
+        assert row["principal_id"] == "keep-user"
+        assert "saved_artifacts" in _table_names(database)
+    finally:
+        database.close()

@@ -68,12 +68,22 @@ def registry(tmp_path: Path):
 
 
 def test_registry_exposes_three_readonly_tools(registry):
+    """M1 三个只读治理工具 + M5-A save_artifact 写工具（模式与风险声明冻结）。
+    MCP tools/list 的写工具默认隐藏由 mcp_server 的 _registry_tools 过滤承担
+    （见 test_mcp_evidence_tools）。"""
     reg, _db = registry
-    names = {spec.name for spec in reg.specs()}
-    assert names == {"mindgraph_get_policy_history", "mindgraph_concept_gaps", "mindgraph_verify_citations"}
-    assert all(spec.mode == "read" for spec in reg.specs())
+    specs = {spec.name: spec for spec in reg.specs()}
+    assert set(specs) == {
+        "mindgraph_get_policy_history",
+        "mindgraph_concept_gaps",
+        "mindgraph_verify_citations",
+        "mindgraph_save_artifact",
+    }
+    assert all(spec.mode == "read" for name, spec in specs.items() if name != "mindgraph_save_artifact")
+    save = specs["mindgraph_save_artifact"]
+    assert save.mode == "write" and save.risk == "low" and save.requires_approval is False
     manifest = reg.mcp_tool_manifest()
-    assert {tool["name"] for tool in manifest} == names
+    assert {tool["name"] for tool in manifest} == set(specs)  # registry 全量；通道过滤在 mcp_server
     for tool in manifest:
         assert tool["inputSchema"]["type"] == "object"
 

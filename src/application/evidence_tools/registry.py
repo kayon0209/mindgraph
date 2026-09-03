@@ -31,6 +31,11 @@ class UnknownToolError(ValueError):
     pass
 
 
+class ToolExecutionRejected(ValueError):
+    """工具被治理层拒绝（flag 关闭、审批未过、幂等冲突等）——业务级 fail-closed，
+    与参数校验失败(-32602)区分，映射为工具级错误结果。"""
+
+
 def _deadline_remaining(deadline: float | None) -> float:
     if deadline is None:
         return float("inf")
@@ -151,6 +156,11 @@ class EvidenceToolRegistry:
             result = self._handlers[name](principal, scope, arguments, deadline)
         except ToolDeadlineExceeded:
             self._record(spec, actor, "deny", error="deadline_exceeded", context=context, audit_action=audit_action, arguments=redacted_arguments)
+            raise
+        except ToolExecutionRejected as exc:
+            # 业务级 fail-closed（flag 关闭/幂等冲突/审批未过）：记 deny 审计后
+            # 原样上抛——通道层映射为工具错误结果，不与参数错误(-32602)混淆
+            self._record(spec, actor, "deny", error=f"rejected:{str(exc)[:60]}", context=context, audit_action=audit_action, arguments=redacted_arguments)
             raise
         except Exception:
             self._record(spec, actor, "deny", error="handler_error", context=context, audit_action=audit_action, arguments=redacted_arguments)

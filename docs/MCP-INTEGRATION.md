@@ -22,6 +22,8 @@ MindGraph 把制度知识库暴露为**受治理的只读证据工具**，不是
 
 另有 `mindgraph_assist`（受治理问答，返回机器可判定 verdict），默认关闭，需 `ASSIST_MCP_ENABLED=true`。
 
+**写工具（M5-A 起，独立开关）**：`mindgraph_save_artifact`——把回答+证据快照保存到当前主体的**私有空间**（保存草稿不等于发布；无共享/发布路径）。需 `AGENT_WRITE_TOOLS_ENABLED=true` 才出现在 tools/list，且 handler 内 fail-closed 二次校验。幂等语义：相同 `idempotency_key` + 相同内容重复保存返回同一存档；同键不同内容被拒绝（不静默覆盖）。回滚：flag 置回 false 即隐藏，已保存数据保留。后续写工具（submit_evidence_feedback / propose_relation）按企业风险逐个单独上线，不在本开关内。
+
 ### 治理语义（调用方必读）
 
 - **版本冲突 fail-closed**：同一 policy_key 在查询日期存在多个有效版本时，问答返回 `conflicting_evidence`，不生成结论；用 `mindgraph_get_policy_history` 找到版本族后交人工裁决。
