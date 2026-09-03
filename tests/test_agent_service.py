@@ -261,3 +261,80 @@ def test_no_provider_function_calling_surface(tmp_path: Path):
     _events(service)
     for messages in FakeProvider.calls:
         assert all("tool_calls" not in str(m).lower() or True for m in messages)  # messages 本身不含工具协议字段
+
+
+def test_unused_citations_do_not_block_generation(tmp_path: Path):
+    """生成门语义与 chat 通道对齐（ADR-003/fail-closed 语义）：
+
+    unused_citations（检索返回但正文未引用）不是答案失真，不触发
+    evidence-only 降级；unknown_markers（引用不存在的标注）仍 fail-closed。
+    """
+    from application.chat_service import ChatService
+    from application.agent_service import AgentService
+
+    class UnusedProvider(FakeProvider):
+        def complete(self, messages):
+            # 只引用第 1 条；检索返回 1 条且 final_rank=1 → 无 unused。
+            # 构造 unused：返回 3 条引用，正文只标 [citation-1]
+            return ("结论 [citation-1]。", {"total_tokens": 4})
+
+    # 三引用管线（final_rank 1/2/3），正文只标 [citation-1] → 2 条 unused
+    class ThreeChunkPipeline(StubPipeline):
+        def __init__(self) -> None:
+            from retrieval.types import RetrievalTrace as _T
+            self.trace = _T(
+                query="q", requested_strategy="hybrid", actual_strategy="hybrid",
+                candidate_counts={"final": 3},
+                final_selected_chunks=[
+                    RetrievalCandidate(
+                        chunk=Chunk(chunk_id=f"p.md::{i}", text=f"证据 {i}", document_id="p.md",
+                                    chunk_index=i, section_path="s", metadata=_meta(document_version="v2")),
+                        final_rank=i + 1, dense_score=0.9)
+                    for i in range(3)
+                ],
+                latency_ms={"total_retrieval_ms": 1.0}, index_version="idx-1",
+                applied_filters={}, warnings=["query_understanding:none:none"],
+            )
+
+        def retrieve(self, *args, **kwargs):
+            return self.trace
+
+    database = ProductDatabase(tmp_path / "unused.sqlite3")
+    database.initialize()
+    chat = ChatService(database, lambda top_k: ThreeChunkPipeline(), UnusedProvider(), privacy_log_questions=False)
+    service = AgentService(chat)
+
+    events = list(service.stream_assist(ChatRequest(question="差旅餐补", retrieval_strategy="auto")))
+    names = [e["event"] for e in events]
+    integrity = next(e for e in events if e["event"] == "citation_integrity_checked")["data"]
+    completed = events[-1]["data"]
+
+    assert integrity["passed"] is True  # unused 不再阻断
+    assert integrity["checks"]["unused_citations"] == ["citation-2", "citation-3"]  # 仍如实披露
+    assert names[-1] == "completed" and completed["result_state"] == "answered"
+    assert "未通过引用校验" not in completed["answer"]  # 正常展示生成答案
+
+
+def test_unknown_markers_still_fail_closed(tmp_path: Path):
+    from application.chat_service import ChatService
+    from application.agent_service import AgentService
+
+    class UnknownMarkerProvider(FakeProvider):
+        def __init__(self) -> None:
+            self.attempts = 0
+
+        def complete(self, messages):
+            self.attempts += 1
+            return ("引用了不存在的 [citation-9]。", {"total_tokens": 4})
+
+    database = ProductDatabase(tmp_path / "unknown.sqlite3")
+    database.initialize()
+    chat = ChatService(database, lambda top_k: StubPipeline("single"), UnknownMarkerProvider(), privacy_log_questions=False)
+    service = AgentService(chat)
+
+    events = list(service.stream_assist(ChatRequest(question="差旅餐补", retrieval_strategy="auto")))
+    completed = events[-1]["data"]
+
+    assert completed["result_state"] == "system_error"
+    assert completed["citation_integrity"] is False
+    assert "未通过引用校验" in completed["answer"]  # evidence-only 降级

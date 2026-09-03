@@ -22,13 +22,24 @@ def clean_env(monkeypatch):
     os.environ["OPENAI_COMPAT_BASE_URL"] = "https://test.example.com"
     os.environ["BGE_LOCAL_FILES_ONLY"] = "true"
     os.environ["RATE_LIMIT_ENABLED"] = "false"
+    # Agentic flags 一律以进程内默认值（False）参与测试：.env 的灰度开启
+    # 不得影响"off 态行为"断言——显式覆盖优先于 .env 文件（pydantic-settings
+    # 优先级：环境变量 > .env）。需要 on 态的测试自行 setenv + cache_clear。
+    for flag in ("ASSIST_ENABLED", "ASSIST_MCP_ENABLED", "AGENT_ASSIST_ENABLED",
+                 "AGENT_TASKS_ENABLED", "AGENT_WRITE_TOOLS_ENABLED", "CONVERSATION_PERSISTENCE_ENABLED"):
+        os.environ[flag] = "false"
     # api.auth reads AUTH_MODE at import time; keep the module-level value in
     # sync with the isolated test environment. Tests for enterprise modes can
     # override it explicitly after this autouse fixture runs.
     import api.auth as auth
 
     monkeypatch.setattr(auth, "AUTH_MODE", "off")
+
+    from infrastructure.settings import get_settings
+
+    get_settings.cache_clear()
     yield
+    get_settings.cache_clear()
     os.environ.clear()
     os.environ.update(old_environ)
 

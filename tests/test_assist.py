@@ -99,22 +99,49 @@ def _mini_assist_app() -> FastAPI:
     return mini
 
 
-def test_assist_route_not_mounted_when_flag_off():
-    """默认关闭：真实 app 上没有 /api/v1/assist 路由，请求 404。"""
-    openapi_paths = set(real_app.openapi().get("paths", {}))
-    assert "/api/v1/assist" not in openapi_paths
-    assert "/api/v1/assist/stream" not in openapi_paths
-    client = TestClient(real_app, raise_server_exceptions=False)
+def test_assist_route_not_mounted_when_flag_off(monkeypatch):
+    """默认关闭：真实 app 上没有 /api/v1/assist 路由，请求 404。
+
+    app 的路由挂载发生在 import 时（读当时 flags）——.env 灰度开启期间
+    已 import 的进程无法体现 off 态。这里强制 off 后重新构造 main 模块，
+    断言的是"代码默认值"语义（与部署配置无关）。
+    """
+    import importlib
+    import sys
+
+    from infrastructure.settings import get_settings
+
+    for flag in ("ASSIST_ENABLED", "AGENT_ASSIST_ENABLED", "CONVERSATION_PERSISTENCE_ENABLED"):
+        monkeypatch.setenv(flag, "false")
+    get_settings.cache_clear()
     try:
-        resp = client.post("/api/v1/assist", json={"question": "报销时限？"})
-        assert resp.status_code == 404
+        sys.modules.pop("api.main", None)
+        fresh_main = importlib.import_module("api.main")
+        fresh_app = fresh_main.app
+        openapi_paths = set(fresh_app.openapi().get("paths", {}))
+        assert "/api/v1/assist" not in openapi_paths
+        assert "/api/v1/assist/stream" not in openapi_paths
+        assert "/api/v1/assist/agent/stream" not in openapi_paths
+        client = TestClient(fresh_app, raise_server_exceptions=False)
+        try:
+            resp = client.post("/api/v1/assist", json={"question": "报销时限？"})
+            assert resp.status_code == 404
+        finally:
+            client.close()
     finally:
-        client.close()
+        sys.modules.pop("api.main", None)
+        importlib.import_module("api.main")  # 恢复进程内单例
+        get_settings.cache_clear()
 
 
-def test_mcp_tool_hidden_when_flag_off():
+def test_mcp_tool_hidden_when_flag_off(monkeypatch):
+    from infrastructure.settings import get_settings
+
+    monkeypatch.setenv("ASSIST_MCP_ENABLED", "false")
+    get_settings.cache_clear()
     tool_names = {tool["name"] for tool in _tools()}
     assert "mindgraph_assist" not in tool_names
+    get_settings.cache_clear()
 
 
 def _enable_flag(monkeypatch, name: str) -> None:

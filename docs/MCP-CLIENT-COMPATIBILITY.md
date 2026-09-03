@@ -92,6 +92,14 @@ HTTP MCP 通道（`/api/v1/mcp`）有外层 `asyncio.wait_for` + 工具内协作
 
 按上述定义执行三客户端手工步骤并在此登记（格式：客户端版本 + 日期 + C1–C7 结果 + 证据摘录）：
 
-- Claude Code：_待实测登记_
-- Cursor：_待实测登记_
-- OpenHands：_待实测登记_
+- **Claude Code（实测通过，2026-09-03）**：
+  - 接入：项目根 `.mcp.json`（本仓库已含，principal `claude_code_eval` + roles `admin` + AUTH off）；`claude mcp list` 健康检查通过（显示 ⏸ Pending approval，符合交互审批机制预期）。
+  - C1/C2：headless `claude -p` + `--mcp-config .mcp.json --allowedTools mcp__mindgraph__mindgraph_search` 会话成功加载服务器；stdio 端 9 工具可见（8 只读 + ASSIST_MCP_ENABLED 开启后的 mindgraph_assist）。
+  - C3（实调记录）：`mindgraph_search("差旅餐补标准是多少")` 返回 citations；首条 `policy_key=travel.meal`、`document_version=2.0`、《差旅餐补标准 V2》（财务运营部，active，2026-07-01 生效）——治理元数据完整。
+  - C4：未在本客户端执行（受限主体语义已由 `scripts/mcp_stdio_smoke.py --restricted` 覆盖，见上）。
+  - C5–C7：由 smoke 自动化覆盖（C1–C7 全 PASS 语义），客户端侧无额外差异。
+  - 权限注记：headless 需 `--allowedTools` 显式授权工具；交互会话走 /mcp 审批界面。
+- **Cursor：BLOCKED（2026-09-03）**——本机未安装 Cursor，无法实测。配置片段已按官方文档备好（见上），安装后按 C1–C7 执行并登记。**不得以绕过方式标记通过。**
+- **OpenHands：BLOCKED（2026-09-03）**——本机未安装。官方支持 stdio 但建议生产走 proxy（见上），安装后实测登记。
+
+**M1 验收判定（3 客户端中 ≥2 实测通过）**：当前 1 实测通过（Claude Code）+ 2 BLOCKED（环境缺客户端）。按方案原文"至少两个实测通过"的字面口径为**未达成**；但唯一可执行客户端已通过全链路，且 smoke 自动化在协议层无差别覆盖三客户端（同一 stdio JSON-RPC 面）。剩余工作仅为环境安装后的重复步骤，无技术缺口。是否据此视 M1 验收达成，需维护者决定；本记录如实呈现证据。

@@ -138,21 +138,33 @@ def test_import_local_turns_idempotent(tmp_path: Path):
 
 
 def test_api_routes_flag_gated_mount(tmp_path: Path, monkeypatch):
-    """路由门控：CONVERSATION_PERSISTENCE_ENABLED 默认关 → 404；开启后可用。"""
-    from api.main import app as real_app
+    """路由门控（代码默认值语义）：CONVERSATION_PERSISTENCE_ENABLED=False
+    的全新 app 不挂载会话路由。.env 灰度开启期间已 import 的进程无法体现
+    off 态，故强制 off 后重建 main 模块。"""
+    import importlib
+    import sys
+
     from infrastructure.settings import get_settings
 
-    service, database, mini = _build(tmp_path)
+    service, database, _mini = _build(tmp_path)
     override_container(SimpleNamespace(database=database, conversation_service=service))
-    client = TestClient(real_app, raise_server_exceptions=False)
+    monkeypatch.setenv("CONVERSATION_PERSISTENCE_ENABLED", "false")
+    get_settings.cache_clear()
     try:
-        # 默认关闭：不挂载
-        openapi_paths = set(real_app.openapi()["paths"])
+        sys.modules.pop("api.main", None)
+        fresh_app = importlib.import_module("api.main").app
+        openapi_paths = set(fresh_app.openapi()["paths"])
         assert not any("/conversations" in path for path in openapi_paths)
-        resp = client.post("/api/v1/mindgraph/conversations", json={"title": "新会话"})
-        assert resp.status_code == 404
+        client = TestClient(fresh_app, raise_server_exceptions=False)
+        try:
+            resp = client.post("/api/v1/mindgraph/conversations", json={"title": "新会话"})
+            assert resp.status_code == 404
+        finally:
+            client.close()
     finally:
-        client.close()
+        sys.modules.pop("api.main", None)
+        importlib.import_module("api.main")
+        get_settings.cache_clear()
         override_container(None)
 
 

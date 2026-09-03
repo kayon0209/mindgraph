@@ -234,9 +234,19 @@ class AgentService:
         return questions[:3]
 
     def _check_integrity(self, answer: str, citations: list[Citation]):
+        """生成门校验：与 chat 通道的 fail-closed 语义对齐。
+
+        阻断项 = 答案标注失真三害：越界（unknown）/畸形（malformed）/重复
+        （duplicate）——正文引用了不存在的标注即失真。``unused_citations``
+        （检索多返回但正文未引用）不是失真，只进 citation_integrity_checked
+        事件的 checks 供展示，不触发 evidence-only 降级；完整视图
+        （含 unused）仍由 answer evaluation 的 citation_marker_validity 指标
+        度量。语义支持属评测侧 claim-support，本门不声称验证。
+        """
         validator = CitationIntegrityValidator(citation_ids=[item.citation_id for item in citations])
         report = validator.validate(answer)
-        return bool(report.passed), report
+        fatal = bool(report.unknown_markers or report.malformed_markers or report.duplicate_markers)
+        return (not fatal) and bool(report.applicable), report
 
     # ── 终态组装 ──
 
