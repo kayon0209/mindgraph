@@ -163,3 +163,26 @@ def test_mcp_search_returns_citations(tmp_path: Path):
     finally:
         client.close()
         override_container(None)
+
+
+def test_initialize_version_negotiation():
+    """M6-1（ADR-005）：echo 支持集内版本；未知/缺失版本回退最新支持修订。"""
+    from mcp_server import MCP_SUPPORTED_VERSIONS, PROTOCOL_VERSION, handle_jsonrpc
+
+    assert MCP_SUPPORTED_VERSIONS == ("2024-11-05", "2025-03-26", "2025-06-18")
+
+    for requested in MCP_SUPPORTED_VERSIONS:
+        response = handle_jsonrpc({
+            "jsonrpc": "2.0", "id": "n1", "method": "initialize",
+            "params": {"protocolVersion": requested},
+        }, principal=None)
+        assert response["result"]["protocolVersion"] == requested  # echo
+
+    fallback = handle_jsonrpc({
+        "jsonrpc": "2.0", "id": "n2", "method": "initialize",
+        "params": {"protocolVersion": "1999-01-01"},
+    }, principal=None)
+    assert fallback["result"]["protocolVersion"] == PROTOCOL_VERSION  # 回退 2025-06-18
+
+    missing = handle_jsonrpc({"jsonrpc": "2.0", "id": "n3", "method": "initialize"}, principal=None)
+    assert missing["result"]["protocolVersion"] == PROTOCOL_VERSION

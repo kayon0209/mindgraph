@@ -1,7 +1,7 @@
 # MCP 客户端兼容性测试矩阵（M0 交付物）
 
 > 依据《MindGraph Agent 化实施方案》M0 硬性交付物要求与补丁 A。
-> 服务端：`src/mcp_server.py`（stdio JSON-RPC 2.0，行分隔；protocol `2024-11-05`；server `mindgraph-mcp`）。
+> 服务端：`src/mcp_server.py`（stdio JSON-RPC 2.0，行分隔；版本协商支持集 `2024-11-05/2025-03-26/2025-06-18`；server `mindgraph-mcp 3.2.0`）。
 > 本文所有外部事实的验证日期为 **2026-09-03**，来源为官方文档/官方 SDK 源码/官方 issue，链接见各节。
 
 ## 自动化底座
@@ -76,13 +76,17 @@
 - **stdio 与远程（SSE / Streamable HTTP）均支持**（不是仅远程）；但官方对生产环境推荐 MCP 代理（如 supergateway）转 HTTP/SSE，直连 stdio 建议用于开发测试与纯本地场景。
 - CLI：`openhands mcp add mindgraph --transport stdio --env "PYTHONPATH=..." <python> -- <mcp_server.py>`；配置文件 `~/.openhands/mcp.json`（1.0.0 起从 TOML 改为 JSON）；`openhands mcp list/get/remove/enable/disable` 管理；新配置需重启会话加载。
 
-## 协议版本兼容性（2024-11-05 是否安全）
+## 协议版本兼容性（M6-1 升级后）
 
-- 规范协商规则（2025-03-26 / 2025-06-18 lifecycle 一致）：客户端发其支持版本，服务器可回自己所支持的另一版本，客户端不接受才断开——**客户端发新版本、服务器回 2024-11-05 是规范允许的合法协商路径**。
+**当前行为（server 3.2.0 起）**：initialize 按协商规范 **echo 客户端请求的版本**（当其在支持集 `2024-11-05 / 2025-03-26 / 2025-06-18` 内）；未知/缺失版本回退 `2025-06-18`（服务器最新支持修订，规范允许的回退路径）。契约测试 + smoke C1（echo 与回退双断言）已锁定。
+
+历史评估（2026-09-03 核实，保留作依据）：
+
+- 规范协商规则（2025-03-26 / 2025-06-18 lifecycle 一致）：客户端发其支持版本，服务器可回自己所支持的另一版本，客户端不接受才断开。
 - 官方 Python SDK `HANDSHAKE_PROTOCOL_VERSIONS` 至今包含 `2024-11-05`（即 `OLDEST_SUPPORTED_VERSION`）；官方 TS SDK 支持列表同样保留（默认协商 2025-03-26）。来源：`modelcontextprotocol/python-sdk` `src/mcp-types/mcp_types/version.py`、TS SDK `packages/core/src/constants.ts`。
-- 已发布修订：2024-11-05 / 2025-03-26 / 2025-06-18 / 2025-11-25 / 2026-07-28（"modern era"，改用 `server/discover`，不经 `initialize`，不影响本服务器）。
-- 2024-11-05 → 2025-06-18 的破坏面集中在 HTTP 侧（OAuth 2.1、Streamable HTTP）与 JSON-RPC batching 移除（只影响批量发请求的客户端）；stdio 核心（initialize / tools/list / tools/call）未破坏。
-- **结论**：保持 2024-11-05 当前是安全的，但属于最旧支持版本；建议在 M5 协议产品化时升级至 2025-06-18。各客户端实际协商代码的逐个核验：**未验证**（SDK 级证据）。
+- 2024-11-05 → 2025-06-18 的破坏面集中在 HTTP 侧（OAuth 2.1、Streamable HTTP）与 JSON-RPC batching 移除；stdio 核心（initialize / tools/list / tools/call）未破坏。
+- `2026-07-28` 起的 "modern era" 修订改用 `server/discover` 握手、不经 `initialize`，不在本服务器支持集（TS SDK 明确 initialize 不接受/不回 modern 版本）。
+- 各客户端实际协商代码的逐个核验：**未验证**（SDK 级证据；仅 Claude Code 实测）。
 
 ## stdio deadline 说明（C6）
 

@@ -100,13 +100,16 @@ def run_cases(principal_all: bool = True) -> list[dict]:
     # 受限验证由 --restricted 切换为无角色主体单独跑一遍 C4）
     roles = "admin" if principal_all and not RESTRICTED else None
     with StdioMcpClient(principal_name="smoke_agent", roles=roles) as client:
-        # C1 握手
+        # C1 握手 + 版本协商（M6-1）：echo 客户端请求版本（支持集内），
+        # 未提供/不支持时回退 2025-06-18
         try:
-            r = client.request("initialize", {}, msg_id="c1")
+            r = client.request("initialize", {"protocolVersion": "2025-03-26"}, msg_id="c1")
             info = r["result"]["serverInfo"]
-            assert r["result"]["protocolVersion"] == "2024-11-05"
+            assert r["result"]["protocolVersion"] == "2025-03-26"  # echo 行为
             assert info["name"] == "mindgraph-mcp"
-            record("C1", "PASS", f"protocol 2024-11-05, server {info['name']} {info['version']}")
+            r2 = client.request("initialize", {"protocolVersion": "1999-01-01"}, msg_id="c1b")
+            assert r2["result"]["protocolVersion"] == "2025-06-18"  # 回退到最新支持版
+            record("C1", "PASS", f"negotiated echo + fallback ok, server {info['name']} {info['version']}")
         except Exception as exc:
             record("C1", "FAIL", str(exc))
 

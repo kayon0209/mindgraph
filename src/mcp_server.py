@@ -32,9 +32,15 @@ from application.access_control import (
 logger = logging.getLogger("mindgraph.mcp")
 
 JSONRPC_VERSION = "2.0"
-PROTOCOL_VERSION = "2024-11-05"
+# MCP 协议版本支持集（M6-1，ADR-005）：2024-11-05 起的三个 stdio 稳定修订。
+# 2025-06-18 后的 "modern era" 修订改用 server/discover 握手、不经 initialize，
+# 不在本支持集（TS SDK 明确 initialize 不接受/不回 modern 版本）。
+MCP_SUPPORTED_VERSIONS: tuple[str, ...] = ("2024-11-05", "2025-03-26", "2025-06-18")
+# 服务器回退版本：客户端请求的版本不在支持集时，回我们支持的最新修订
+# （规范允许服务器回自己的版本；客户端不接受则断开）
+PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "mindgraph-mcp"
-SERVER_VERSION = "3.1.0"
+SERVER_VERSION = "3.2.0"
 MAX_TOOL_CALLS_PER_BATCH = 20
 MAX_LIST_LIMIT = 200
 MAX_SEARCH_TOP_K = 20
@@ -515,11 +521,15 @@ def handle_jsonrpc(
     msg_id = message.get("id")
 
     if method == "initialize":
+        # 版本协商（M6-1，ADR-005）：客户端在支持集内 → echo 其请求版本；
+        # 否则回退到我们支持的最新修订。与官方 SDK 协商行为对齐。
+        requested = str(((message.get("params") or {}).get("protocolVersion")) or "")
+        negotiated = requested if requested in MCP_SUPPORTED_VERSIONS else PROTOCOL_VERSION
         return {
             "jsonrpc": JSONRPC_VERSION,
             "id": msg_id,
             "result": {
-                "protocolVersion": PROTOCOL_VERSION,
+                "protocolVersion": negotiated,
                 "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
                 "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
             },
