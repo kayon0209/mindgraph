@@ -44,12 +44,43 @@ class ConversationService:
     def create_conversation(self, *, principal_id: str, title: str, workspace: str | None = None, department: str | None = None) -> dict[str, Any]:
         conversation_id = f"conv-{uuid.uuid4().hex[:16]}"
         now = _now_iso()
+        # 可配置保留期（M3-E 缺口修复）：>0 天时写入 retention_until；到期由
+        # enforce_retention 归档（不物理删）。默认 0 = 不启用。
+        retention_until = None
+        from infrastructure.settings import get_settings
+
+        retention_days = int(get_settings().CONVERSATION_RETENTION_DAYS)
+        if retention_days > 0:
+            from datetime import timedelta
+
+            retention_until = (datetime.now(UTC) + timedelta(days=retention_days)).isoformat()
         self.database.execute(
-            "INSERT INTO conversations (conversation_id, principal_id, title, workspace, department, status, created_at, updated_at)"
-            " VALUES (?,?,?,?,?, 'active', ?, ?)",
-            (conversation_id, principal_id, title[:200], workspace, department, now, now),
+            "INSERT INTO conversations (conversation_id, principal_id, title, workspace, department, status, retention_until, created_at, updated_at)"
+            " VALUES (?,?,?,?,?, 'active', ?, ?, ?)",
+            (conversation_id, principal_id, title[:200], workspace, department, retention_until, now, now),
         )
         return {"conversation_id": conversation_id, "title": title, "status": "active", "created_at": now, "updated_at": now}
+
+    def enforce_retention(self, *, limit: int = 500) -> dict[str, Any]:
+        """保留期执行：retention_until 已到期的 active 会话自动归档。
+
+        语义与手动归档一致（status='archived'，行保留）——retention 是
+        生命周期策略不是删除策略；幂等（归档过的不再匹配 active 条件）。
+        """
+        now = _now_iso()
+        expired = self.database.fetch_all(
+            "SELECT conversation_id FROM conversations WHERE status='active'"
+            " AND retention_until IS NOT NULL AND retention_until < ? LIMIT ?",
+            (now, max(1, int(limit))),
+        )
+        archived = 0
+        for row in expired:
+            self.database.execute(
+                "UPDATE conversations SET status='archived', updated_at=? WHERE conversation_id=? AND status='active'",
+                (now, row["conversation_id"]),
+            )
+            archived += 1
+        return {"checked": len(expired), "archived": archived}
 
     def list_conversations(self, *, principal_id: str, cursor: str | None = None, limit: int = CONVERSATION_PAGE_SIZE) -> dict[str, Any]:
         """cursor 分页：cursor 为上一页最后一条的 conversation_id（按 updated_at 倒序稳定键）。"""

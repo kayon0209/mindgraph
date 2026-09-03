@@ -206,3 +206,119 @@ def test_api_flow_on_mounted_router(tmp_path: Path):
         assert resp.status_code == 404
     finally:
         client.close()
+
+
+def test_conversation_message_stream_end_to_end(tmp_path: Path):
+    """缺口修复（方案 §7.1）：会话内续问流——user 落库、SSE 事件、
+    assistant 快照按序落库、稳定 sequence。"""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from api.routes import conversation_stream as stream_route
+    from application.chat_service import ChatService
+    from api.dependencies import override_container
+    from retrieval.types import Chunk, RetrievalCandidate, RetrievalTrace
+
+    class StreamFakeProvider:
+        provider_name = "fake"
+        model_name = "fake-model"
+        available = True
+
+        def complete(self, _m):
+            return ("10 个工作日内提交。", {"total_tokens": 5})
+
+        def stream(self, _m):
+            yield {"delta": "10 个工作日内提交。"}
+            yield {"usage": {"total_tokens": 5}}
+
+    class StreamPipeline:
+        def retrieve(self, *_a, **_k):
+            chunk = Chunk(
+                "p.md::0", "报销应在 10 个工作日内提交。", "p.md", 0, "时限",
+                {"document_title": "差旅费报销管理办法", "vault_path": "policies/travel.md",
+                 "document_version": "v2", "effective_from": "2026-01-01", "policy_key": "travel.meal",
+                 "policy_status": "active", "owner": "财务部"},
+            )
+            return RetrievalTrace(
+                query="q", requested_strategy="hybrid", actual_strategy="hybrid",
+                candidate_counts={"final": 1},
+                final_selected_chunks=[RetrievalCandidate(chunk=chunk, final_rank=1, dense_score=0.9)],
+                latency_ms={"total_retrieval_ms": 0.5}, index_version="idx", applied_filters={}, warnings=[],
+            )
+
+    database = ProductDatabase(tmp_path / "conv-stream.sqlite3")
+    database.initialize()
+    chat = ChatService(database, lambda top_k: StreamPipeline(), StreamFakeProvider(), privacy_log_questions=False)
+    service = ConversationService(database)
+    app = FastAPI()
+    app.include_router(stream_route.router, prefix="/api/v1")
+    override_container(
+        SimpleNamespace(database=database, conversation_service=service, mindgraph_chat=chat, privacy_log=False)
+    )
+    client = TestClient(app, raise_server_exceptions=False)
+    try:
+        created = service.create_conversation(principal_id="local-development", title="续问会话")
+        conversation_id = created["conversation_id"]
+        with client.stream(
+            "POST",
+            f"/api/v1/mindgraph/conversations/{conversation_id}/messages/stream",
+            json={"question": "报销时限是多少天？", "retrieval_strategy": "hybrid"},
+        ) as response:
+            assert response.status_code == 200
+            events = [line[len("event: "):] for line in response.iter_lines() if line.startswith("event: ")]
+        assert events[0] == "request_started"
+        assert events[-1] == "completed"
+        # 流结束后：user + assistant 双双按序落库
+        messages = service.get_messages(conversation_id=conversation_id, principal_id="local-development")
+        assert [m["sequence_no"] for m in messages] == [1, 2]
+        assert messages[0]["role"] == "user" and "报销时限" in messages[0]["content"]
+        assert messages[1]["role"] == "assistant"
+        assert "10 个工作日" in messages[1]["content"]
+        assert messages[1]["citations"], "assistant citations snapshot must persist"
+        # 越权语义由服务层 test_owner_isolation_on_all_operations 覆盖
+        # （裸 TestClient 的 principal 恒为 local-development，无法模拟第二主体）
+    finally:
+        client.close()
+        override_container(None)
+        database.close()
+
+
+def test_retention_enforcement_archives_expired(tmp_path: Path, monkeypatch):
+    """缺口修复（M3-E）：保留期执行——到期归档（不物理删）、未到期不动、幂等。"""
+    from datetime import UTC, datetime, timedelta
+
+    monkeypatch.setenv("CONVERSATION_RETENTION_DAYS", "30")
+    from infrastructure.settings import get_settings
+
+    get_settings.cache_clear()
+    try:
+        service, _db, _app = _build(tmp_path)
+        # 创建即带 retention_until（30 天后）
+        fresh = service.create_conversation(principal_id="user-a", title="新会话")
+        assert fresh["status"] == "active"
+
+        # 手工造一条已过期的
+        expired = service.create_conversation(principal_id="user-a", title="旧会话")
+        expired_id = expired["conversation_id"]
+        past = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+        _db.execute("UPDATE conversations SET retention_until=? WHERE conversation_id=?", (past, expired_id))
+
+        result = service.enforce_retention()
+        assert result["archived"] >= 1
+        # 过期 → archived；行保留（软删）；未到期 → active
+        row = _db.fetch_one("SELECT status FROM conversations WHERE conversation_id=?", (expired_id,))
+        assert row["status"] == "archived"
+        row_fresh = _db.fetch_one("SELECT status FROM conversations WHERE conversation_id=?", (fresh["conversation_id"],))
+        assert row_fresh["status"] == "active"
+        # 幂等：再跑一遍无新增
+        second = service.enforce_retention()
+        assert second["archived"] == 0
+        # 归档后 owner 读取 not_found（与手动归档同语义）
+        try:
+            service.get_messages(conversation_id=expired_id, principal_id="user-a")
+            raise AssertionError("expired conversation must be hidden after retention")
+        except ConversationNotFoundError:
+            pass
+    finally:
+        monkeypatch.delenv("CONVERSATION_RETENTION_DAYS", raising=False)
+        get_settings.cache_clear()

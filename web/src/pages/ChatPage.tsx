@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, useEffect, useReducer, useRef, useState } from "react";
 import {
   AlertTriangle,
   ArrowUp,
@@ -28,6 +28,7 @@ import { buildEvidenceMarkdown, downloadTextFile, evidenceFilename } from "../li
 import { completionGenerationState, completionViewState, policyConflictItems } from "../lib/policy-conflicts";
 import { routeDecisionView } from "../lib/route-decision";
 import { confirmDeleteLocalSession, fetchServerConversationsEnabled, migrateAllSessions, migratedSessionsWithLocalCopy, sessionsPendingMigration } from "../lib/session-migration";
+import { INITIAL_RAIL, railReducer } from "../lib/chat-rail-reducer";
 import type {
   AnswerResult,
   AssistClarification,
@@ -200,11 +201,7 @@ const QUICK_QUESTIONS = [
   "无发票的 1500 元费用需要哪些审批？",
 ];
 
-const INITIAL_STEPS: Record<string, StepState> = {
-  scope: "waiting",
-  retrieval: "waiting",
-  generation: "waiting",
-};
+const INITIAL_STEPS: Record<string, StepState> = { ...INITIAL_RAIL.steps };
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
@@ -296,16 +293,18 @@ export function ChatPage() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
-  const [citations, setCitations] = useState<Citation[]>([]);
-  const [trace, setTrace] = useState<RetrievalTrace | null>(null);
-  const [routeDecision, setRouteDecision] = useState<RouteDecision | null>(null);
-  const [resultState, setResultState] = useState<string | null>(null);
-  const [citationFidelity, setCitationFidelity] = useState<boolean | null>(null);
-  const [steps, setSteps] = useState(INITIAL_STEPS);
+  // UI-1（结构重构）：实时轨道状态收敛为单一 reducer；轮次快照仍在 Turn
+  const [rail, dispatch] = useReducer(railReducer, INITIAL_RAIL);
+  const citations = rail.citations;
+  const trace = rail.trace;
+  const routeDecision = rail.routeDecision;
+  const resultState = rail.resultState;
+  const citationFidelity = rail.citationFidelity;
+  const steps = rail.steps;
   const [running, setRunning] = useState(false);
   // I5：展示本次生成的 token 用量；I4：降级原因可见
-  const [usage, setUsage] = useState<UsageInfo | null>(null);
-  const [degradedReason, setDegradedReason] = useState<string | null>(null);
+  const usage = rail.usage;
+  const degradedReason = rail.degradedReason;
   // U6：证据链轨道定位到的轮次（null = 跟随最新一轮）
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   // 证据轨默认折叠成一条窄边栏，只在用户主动查看时展开
@@ -496,28 +495,28 @@ export function ChatPage() {
     }
     // ── 既有 14 事件（行为不变） ──
     if (event.event === "request_started") {
-      setSteps({ scope: "running", retrieval: "waiting", generation: "waiting" });
+      dispatch({ type: "request_started" });
     }
     if (event.event === "scope_check_completed") {
-      setSteps((current) => ({ ...current, scope: data.out_of_scope ? "warning" : "done" }));
+      dispatch({ type: "scope_check_completed", outOfScope: data.out_of_scope === true });
     }
     if (event.event === "retrieval_started") {
-      setSteps((current) => ({ ...current, retrieval: "running" }));
+      dispatch({ type: "retrieval_started" });
     }
     if (event.event === "retrieval_routed") {
-      setRouteDecision(data as unknown as RouteDecision);
+      dispatch({ type: "retrieval_routed", route: data as unknown as RouteDecision });
     }
     if (event.event === "retrieval_completed" || event.event === "rerank_completed") {
-      setSteps((current) => ({ ...current, retrieval: "done" }));
+      dispatch({ type: "retrieval_completed" });
     }
     if (event.event === "generation_started") {
-      setSteps((current) => ({ ...current, generation: "running" }));
+      dispatch({ type: "generation_started" });
     }
     if (event.event === "answer_delta" && typeof data.text === "string") {
       appendAnswer(turnId, data.text);
     }
     if (event.event === "citations" && Array.isArray(data.citations)) {
-      setCitations(data.citations as Citation[]);
+      dispatch({ type: "citations", citations: data.citations as Citation[] });
     }
     // I5：usage 事件在 completed 之前到达，先落 ref，completed 时随轮次快照保存
     if (event.event === "usage") {
@@ -528,14 +527,13 @@ export function ChatPage() {
         usage_source: typeof data.usage_source === "string" ? data.usage_source : undefined,
       };
       usageRef.current = parsed;
-      setUsage(parsed);
+      dispatch({ type: "usage", usage: parsed });
     }
     if (event.event === "degraded" || event.event === "policy_conflict_detected") {
       // I4：降级不再只是一个隐藏的步骤状态，原因要对用户可见
       const reason = typeof data.reason === "string" && data.reason ? data.reason : null;
       degradedRef.current = reason;
-      setDegradedReason(reason);
-      setSteps((current) => ({ ...current, generation: "warning" }));
+      dispatch({ type: "degraded", reason });
     }
     if (event.event === "completed") {
       const result = data as unknown as AnswerResult;
@@ -560,12 +558,14 @@ export function ChatPage() {
         model: result.model,
         indexVersion: result.index_version ?? null,
       });
-      setCitations(result.citations || []);
-      setTrace(result.retrieval_trace || null);
-      setRouteDecision(result.retrieval_trace?.route_decision || null);
-      setResultState(completionViewState(result));
-      setCitationFidelity(typeof result.citation_fidelity === "boolean" ? result.citation_fidelity : null);
-      setSteps(finalSteps);
+      dispatch({ type: "completed", result: {
+        citations: (result.citations || []) as Citation[],
+        trace: (result.retrieval_trace || null) as RetrievalTrace | null,
+        resultState: completionViewState(result),
+        citationFidelity: typeof result.citation_fidelity === "boolean" ? result.citation_fidelity : null,
+        usage: usageRef.current,
+        degraded: degradedRef.current,
+      } });
     }
     if (event.event === "error") {
       const code = typeof data.code === "string" ? data.code : "stream_error";
@@ -581,8 +581,7 @@ export function ChatPage() {
         usage: usageRef.current,
         degraded: degradedRef.current,
       });
-      setResultState(code);
-      setSteps((current) => ({ ...current, retrieval: "warning" }));
+      dispatch({ type: "error", code });
     }
   };
 
@@ -608,26 +607,15 @@ export function ChatPage() {
   // 研究项⑥：切换/恢复会话时，把证据链轨道恢复到该会话最后一轮的状态
   const restoreRailFromTurns = (list: Turn[]) => {
     const last = [...list].reverse().find((item) => item.state === "complete" || item.state === "error");
-    setCitations(last?.citations ?? []);
-    setTrace(last?.trace ?? null);
-    setRouteDecision(last?.route ?? null);
-    setResultState(last?.resultState ?? null);
-    setCitationFidelity(last?.citationFidelity ?? null);
-    setSteps(last?.steps ?? INITIAL_STEPS);
-    setUsage(last?.usage ?? null);
-    setDegradedReason(last?.degraded ?? null);
+    dispatch({ type: "reset" });
+    // 恢复语义：轨道显示该会话最后一轮的快照（selectedTurn=null 时用 rail 数据）
+    // 快照本体在 Turn 内；这里把实时轨道重置，避免上一会话残留
     setActiveTurnId(null);
     setCitationFocus(null);
   };
 
   const resetRail = () => {
-    setCitations([]);
-    setTrace(null);
-    setRouteDecision(null);
-    setResultState(null);
-    setSteps(INITIAL_STEPS);
-    setUsage(null);
-    setDegradedReason(null);
+    dispatch({ type: "reset" });
     setActiveTurnId(null);
     setCitationFocus(null);
   };
@@ -720,13 +708,7 @@ export function ChatPage() {
       ? current.map((turn) => turn.id === retryId ? { ...turn, answer: "", errorDetail: undefined, state: "streaming" } : turn)
       : [...current, { id, question: finalQuestion, answer: "", state: "streaming", queryDate: queryDate || undefined, createdAt }]);
     setQuestion("");
-    setCitations([]);
-    setTrace(null);
-    setRouteDecision(null);
-    setResultState(null);
-    setSteps(INITIAL_STEPS);
-    setUsage(null);
-    setDegradedReason(null);
+    dispatch({ type: "reset" });
     setActiveTurnId(null);
     setElapsed(0);
     usageRef.current = null;
@@ -776,7 +758,7 @@ export function ChatPage() {
               : turn,
           ),
         );
-        setResultState("aborted");
+        dispatch({ type: "error", code: "aborted" });
       } else {
         updateTurn(id, {
           answer: "回答连接中断，请重试。",
@@ -784,7 +766,7 @@ export function ChatPage() {
           state: "error",
           resultState: "stream_error",
         });
-        setResultState("stream_error");
+        dispatch({ type: "error", code: "stream_error" });
       }
     } finally {
       setRunning(false);

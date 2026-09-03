@@ -18,6 +18,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from api.auth import require_authenticated
 from api.dependencies import get_container
+from application.task_worker_runner import maybe_start_task_worker
 from api.exception_handlers import (
     authentication_error_handler,
     authorization_error_handler,
@@ -75,12 +76,17 @@ async def lifespan(app: FastAPI):
     logger.info("application_starting", extra={"environment": _settings.ENVIRONMENT})
     container = get_container()
     logger.info("service_container_initialized")
+    # M4-A 缺口修复：TASK_WORKER_ENABLED=true 时拉起单实例任务轮询线程
+    # （flag 关闭零行为变化；runner 在关闭时随进程退出）
+    task_runner = maybe_start_task_worker(container)
     yield
     logger.info("application_shutting_down")
+    if task_runner is not None:
+        task_runner.stop()
     # 清理连接池等资源
     try:
         container.database.close()
-    except Exception:  # 关停期尽力清理，失败不阻断退出
+    except Exception:  # 停机期尽力清理，失败不阻断退出
         logger.debug("database_close_failed", exc_info=True)
     logger.info("application_stopped")
 
@@ -152,9 +158,11 @@ if _settings.ASSIST_ENABLED:
 
 # M3：服务端会话——CONVERSATION_PERSISTENCE_ENABLED 默认关闭时完全不挂载。
 if _settings.CONVERSATION_PERSISTENCE_ENABLED:
+    from api.routes import conversation_stream as conversation_stream_route
     from api.routes import conversations as conversations_route
 
     app.include_router(conversations_route.router, prefix=API_PREFIX, dependencies=[Depends(require_authenticated)])
+    app.include_router(conversation_stream_route.router, prefix=API_PREFIX, dependencies=[Depends(require_authenticated)])
 
 # M4-A：后台任务——AGENT_TASKS_ENABLED 默认关闭时完全不挂载。
 if _settings.AGENT_TASKS_ENABLED:

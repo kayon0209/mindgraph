@@ -150,6 +150,19 @@ class Settings(BaseSettings):
     AGENT_MAX_TOOL_CALLS: int = 3
     # Assist 请求 deadline（秒；M2 消费；MCP 通道沿用协作式 deadline 机制）
     AGENT_REQUEST_DEADLINE_SECONDS: float = 45.0
+    # ── M4-A worker 运行参数（方案 §12；TASK_WORKER_ENABLED 由 lifespan 消费） ──
+    # true = API 启动时拉起单实例后台轮询线程执行 agent_tasks；false = 仅
+    # 留在 queued（需外部调用 run_until_drained）。单实例单 worker：启动时
+    # 防重检查（同库不允许两个运行线程），不假称多实例安全（ADR-004）。
+    TASK_WORKER_ENABLED: bool = False
+    TASK_LEASE_SECONDS: float = 120.0
+    TASK_MAX_ATTEMPTS: int = 3
+    # 空轮询间隔（秒）：无任务时线程休眠时长
+    TASK_POLL_INTERVAL_SECONDS: float = 2.0
+    # ── M3-E 会话保留策略（方案：可配置 retention；执行=到期归档，不物理删） ──
+    # 0 = 不启用自动保留期（会话永久 active，由用户手动归档）；>0 = 创建会话时
+    # 写入 retention_until = now + N 天，由 conversation runner 到期归档。
+    CONVERSATION_RETENTION_DAYS: int = 0
 
     # ── 数据库 ──
     DATABASE_PATH: str = str(PROJECT_ROOT / "data" / "product" / "product.sqlite3")
