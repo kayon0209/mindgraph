@@ -12,7 +12,7 @@ from typing import Any, Iterator
 
 logger = logging.getLogger("mindgraph.database")
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 
 class ProductDatabase:
@@ -282,6 +282,9 @@ class ProductDatabase:
                 "index_version": "TEXT", "prompt_version": "TEXT",
                 "requested_provider": "TEXT", "actual_provider": "TEXT",
                 "query_date": "TEXT", "category_filter_json": "TEXT NOT NULL DEFAULT '[]'",
+                # ── schema v13（安全审查 F1）：问答归属列——feedback 工具 preview
+                # 按归属校验，杜绝跨主体枚举 request_id 窥探他人问答。
+                "principal_id": "TEXT",
             })
             self._ensure_columns(connection, "evaluation_runs", {
                 "index_version": "TEXT", "prompt_version": "TEXT", "provider": "TEXT",

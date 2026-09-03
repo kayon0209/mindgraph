@@ -157,7 +157,7 @@ def _tools() -> list[dict[str, Any]]:
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "minLength": 1},
+                    "query": {"type": "string", "minLength": 1, "maxLength": 2000},
                     "top_k": {"type": "integer", "default": 5, "minimum": 1, "maximum": MAX_SEARCH_TOP_K},
                     "strategy": {"type": "string", "enum": ["dense", "bm25", "hybrid", "hybrid_rerank"]},
                 },
@@ -231,6 +231,8 @@ def _validate_tool_arguments(name: object, arguments: object) -> tuple[str, dict
             if not isinstance(value, str):
                 raise InvalidToolArguments
             if rule.get("minLength") and len(value.strip()) < int(rule["minLength"]):
+                raise InvalidToolArguments
+            if "maxLength" in rule and len(value) > int(rule["maxLength"]):
                 raise InvalidToolArguments
         elif expected_type == "integer":
             if isinstance(value, bool) or not isinstance(value, int):
@@ -365,28 +367,62 @@ def _call_tool(
         top_k = min(max(int(arguments.get("top_k", 5)), 1), MAX_SEARCH_TOP_K)
         if _deadline_remaining(deadline) <= 0:
             raise MCPToolDeadlineExceeded
-        pipeline = container.mindgraph_pipeline(top_k=top_k, graph_enabled=False)
-        trace = pipeline.retrieve(query, strategy, access_scope=scope)
-        citations = []
-        for candidate in trace.final_selected_chunks[:top_k]:
-            citations.append({
-                "citation_id": candidate.chunk.chunk_id,
-                "document_id": candidate.chunk.document_id,
-                "document_name": candidate.chunk.metadata.get("title") or candidate.chunk.document_id,
-                "chunk_id": candidate.chunk.chunk_id,
-                "section_path": candidate.chunk.section_path,
-                "excerpt": candidate.chunk.text[:400],
-                "final_rank": candidate.final_rank,
-                "retrieval_score": candidate.rrf_score,
-                "document_version": candidate.chunk.metadata.get("document_version"),
-                "owner": candidate.chunk.metadata.get("owner"),
-                "effective_from": candidate.chunk.metadata.get("effective_from"),
-                "effective_to": candidate.chunk.metadata.get("effective_to"),
-                "policy_status": candidate.chunk.metadata.get("policy_status"),
-                "policy_key": candidate.chunk.metadata.get("policy_key"),
-                "authority_level": candidate.chunk.metadata.get("ai_access_level"),
-                "vault_path": candidate.chunk.metadata.get("vault_path"),
-            })
+        # 审查收敛（红线 3，方案 §3.1 原始要求）：search 复用共享 EvidenceQueryService
+        # 检索段，不再维护独立检索分支；响应形状经 citations 转换保持与旧契约
+        # 逐字段一致（旧 5 工具兼容测试锁定）。容器缺 mindgraph_chat（mock/极简
+        # 部署）时回退直接检索——行为等价，不作为"未知工具"失败。
+        from application.evidence_query_service import EvidenceQueryService
+        from domain.models import ChatRequest as _ChatRequest
+
+        chat_service = getattr(container, "mindgraph_chat", None)
+        if chat_service is not None:
+            evidence_service = EvidenceQueryService(chat_service)
+            request = _ChatRequest(question=query, retrieval_strategy=strategy, final_top_k=top_k)
+            result = evidence_service.query(request, access_scope=scope, excerpt_limit=400)
+            citations = [
+                {
+                    "citation_id": item.citation_id,
+                    "document_id": item.document_id,
+                    "document_name": item.document_name,
+                    "chunk_id": item.chunk_id,
+                    "section_path": item.section_path,
+                    "excerpt": item.excerpt,
+                    "final_rank": item.final_rank,
+                    "retrieval_score": item.retrieval_score,
+                    "document_version": item.document_version,
+                    "owner": item.owner,
+                    "effective_from": item.effective_from,
+                    "effective_to": item.effective_to,
+                    "policy_status": item.policy_status,
+                    "policy_key": item.policy_key,
+                    "authority_level": item.authority_level,
+                    "vault_path": item.vault_path,
+                }
+                for item in result.citations[:top_k]
+            ]
+        else:
+            pipeline = container.mindgraph_pipeline(top_k=top_k, graph_enabled=False)
+            trace = pipeline.retrieve(query, strategy, access_scope=scope)
+            citations = []
+            for candidate in trace.final_selected_chunks[:top_k]:
+                citations.append({
+                    "citation_id": candidate.chunk.chunk_id,
+                    "document_id": candidate.chunk.document_id,
+                    "document_name": candidate.chunk.metadata.get("title") or candidate.chunk.document_id,
+                    "chunk_id": candidate.chunk.chunk_id,
+                    "section_path": candidate.chunk.section_path,
+                    "excerpt": candidate.chunk.text[:400],
+                    "final_rank": candidate.final_rank,
+                    "retrieval_score": candidate.rrf_score,
+                    "document_version": candidate.chunk.metadata.get("document_version"),
+                    "owner": candidate.chunk.metadata.get("owner"),
+                    "effective_from": candidate.chunk.metadata.get("effective_from"),
+                    "effective_to": candidate.chunk.metadata.get("effective_to"),
+                    "policy_status": candidate.chunk.metadata.get("policy_status"),
+                    "policy_key": candidate.chunk.metadata.get("policy_key"),
+                    "authority_level": candidate.chunk.metadata.get("ai_access_level"),
+                    "vault_path": candidate.chunk.metadata.get("vault_path"),
+                })
         _audit("mcp_search", "search", "allow", {"query_len": len(query), "top_k": top_k, "strategy": strategy})
         return {"query": query, "strategy": strategy, "citations": citations, "graph_enabled": False}
 
@@ -618,7 +654,14 @@ if __name__ == "__main__":
     # 本地调试主体的角色注入（逗号分隔，如 "admin" 或 "read,finance"）：
     # 无角色主体的 allow/deny 均空 → build_access_scope 视为受限 scope
     # （私有内容不可见）；smoke/联调用 MCP_PRINCIPAL_ROLES 显式提权。
+    # 加固（审查）：企业模式（AUTH_MODE≠off）下注入提权角色属于运维失误，
+    # 显式告警（不阻断——环境变量可控性即本机信任边界，见 DEPLOYMENT-ops.md）。
     env_roles = [item.strip() for item in os.getenv("MCP_PRINCIPAL_ROLES", "").split(",") if item.strip()]
+    if env_roles and os.getenv("AUTH_MODE", "demo") != "off":
+        logging.getLogger("mindgraph.mcp").warning(
+            "mcp_principal_roles_injected_under_auth",
+            extra={"roles": env_roles, "hint": "MCP_PRINCIPAL_ROLES 只应用于本地调试；企业部署请移除"},
+        )
     principal = None
     if env_principal:
         principal = {"name": env_principal, "authenticated": bool(env_principal)}

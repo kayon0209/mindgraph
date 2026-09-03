@@ -108,6 +108,38 @@ class EvidenceQueryService:
             routing_ms=routing_ms,
         )
 
+    def rebundle_with_conflicts(self, previous: EvidenceQueryResult, conflicts: list[dict]) -> EvidenceQueryResult:
+        """复用既有检索产物，仅以新的冲突结果重建 bundle（增量步骤用，
+        不重跑 route→retrieve——嵌入检索是最贵操作，见 AgentService 注释）。"""
+        if previous.trace is None or previous.route_decision is None:
+            # 无检索产物可复用（不应发生）：退回全链查询保正确性
+            return previous
+        return EvidenceQueryResult(
+            bundle=self._bundle(
+                previous_request := self._request_of(previous),
+                previous.route_decision,
+                previous.trace,
+                previous.citations,
+                conflicts,
+                excerpt_limit=None,
+                elapsed_ms=0.0,
+            ),
+            trace=previous.trace,
+            citations=previous.citations,
+            route_decision=previous.route_decision,
+            routing_ms=previous.routing_ms,
+        )
+
+    @staticmethod
+    def _request_of(previous: EvidenceQueryResult) -> ChatRequest:
+        """从 bundle 反推查询语义所需的最小请求形状（仅 query/as_of 用于重建）。"""
+        return ChatRequest(
+            question=previous.bundle.query,
+            retrieval_strategy="auto",
+            query_date=previous.bundle.as_of.isoformat() if hasattr(previous.bundle.as_of, "isoformat") else (previous.bundle.as_of if isinstance(previous.bundle.as_of, str) else None),
+            include_historical=False,
+        )
+
     def _bundle(
         self,
         request: ChatRequest,

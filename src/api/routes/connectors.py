@@ -67,7 +67,7 @@ def sync_directory(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("sync_directory_failed", extra={"source": body.source_path})
-        raise HTTPException(status_code=500, detail=f"sync failed: {exc}") from exc
+        raise HTTPException(status_code=500, detail="sync failed — see server logs") from exc
 
 
 @router.get("/directories/status")

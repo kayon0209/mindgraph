@@ -75,12 +75,17 @@ def make_submit_feedback_handler():
         database: ProductDatabase = _database()
         action = arguments["action"]
         request_id = str(arguments["request_id"]).strip()
+        # 归属校验（安全审查 F1）：preview/submit 只允许对**自己的**回答操作；
+        # 他人的 request_id 统一 not-found 语义，杜绝跨主体枚举窥探。
+        current_user = (scope or {}).get("user") or "anonymous"
         query = database.fetch_one(
-            "SELECT question, answer, result_state, created_at FROM query_logs WHERE request_id=?",
+            "SELECT question, answer, result_state, created_at, principal_id FROM query_logs WHERE request_id=?",
             (request_id,),
         )
         if query is None:
-            # 与 NotFoundError 同语义：不暴露存在性细节
+            raise ToolExecutionRejected("request_id 不存在（无法对不存在的回答提交反馈）")
+        row_owner = query["principal_id"] or "anonymous"
+        if row_owner != current_user:
             raise ToolExecutionRejected("request_id 不存在（无法对不存在的回答提交反馈）")
 
         # ── preview：只读摘要（确认模式第一步；绝不写） ──

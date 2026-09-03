@@ -61,7 +61,11 @@ def list_tasks(
     principal: dict = Depends(require_authenticated),
 ) -> dict[str, Any]:
     service = get_container().task_service
-    return service.list_tasks(principal_id=_principal_id(principal), cursor=cursor, limit=limit)
+    try:
+        return service.list_tasks(principal_id=_principal_id(principal), cursor=cursor, limit=limit)
+    except TaskNotFoundError:
+        # 审查 F8：非法/过期 cursor 不应 500+堆栈，统一 400 语义
+        raise HTTPException(status_code=400, detail="invalid cursor") from None
 
 
 @router.get("/{task_id}")

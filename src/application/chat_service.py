@@ -213,6 +213,13 @@ class ChatService:
     @staticmethod
     def _trace_model(trace) -> RetrievalTraceModel:
         payload = trace.to_dict()
+        # 权限侧信道修正（审查发现）：applied_filters.access_scope 携带主体的
+        # allow/deny ACL 规则，不得持久化进 query_logs（trace 可经只读端点读取）。
+        # 持久化面只留布尔标记 acl_applied；内存中的 trace 对象不受影响。
+        applied_filters = dict(payload.get("applied_filters", {}))
+        if "access_scope" in applied_filters:
+            applied_filters["acl_applied"] = applied_filters["access_scope"] is not None
+            applied_filters.pop("access_scope")
         return RetrievalTraceModel(
             requested_strategy=payload["requested_strategy"], actual_strategy=payload["actual_strategy"],
             candidate_counts=payload["candidate_counts"], dense_results=payload["dense_results"],
@@ -220,7 +227,7 @@ class ChatService:
             reranked_results=payload["reranked_results"], final_chunks=payload["final_selected_chunks"],
             stage_latency_ms=payload["latency_ms"], degraded=payload["degraded"],
             degradation_reason=payload["degradation_reason"],
-            index_version=payload.get("index_version"), applied_filters=payload.get("applied_filters", {}),
+            index_version=payload.get("index_version"), applied_filters=applied_filters,
             warnings=payload.get("warnings", []),
             graph_enabled=getattr(trace, "graph_enabled", False),
             graph_hops=getattr(trace, "graph_hops", 1),
@@ -287,7 +294,7 @@ class ChatService:
             total_ms=round((time.perf_counter() - started) * 1000, 3),
         )
 
-    def _persist(self, result: AnswerResult) -> None:
+    def _persist(self, result: AnswerResult, principal: str | None = None) -> None:
         # M0 引用保真：所有终态结果（answer/stream 的每一条路径）都汇入
         # _persist，在这里统一做确定性标注检查——warning-first，不阻断。
         try:
@@ -305,7 +312,7 @@ class ChatService:
         # 持久化失败不应让已经算出的答案/引用在客户端面前炸掉：
         # 记录错误并继续（query_logs 仅用于审计与回归，丢失一条可接受）。
         try:
-            self._persist_or_raise(result)
+            self._persist_or_raise(result, principal)
         except Exception:
             logger.exception(
                 "query_log_persist_failed",
@@ -319,14 +326,14 @@ class ChatService:
             except Exception:
                 logger.exception("concept_mine_trigger_failed", extra={"request_id": result.request_id})
 
-    def _persist_or_raise(self, result: AnswerResult) -> None:
+    def _persist_or_raise(self, result: AnswerResult, principal: str | None = None) -> None:
         question = result.question if self.privacy_log_questions else None
         self.database.execute(
             """INSERT INTO query_logs (
                 request_id,question,question_hash,answer,result_state,requested_strategy,actual_strategy,
                 trace_json,citations_json,timing_json,usage_json,created_at,index_version,prompt_version,
-                requested_provider,actual_provider,query_date,category_filter_json
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                requested_provider,actual_provider,query_date,category_filter_json,principal_id
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             # 盐更名（expense-rag-salt → mindgraph-question-salt）：历史 question_hash
             # 失效可接受，该字段仅用于同题去重，不承载跨版本可追溯承诺。
             (result.request_id, question, hashlib.sha256((result.question + "mindgraph-question-salt").encode()).hexdigest(), result.answer,
@@ -337,11 +344,13 @@ class ChatService:
              result.created_at.isoformat(), result.index_version, result.prompt_version,
              result.requested_provider, result.actual_provider,
              result.retrieval_trace.applied_filters.get("query_date") if result.retrieval_trace else None,
-             dumps(result.retrieval_trace.applied_filters.get("knowledge_categories", []) if result.retrieval_trace else [])),
+             dumps(result.retrieval_trace.applied_filters.get("knowledge_categories", []) if result.retrieval_trace else []),
+             principal or "anonymous"),
         )
 
     def answer(self, request: ChatRequest, access_scope: dict | None = None) -> AnswerResult:
         started = time.perf_counter()
+        principal = (access_scope or {}).get("user") if access_scope else None
         request_id = str(uuid.uuid4())
         provider = self._provider(request.chat_provider, request.chat_model)
         if self._is_out_of_scope(request.question):
@@ -351,7 +360,7 @@ class ChatService:
                 actual_strategy="scope_check", model=provider.model_name, requested_provider=request.chat_provider or provider.provider_name,
                 actual_provider=provider.provider_name,
             )
-            self._persist(result)
+            self._persist(result, principal)
             return result
         try:
             decision, routing_ms = self._route(request)
@@ -373,7 +382,7 @@ class ChatService:
                 requested_provider=request.chat_provider or provider.provider_name,
                 actual_provider=provider.provider_name, index_version=trace.index_version,
             )
-            self._persist(result)
+            self._persist(result, principal)
             return result
         if not citations:
             denied = _acl_filtered_everything(trace)
@@ -389,7 +398,7 @@ class ChatService:
                 requested_provider=request.chat_provider or provider.provider_name, actual_provider=provider.provider_name,
                 index_version=trace.index_version,
             )
-            self._persist(result)
+            self._persist(result, principal)
             return result
         if not provider.available:
             answer = "已找到相关制度证据，但生成模型未配置。请直接查看下方引用。"
@@ -413,12 +422,13 @@ class ChatService:
             requested_provider=request.chat_provider or provider.provider_name, actual_provider=provider.provider_name,
             index_version=trace.index_version,
         )
-        self._persist(result)
+        self._persist(result, principal)
         logger.info("chat_completed", extra={"request_id": result.request_id, "requested_strategy": result.requested_strategy, "actual_strategy": result.actual_strategy, "result_state": result.result_state.value, "degraded": result.degraded, "total_ms": result.timing.total_ms, "usage_source": result.usage.usage_source.value})
         return result
 
     def stream(self, request: ChatRequest, access_scope: dict | None = None) -> Iterable[dict[str, Any]]:
         started = time.perf_counter()
+        principal = (access_scope or {}).get("user") if access_scope else None
         request_id = str(uuid.uuid4())
         provider = self._provider(request.chat_provider, request.chat_model)
         timestamp = lambda: datetime.now(UTC).isoformat()
@@ -432,7 +442,7 @@ class ChatService:
                 result_state=ResultState.out_of_scope, timing=self._timing(None, started, None, 0.0),
                 requested_strategy=request.retrieval_strategy, actual_strategy="scope_check", model=provider.model_name,
                 requested_provider=request.chat_provider or provider.provider_name, actual_provider=provider.provider_name)
-            self._persist(result)
+            self._persist(result, principal)
             yield event("citations", {"citations": []})
             yield event("usage", result.usage.model_dump(mode="json"))
             yield event("completed", result.model_dump(mode="json"))
@@ -532,7 +542,7 @@ class ChatService:
                     actual_strategy=trace.actual_strategy, degraded=True, degradation_reason=reason, model=provider.model_name,
                     requested_provider=request.chat_provider or provider.provider_name, actual_provider=provider.provider_name,
                     index_version=trace.index_version)
-        self._persist(result)
+        self._persist(result, principal)
         yield event("citations", {"citations": [item.model_dump(mode="json") for item in citations]})
         yield event("usage", result.usage.model_dump(mode="json"))
         yield event("completed", result.model_dump(mode="json"))

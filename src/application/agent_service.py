@@ -40,7 +40,25 @@ from domain.models import ChatRequest, Citation, ResultState
 logger = logging.getLogger("mindgraph.agent")
 
 CLARIFICATION_TTL_MINUTES = 30
-CLARIFICATION_SECRET_SALT = "mindgraph-clarification-v1"
+
+
+def _clarification_salt() -> bytes:
+    """澄清 token 的 HMAC 盐（审查 F10）：部署经 MINDGRAPH_CLARIFICATION_SALT
+    注入；缺省时进程级随机——源码可见的固定盐不可用于伪造。随机盐使
+    跨进程/重启后的 resume 校验失败（可接受：token TTL 30 分钟，重启后
+    用户重新提问即可；接线 resume_from 时如需跨重启校验再引入服务端
+    澄清存储——见 ADR-003 澄清协议）。"""
+    import os as _os
+    import secrets as _secrets
+
+    salt = _os.getenv("MINDGRAPH_CLARIFICATION_SALT", "")
+    if not salt:
+        cached = getattr(_clarification_salt, "_random", None)
+        if cached is None:
+            cached = _secrets.token_hex(32)
+            _clarification_salt._random = cached  # type: ignore[attr-defined]
+        salt = cached
+    return salt.encode()
 
 
 def _now_iso() -> str:
@@ -51,7 +69,7 @@ def make_clarification_token(conversation_key: str, questions: list[str]) -> tup
     """生成 clarification_id + context_hash + expires_at（签名防伪造）。"""
     payload = "|".join(questions)
     context_hash = hmac.new(
-        CLARIFICATION_SECRET_SALT.encode(), (conversation_key + payload).encode(), hashlib.sha256
+        _clarification_salt(), (conversation_key + payload).encode(), hashlib.sha256
     ).hexdigest()[:16]
     clarification_id = uuid.uuid4().hex[:12]
     expires_at = (datetime.now(UTC) + timedelta(minutes=CLARIFICATION_TTL_MINUTES)).isoformat()
@@ -226,8 +244,28 @@ class AgentService:
     # ── 步骤执行器 ──
 
     def _execute_step(self, step: ExecutionStep, request: ChatRequest, access_scope: dict | None, previous: EvidenceQueryResult | None) -> EvidenceQueryResult:
+        """执行单个预算步骤。性能修正（审查发现）：check_conflicts /
+        resolve_version 复用上一步的检索结果，只增量复查冲突——此前每步
+        重跑完整 route→retrieve→citations→conflicts，factual 请求重复
+        检索 2 次、cross_policy 3 次（嵌入检索是最贵操作，P95 直接翻倍）。
+
+        - retrieve_evidence：首次全链检索；
+        - check_conflicts：基于 previous 的 citations 增量复查版本冲突
+          （唯一可能变化的部分），不重检索；
+        - resolve_version：复用 previous（版本族在冲突服务里按 policy_key
+          增量核对，无需新检索）；
+        - expand_relations：以 graph_enabled=True 做一次新检索（真正需要
+          不同检索面的唯一步骤）。
+        """
+        if step.name in {"check_conflicts", "resolve_version"} and previous is not None:
+            conflicts = self.evidence.policy_conflict_service.find_for_policy_keys(
+                {item.policy_key for item in previous.citations if item.policy_key},
+                as_of=request.query_date,
+                include_historical=request.include_historical,
+                access_scope=access_scope,
+            )
+            return self.evidence.rebundle_with_conflicts(previous, conflicts)
         if step.name == "expand_relations" and previous is not None:
-            # 可选 confirmed 关系扩展：以图开方式重查（graph_enabled=True 的一跳扩展）
             graph_request = request.model_copy(update={"graph_enabled": True})
             return self.evidence.query(graph_request, access_scope=access_scope)
         return self.evidence.query(request, access_scope=access_scope)

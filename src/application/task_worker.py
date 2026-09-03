@@ -130,11 +130,20 @@ class TaskWorker:
         if self._cancel_requested(task_id):
             return self._finalize_cancelled(task_id, steps)
 
-        # 步骤 1：检索证据（按提交者当前 ACL；scope 构建与 REST 通道同源）
+        # 步骤 1：检索证据（按提交者当前 ACL；scope 构建与 REST 通道同源）。
+        # 审查修正（F4）：此前只传 name——丢失了提交时持久化的 workspace/
+        # department，导致企业用户的私有制度任务大面积 completed_empty。
+        # 现按任务行的 workspace/department 重建主体（roles 不持久化：
+        # worker 不应继承 admin 通配，提交时的角色只影响提交面）。
         started = time.perf_counter()
         from application.access_control import build_access_scope
 
-        scope = build_access_scope({"name": principal_id, "authenticated": True})
+        worker_principal: dict[str, Any] = {"name": principal_id, "authenticated": True}
+        if task.get("workspace"):
+            worker_principal["workspaces"] = [task["workspace"]]
+        if task.get("department"):
+            worker_principal["departments"] = [task["department"]]
+        scope = build_access_scope(worker_principal)
         evidence_service = self._make_evidence_service()
         request = ChatRequest(
             question=str(constraints.get("document_query") or ""),
@@ -161,7 +170,10 @@ class TaskWorker:
         if self._cancel_requested(task_id):
             return self._finalize_cancelled(task_id, steps)
 
-        # 步骤 2：版本冲突核对（同一 policy_key 在 as_of 的有效版本族）
+        # 步骤 2：版本冲突核对（同一 policy_key 在 as_of 的有效版本族）。
+        # 注：query 内部 bundle 已含 conflicts，但 worker 步骤轨迹要求独立的
+        # 冲突核对记录；此处为轻量 SQLite 查询（毫秒级），保留显式调用而非
+        # 从 bundle 重构——避免手工重建 dict 结构引入回归（审查时已回退一次）。
         started = time.perf_counter()
         conflicts = self.conflict_service.find_for_policy_keys(
             {item.policy_key for item in result.citations if item.policy_key},

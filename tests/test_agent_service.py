@@ -375,3 +375,26 @@ def test_assist_persist_failure_never_blocks_answer(tmp_path: Path):
     names = [e["event"] for e in events]
     assert names[-1] == "completed"  # 应答完整收尾
     assert events[-1]["data"]["result_state"] == "answered"
+
+
+def test_no_duplicate_retrieval_per_assist_request(tmp_path: Path):
+    """性能回归锁定（审查发现）：check_conflicts/resolve_version 复用上一步
+    检索结果，不重跑全链。factual 请求恰好 1 次检索；cross_policy 因
+    expand_relations 需要图检索面恰好 2 次。嵌入检索是最贵操作，重复
+    执行曾让 P95 翻倍。"""
+    service, _db, pipeline = _build(tmp_path)
+    calls: list[int] = []
+    original_retrieve = pipeline.retrieve
+
+    def counting_retrieve(*args, **kwargs):
+        calls.append(1)
+        return original_retrieve(*args, **kwargs)
+
+    pipeline.retrieve = counting_retrieve  # type: ignore[method-assign]
+
+    list(service.stream_assist(ChatRequest(question="差旅餐补标准是多少天？", retrieval_strategy="auto")))
+    assert len(calls) == 1, f"factual 应恰好 1 次检索，实际 {len(calls)}"
+
+    calls.clear()
+    list(service.stream_assist(ChatRequest(question="报销和招待对比一下分别能同时报吗", retrieval_strategy="auto")))
+    assert len(calls) <= 2, f"cross_policy 至多 2 次（expand_relations 图面），实际 {len(calls)}"

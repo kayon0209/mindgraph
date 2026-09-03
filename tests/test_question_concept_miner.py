@@ -283,7 +283,7 @@ class TestAutoTrigger:
         svc = ChatService.__new__(ChatService)
         svc.on_question_logged = MagicMock(side_effect=RuntimeError("boom"))
         result = MagicMock()
-        with patch.object(ChatService, "_persist_or_raise", lambda self, r: None):
+        with patch.object(ChatService, "_persist_or_raise", lambda self, r, principal=None: None):
             svc._persist(result)  # 回调抛错绝不影响应答路径
         svc.on_question_logged.assert_called_once()
 

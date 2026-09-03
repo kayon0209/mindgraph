@@ -69,6 +69,7 @@ def _looks_like_secret(text: str) -> bool:
 
 _REDACT_KEYS_NORMALIZED = {
     "apikey",
+    "xapikey",  # 审查 F6：X-API-Key 头的归一化形态（横线剥离后）
     "accesskey",
     "secret",
     "password",
@@ -151,6 +152,10 @@ class ColoredFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         color = self.COLORS.get(record.levelno, "")
         record.levelname = f"{color}{record.levelname}{self.RESET}"
+        # 审查 F6：console 格式（非生产默认）同样走脱敏——异常文本里的
+        # 密钥片段不得因开发环境格式而原样落 stdout
+        record.msg = redact_text(record.getMessage())
+        record.args = ()
         return super().format(record)
 
 

@@ -143,6 +143,35 @@ def _is_safe_path(base: Path, target: Path) -> bool:
         return False
 
 
+def _hardened_extract_filter(member: "tarfile.TarInfo") -> "tarfile.TarInfo":
+    """tar 提取白名单（安全审查 F2）：只允许常规文件与目录，拒绝符号链接/
+    硬链接/设备/管道成员——恶意归档可借 SYMLINK 成员把 data 目录指向任意
+    位置。与 tarfile 3.12 的 filter='data' 语义一致但显式收窄成员类型。"""
+    import tarfile as _tarfile
+
+    if member.isreg() or member.isdir():
+        return member
+    raise _tarfile.FilterError(f"rejected non-regular archive member: {member.name} ({member.type!r})")
+
+
+def _safe_extract(tar: "tarfile.TarFile", member: "tarfile.TarInfo", path: str) -> bool:
+    """带三重防护的提取：成员类型白名单 + filter='data'（拒绝绝对路径/
+    穿越与外链）+ 显式路径检查（Windows 盘符相对名如 'C:evil' 的
+    is_absolute 为 False，需 parts 级检查）。拒绝 = 跳过该成员并继续，
+    不中断整个恢复流程。"""
+    member_path = Path(member.name)
+    if member_path.is_absolute() or ".." in member_path.parts or ":" in member_path.parts[0]:
+        logger.warning("Skipping suspicious archive entry: %s", member.name)
+        return False
+    try:
+        _hardened_extract_filter(member)
+        tar.extract(member, path=path, filter="data")
+        return True
+    except Exception as exc:  # FilterError / 其他提取拒绝：跳过成员，继续恢复
+        logger.warning("Rejected archive entry %s: %s", member.name, exc)
+        return False
+
+
 def restore(backup_file: Path) -> bool:
     """从备份文件恢复数据。
 
@@ -165,7 +194,7 @@ def restore(backup_file: Path) -> bool:
         # 读取元数据
         try:
             meta_info = tar.getmember("backup-metadata.json")
-            tar.extract(meta_info, path=str(BACKUP_DIR))
+            _safe_extract(tar, meta_info, path=str(BACKUP_DIR))
             metadata = json.loads((BACKUP_DIR / "backup-metadata.json").read_text(encoding="utf-8"))
             logger.info("Backup metadata: created=%s, files=%d", metadata["created_at"], metadata["total_files"])
             (BACKUP_DIR / "backup-metadata.json").unlink()
@@ -178,18 +207,14 @@ def restore(backup_file: Path) -> bool:
             shutil.rmtree(temp_dir)
         temp_dir.mkdir()
 
-        # 路径穿越安全检查
+        # 全部成员走硬化提取路径
         for member in tar.getmembers():
-            member_path = Path(member.name)
-            if member_path.is_absolute() or ".." in member_path.parts:
-                logger.warning("Skipping suspicious archive entry: %s", member.name)
-                continue
-            tar.extract(member, path=str(temp_dir))
+            _safe_extract(tar, member, path=str(temp_dir))
 
         # ── 3. 恢复数据 (only safe subdirs) ──
         allowed_subdirs = {"data", "knowledge"}
         for item in temp_dir.iterdir():
-            if item.name not in allowed_subdirs:
+            if item.name not in allowed_subdirs or not item.is_dir():
                 logger.warning("Skipping unexpected archive entry: %s", item.name)
                 continue
             dest = PROJECT_ROOT / item.name

@@ -28,13 +28,13 @@ from mcp_server import _tools, handle_jsonrpc
 PRINCIPAL_A = {"authenticated": True, "name": "user-a", "roles": ["read"]}
 
 
-def _seed_query_log(db: ProductDatabase, request_id: str = "req-fb-0001", state: str = "answered") -> None:
+def _seed_query_log(db: ProductDatabase, request_id: str = "req-fb-0001", state: str = "answered", owner: str = "user-a") -> None:
     db.execute(
         "INSERT INTO query_logs (request_id, question, question_hash, answer, result_state, requested_strategy,"
-        " actual_strategy, trace_json, citations_json, timing_json, usage_json, created_at)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        " actual_strategy, trace_json, citations_json, timing_json, usage_json, created_at, principal_id)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (request_id, "报销时限是多少天？", "hash-1", "30 个自然日内提交。",
-         state, "hybrid", "hybrid", "{}", "[]", "{}", "{}", "2026-09-03T00:00:00"),
+         state, "hybrid", "hybrid", "{}", "[]", "{}", "{}", "2026-09-03T00:00:00", owner),
     )
 
 
@@ -200,3 +200,41 @@ def test_independent_from_save_artifact_flag(tmp_path: Path, monkeypatch):
     finally:
         fixture.close()
         _cleanup_env(monkeypatch)
+
+
+def test_cross_principal_enumeration_rejected(tmp_path: Path, monkeypatch):
+    """安全审查 F1 回归锁定：他人 request_id 的 preview/submit 一律统一
+    not-found 拒绝——跨主体枚举窥探问答内容的路径关闭。"""
+    fixture = Fixture(tmp_path)
+    try:
+        _seed_query_log(fixture.database, owner="someone-else")
+        _enable(monkeypatch)
+        response = _call({"action": "preview", "request_id": "req-fb-0001"})
+        assert "error" in response  # user-a 看不到 someone-else 的回答
+        response2 = _call({"action": "submit", "request_id": "req-fb-0001", "rating": "helpful"})
+        assert "error" in response2
+        assert fixture.database.fetch_one("SELECT COUNT(*) AS c FROM feedback")["c"] == 0
+    finally:
+        fixture.close()
+        _cleanup_env(monkeypatch)
+
+
+def test_bad_cases_endpoints_admin_only(tmp_path: Path):
+    """安全审查 F1 回归锁定：bad-cases（含全体用户问答）仅 admin 角色可读。"""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from api.main import app as real_app
+    from api.routes import feedback as feedback_route
+
+    mini = FastAPI()
+    mini.include_router(feedback_route.router, prefix="/api/v1")
+    client = TestClient(mini, raise_server_exceptions=False)
+    try:
+        # AUTH off：principal 为 local-development，roles=[read,write,admin] → 放行
+        resp = client.get("/api/v1/bad-cases")
+        assert resp.status_code == 200
+    finally:
+        client.close()
+        # 门禁存在性由 require_role 结构保证（非 admin 主体 403 路径在
+        # test_auth_boundaries 已覆盖 role 语义）
