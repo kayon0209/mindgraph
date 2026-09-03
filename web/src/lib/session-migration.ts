@@ -1,10 +1,11 @@
 /**
- * M3：本地会话显式迁移到服务端（实施方案 §8.2）。
+ * M3：本地会话显式迁移到服务端（实施方案 §8.2 修订版）。
  *
- * 原则：
+ * 原则（2026-09-03 对齐修订版方案）：
  * - 只在用户主动确认后迁移（绝不自动上传本地内容）；
- * - 逐会话上传，服务端返回映射表，前端校验轮次数；
- * - 校验通过后删除已迁移会话的本地正文，仅保留迁移标记（不长期双写）；
+ * - 逐会话上传，服务端返回映射表，前端校验轮次数与内容（request_id 配对）；
+ * - 迁移成功后**保留本地副本**——删除本地副本是另一个单独的用户确认动作，
+ *   不随迁移自动清空（localStorage 继续作为开发/单机缓存）；
  * - 重复迁移幂等（服务端 local_turn_id 查重 + 本地标记跳过）。
  */
 
@@ -25,8 +26,13 @@ export type LocalSession = {
   }>;
 };
 
-/** 迁移标记：会话 ID → 服务端 conversation_id（保留证明，正文已清理） */
-export type MigrationMarker = Record<string, { conversationId: string; migratedAt: string }>;
+/** 迁移标记：会话 ID → 服务端 conversation_id + 本地副本保留状态 */
+export type MigrationMarker = {
+  conversationId: string;
+  migratedAt: string;
+  /** true = 本地正文仍在（等待用户单独确认删除）；false = 已确认删除 */
+  localCopyRetained: boolean;
+};
 
 export const MIGRATION_MARKERS_KEY = "mindgraph.chat.session-migration";
 
@@ -47,15 +53,15 @@ function _write(key: string, value: string): void {
   storage?.setItem(key, value);
 }
 
-export function loadMigrationMarkers(): MigrationMarker {
+export function loadMigrationMarkers(): Record<string, MigrationMarker> {
   try {
-    return JSON.parse(_read(MIGRATION_MARKERS_KEY) ?? "{}") as MigrationMarker;
+    return JSON.parse(_read(MIGRATION_MARKERS_KEY) ?? "{}") as Record<string, MigrationMarker>;
   } catch {
     return {};
   }
 }
 
-function saveMigrationMarkers(markers: MigrationMarker): void {
+function saveMigrationMarkers(markers: Record<string, MigrationMarker>): void {
   _write(MIGRATION_MARKERS_KEY, JSON.stringify(markers));
 }
 
@@ -65,16 +71,21 @@ export function sessionsPendingMigration(sessions: LocalSession[]): LocalSession
   return sessions.filter((session) => !markers[session.id] && session.turns.length > 0);
 }
 
-/** 单会话迁移全流程：创建 → 导入 → 校验 → 清理本地正文 → 记标记 */
+/** 已迁移且本地副本仍在的会话（"删除本地副本"单独确认动作的显示依据） */
+export function migratedSessionsWithLocalCopy(sessions: LocalSession[]): LocalSession[] {
+  const markers = loadMigrationMarkers();
+  return sessions.filter((session) => markers[session.id]?.localCopyRetained === true);
+}
+
+/** 单会话迁移全流程：创建 → 导入 → 校验（轮次数 + request_id 配对）→ 记标记。
+ * 本地正文保留；删除由 confirmDeleteLocalSession 单独执行。 */
 export async function migrateSession(
   session: LocalSession,
   options?: { onProgress?: (done: number, total: number) => void },
 ): Promise<{ conversationId: string; imported: number; skipped: number; verified: boolean }> {
-  // 1. 创建服务端会话
   const created = await api.createConversation({ title: session.title });
   const conversationId = created.conversation_id;
 
-  // 2. 上传轮次（local_turn_id 用本地轮次 id 保证幂等）
   const turns = session.turns.map((turn, index) => ({
     local_turn_id: turn.id ?? `${session.id}-${index}`,
     question: turn.question,
@@ -83,17 +94,19 @@ export async function migrateSession(
   }));
   const result = await api.importConversationTurns(conversationId, turns);
 
-  // 3. 校验：读回消息，轮次数 = 2 × 本地轮次（user+assistant 成对）
+  // 校验：消息数 = 2 × 本地轮次，且每轮的 request_id（{local_id}:q/:a）成对出现
   const messages = await api.getConversationMessages(conversationId);
   const expectedPairs = session.turns.length;
-  const verified = messages.length === expectedPairs * 2;
+  const requestIds = new Set(messages.map((message) => message.request_id).filter(Boolean) as string[]);
+  const pairsMatch = turns.every(
+    (turn) => requestIds.has(`${turn.local_turn_id}:q`) && requestIds.has(`${turn.local_turn_id}:a`),
+  );
+  const verified = messages.length === expectedPairs * 2 && pairsMatch;
 
-  // 4. 校验通过才清理本地正文（失败保留，可重试）
   if (verified) {
     const markers = loadMigrationMarkers();
-    markers[session.id] = { conversationId, migratedAt: new Date().toISOString() };
+    markers[session.id] = { conversationId, migratedAt: new Date().toISOString(), localCopyRetained: true };
     saveMigrationMarkers(markers);
-    removeLocalSessionBody(session.id);
   }
   options?.onProgress?.(1, 1);
   return {
@@ -104,20 +117,26 @@ export async function migrateSession(
   };
 }
 
-/** 清理已迁移会话的本地正文（保留迁移标记；从 SESSIONS_KEY 中移除该条） */
-export function removeLocalSessionBody(sessionId: string): void {
+/** 删除本地副本（单独确认动作；迁移不做）。幂等：重复调用无副作用，标记保留作证明。 */
+export function confirmDeleteLocalSession(sessionId: string): void {
   const raw = _read("mindgraph.chat.sessions");
-  if (!raw) return;
-  try {
-    const sessions = JSON.parse(raw) as Array<{ id: string }>;
-    const kept = sessions.filter((item) => item.id !== sessionId);
-    _write("mindgraph.chat.sessions", JSON.stringify(kept));
-  } catch {
-    // 解析失败不动本地数据（宁可冗余也不误删）
+  if (raw) {
+    try {
+      const sessions = JSON.parse(raw) as Array<{ id: string }>;
+      const kept = sessions.filter((item) => item.id !== sessionId);
+      _write("mindgraph.chat.sessions", JSON.stringify(kept));
+    } catch {
+      // 解析失败不动本地数据（宁可冗余也不误删）
+    }
+  }
+  const markers = loadMigrationMarkers();
+  if (markers[sessionId]) {
+    markers[sessionId] = { ...markers[sessionId], localCopyRetained: false };
+    saveMigrationMarkers(markers);
   }
 }
 
-/** 全部待迁移会话逐个迁移（任一失败即停，保留剩余会话） */
+/** 全部待迁移会话逐个迁移（任一失败即停，保留剩余会话；已迁移的跳过） */
 export async function migrateAllSessions(
   sessions: LocalSession[],
   options?: { onProgress?: (done: number, total: number) => void },
@@ -142,7 +161,6 @@ export async function migrateAllSessions(
 /** 迁移入口可见性开关：服务端会话开启且有本地待迁移数据时显示 */
 export async function fetchServerConversationsEnabled(): Promise<boolean> {
   try {
-    // 探测：列表端点 404 = 服务端未开启
     await api.listConversations();
     return true;
   } catch (error) {

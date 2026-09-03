@@ -330,3 +330,54 @@ export type MineQuestionsResult = {
 };
 
 export type ConceptGapsResponse = { gaps: ConceptGap[]; total: number };
+
+/** M4-A：后台任务（AGENT_TASKS_ENABLED；状态机见 domain.task_models.TaskStatus） */
+export type AgentTask = {
+  task_id: string;
+  task_type: string;
+  status: "queued" | "running" | "completed" | "completed_with_conflicts" | "completed_empty" | "failed" | "cancelled";
+  result_state?: string | null;
+  constraints: Record<string, unknown>;
+  attempt_count: number;
+  cancel_requested: boolean;
+  error_code?: string | null;
+  error_message?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AgentArtifactMeta = {
+  artifact_id: string;
+  kind: string;
+  title: string;
+  visibility: string;
+  checksum: string;
+  created_at: string;
+};
+
+export type AgentArtifactContent = {
+  artifact_id: string;
+  task_id: string;
+  kind: string;
+  title: string;
+  content: {
+    document_query?: string | null;
+    as_of?: string | null;
+    matched_documents?: number;
+    conflict_count?: number;
+    conflicts?: Array<{ policy_key?: string | null; versions: Array<Record<string, unknown>> }>;
+  };
+  evidence_snapshot: Array<{
+    citation_id: string;
+    document_name?: string | null;
+    document_version?: string | null;
+    effective_from?: string | null;
+    effective_to?: string | null;
+    policy_status?: string | null;
+    policy_key?: string | null;
+    excerpt?: string | null;
+  }>;
+  citations: Array<Record<string, unknown>>;
+  checksum: string;
+  created_at: string;
+};

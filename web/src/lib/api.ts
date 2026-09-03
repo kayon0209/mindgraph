@@ -1,4 +1,7 @@
 import type {
+  AgentArtifactContent,
+  AgentArtifactMeta,
+  AgentTask,
   AnswerResult,
   ChatRequest,
   ConceptGapsResponse,
@@ -200,12 +203,31 @@ export const api = {
       `/mindgraph/conversations${cursor ? `?cursor=${encodeURIComponent(cursor)}&limit=${limit}` : `?limit=${limit}`}`,
     ),
   getConversationMessages: (conversationId: string) =>
-    request<Array<{ message_id: string; sequence_no: number; role: string; content: string; created_at: string }>>(
+    request<Array<{ message_id: string; sequence_no: number; role: string; content: string; created_at: string; request_id?: string | null }>>(
       `/mindgraph/conversations/${encodeURIComponent(conversationId)}/messages`,
     ),
   importConversationTurns: (conversationId: string, turns: Array<Record<string, unknown>>) =>
     request<{ imported: number; skipped_existing: number; mapping: unknown[]; total_messages: number }>(
       `/mindgraph/conversations/${encodeURIComponent(conversationId)}/import-turns`,
       { method: "POST", body: JSON.stringify({ turns }) },
+    ),
+  /** M4-A：后台任务（AGENT_TASKS_ENABLED 开启时可用；Idempotency-Key 幂等提交） */
+  submitAgentTask: (constraints: Record<string, unknown>, idempotencyKey: string) =>
+    request<AgentTask>("/mindgraph/agent/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
+      body: JSON.stringify({ task_type: "batch_policy_check", constraints }),
+    }),
+  listAgentTasks: (cursor?: string, limit = 50) =>
+    request<{ items: AgentTask[]; next_cursor: string | null }>(
+      `/mindgraph/agent/tasks${cursor ? `?cursor=${encodeURIComponent(cursor)}&limit=${limit}` : `?limit=${limit}`}`,
+    ),
+  getAgentTask: (taskId: string) =>
+    request<AgentTask & { artifacts: AgentArtifactMeta[] }>(`/mindgraph/agent/tasks/${encodeURIComponent(taskId)}`),
+  cancelAgentTask: (taskId: string) =>
+    request<AgentTask>(`/mindgraph/agent/tasks/${encodeURIComponent(taskId)}/cancel`, { method: "POST" }),
+  getAgentArtifact: (taskId: string, artifactId: string) =>
+    request<AgentArtifactContent>(
+      `/mindgraph/agent/tasks/${encodeURIComponent(taskId)}/artifacts/${encodeURIComponent(artifactId)}`,
     ),
 };

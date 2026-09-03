@@ -27,7 +27,7 @@ import { citationValidity, fidelityMissingMarks as citationFidelityMarks, summar
 import { buildEvidenceMarkdown, downloadTextFile, evidenceFilename } from "../lib/export-evidence";
 import { completionGenerationState, completionViewState, policyConflictItems } from "../lib/policy-conflicts";
 import { routeDecisionView } from "../lib/route-decision";
-import { migrateAllSessions, sessionsPendingMigration, fetchServerConversationsEnabled } from "../lib/session-migration";
+import { confirmDeleteLocalSession, fetchServerConversationsEnabled, migrateAllSessions, migratedSessionsWithLocalCopy, sessionsPendingMigration } from "../lib/session-migration";
 import type {
   AnswerResult,
   AssistClarification,
@@ -268,7 +268,8 @@ export function ChatPage() {
     };
   }, []);
 
-  /** M3：逐会话迁移（migrateAllSessions 内部逐个上传-校验-清理；标记保证幂等重试） */
+  /** M3（§8.2 修订）：逐会话迁移——上传-校验-记标记，**本地正文保留**；
+   * 删除本地副本是另一个单独确认动作（confirmDeleteLocalSession）。 */
   const runMigration = async (pending: Parameters<typeof migrateAllSessions>[0]) => {
     setMigrating(true);
     setMigrationDone(0);
@@ -277,15 +278,18 @@ export function ChatPage() {
         onProgress: (done) => setMigrationDone(done),
       });
       setMigrationResult(result);
-      // 迁移成功后同步本地会话列表（已迁移会话的正文已被清理）
-      if (result.migrated.length) {
-        const kept = sessions.filter((session) => !result.migrated.includes(session.id));
-        setSessions(kept);
-        if (kept.length === 0) startNewSession();
-      }
+      // 迁移不清理本地会话列表（本地副本继续作为缓存保留）
     } finally {
       setMigrating(false);
     }
+  };
+
+  /** M3：单独确认动作——用户逐会话删除已迁移的本地副本（幂等） */
+  const deleteLocalCopy = (sessionId: string) => {
+    confirmDeleteLocalSession(sessionId);
+    const kept = sessions.filter((session) => session.id !== sessionId);
+    setSessions(kept);
+    if (kept.length === 0) startNewSession();
   };
   const [graphHops, setGraphHops] = useState(() => loadSettings().graphHops);
   const [queryDate, setQueryDate] = useState("");
@@ -849,7 +853,7 @@ export function ChatPage() {
                   <div className="session-migration-block">
                     <p className="session-menu-note">
                       检测到 {sessionsPendingMigration(sessions).length} 个本机会话可迁移到服务端留存。
-                      迁移是主动操作：逐个上传，校验通过后清理本机正文（保留迁移标记）。
+                      迁移是主动操作：逐个上传并校验；本机副本会保留，删除需要你单独确认。
                     </p>
                     {migrating ? (
                       <p className="session-menu-note" role="status">迁移中… 已完成 {migrationDone}/{sessionsPendingMigration(sessions).length}</p>
@@ -866,9 +870,33 @@ export function ChatPage() {
                       <p className="session-menu-note" role="status">
                         {migrationResult.failed.length
                           ? `迁移完成：成功 ${migrationResult.migrated.length} 个，失败 ${migrationResult.failed.length} 个（可重试，已迁移的不会重复）`
-                          : `迁移完成：${migrationResult.migrated.length} 个会话已留存服务端。`}
+                          : `迁移完成：${migrationResult.migrated.length} 个会话已留存服务端；本机副本保留，可在下方会话列表中选择删除。`}
                       </p>
                     ) : null}
+                  </div>
+                ) : null}
+                {/* 已迁移会话的“删除本地副本”单独确认入口（§8.2 修订：不随迁移自动清理） */}
+                {serverConversationsEnabled && migratedSessionsWithLocalCopy(sessions).length ? (
+                  <div className="session-migration-block">
+                    <p className="session-menu-note">
+                      {migratedSessionsWithLocalCopy(sessions).length} 个会话已留存服务端，本机副本仍在（作为缓存）。
+                      需要清理本机时逐个确认删除；服务端会话不受影响。
+                    </p>
+                    <ul className="session-list">
+                      {migratedSessionsWithLocalCopy(sessions).map((session) => (
+                        <li key={`del-${session.id}`} className="session-item">
+                          <span className="session-item-open">{session.title}</span>
+                          <button
+                            className="session-item-action"
+                            onClick={() => deleteLocalCopy(session.id)}
+                            title="删除本机会话副本（服务端留存不变）"
+                            type="button"
+                          >
+                            删除本机副本
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
                   </div>
                 ) : null}
                 {sessions.length ? (

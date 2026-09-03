@@ -156,6 +156,12 @@ if _settings.CONVERSATION_PERSISTENCE_ENABLED:
 
     app.include_router(conversations_route.router, prefix=API_PREFIX, dependencies=[Depends(require_authenticated)])
 
+# M4-A：后台任务——AGENT_TASKS_ENABLED 默认关闭时完全不挂载。
+if _settings.AGENT_TASKS_ENABLED:
+    from api.routes import agent_tasks as agent_tasks_route
+
+    app.include_router(agent_tasks_route.router, prefix=API_PREFIX, dependencies=[Depends(require_authenticated)])
+
 # ── 根路径 ──
 
 @app.get("/", include_in_schema=False)

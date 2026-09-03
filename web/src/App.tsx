@@ -3,8 +3,10 @@ import {
   Activity,
   BookOpenText,
   GitPullRequestArrow,
+  ListChecks,
   MessageSquareText,
   Network,
+  PanelRightClose,
   ShieldCheck,
 } from "lucide-react";
 
@@ -14,6 +16,7 @@ import { EvaluationPage } from "./pages/EvaluationPage";
 import { GraphPage } from "./pages/GraphPage";
 import { KnowledgePage } from "./pages/KnowledgePage";
 import { RelationsPage } from "./pages/RelationsPage";
+import { TasksPage, tasksEnabled } from "./pages/TasksPage";
 import type { PublicConfig, ViewId } from "./types";
 
 const NAV_ITEMS = [
@@ -58,6 +61,24 @@ export function App() {
   const [checkingHealth, setCheckingHealth] = useState(false);
   // 研究项⑭：模型/服务状态前置——顶栏连接指示可展示当前生成模型与可用性
   const [publicConfig, setPublicConfig] = useState<PublicConfig | null>(null);
+  // M4-A：后台任务面板（探测式入口；flag 关闭时不出现）
+  const [tasksAvailable, setTasksAvailable] = useState(false);
+  const [tasksOpen, setTasksOpen] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const enabled = await tasksEnabled();
+        if (!cancelled) setTasksAvailable(enabled);
+      } catch {
+        if (!cancelled) setTasksAvailable(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     const onHashChange = () => setView(viewFromHash());
@@ -165,7 +186,36 @@ export function App() {
             <span>无依据时拒答，不替用户猜测。</span>
           </div>
         </div>
+
+        {/* M4-A：后台任务入口（Tasks UI-G2：探测式，非第六主导航；
+            AGENT_TASKS_ENABLED 关闭（404）时不渲染） */}
+        {tasksAvailable ? (
+          <button
+            className="nav-button tasks-entry"
+            onClick={() => setTasksOpen(true)}
+            type="button"
+          >
+            <ListChecks size={18} strokeWidth={1.8} />
+            <span>后台核对任务</span>
+          </button>
+        ) : null}
       </aside>
+
+      {tasksOpen ? (
+        <div className="tasks-overlay" role="dialog" aria-label="后台核对任务">
+          <div className="tasks-overlay-panel">
+            <button
+              className="button secondary small tasks-overlay-close"
+              onClick={() => setTasksOpen(false)}
+              type="button"
+              aria-label="关闭后台任务面板"
+            >
+              <PanelRightClose size={16} />
+            </button>
+            <TasksPage />
+          </div>
+        </div>
+      ) : null}
 
       <main className="workspace" id="main-content">
         <div className="workspace-topline">

@@ -12,7 +12,7 @@ from typing import Any, Iterator
 
 logger = logging.getLogger("mindgraph.database")
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 
 class ProductDatabase:
@@ -366,6 +366,50 @@ class ProductDatabase:
                     ON tool_call_log(conversation_id, started_at);
                 CREATE INDEX IF NOT EXISTS idx_tool_call_log_request
                     ON tool_call_log(request_id);
+                CREATE TABLE IF NOT EXISTS agent_tasks (
+                    task_id TEXT PRIMARY KEY,
+                    principal_id TEXT NOT NULL,
+                    workspace TEXT,
+                    department TEXT,
+                    conversation_id TEXT,
+                    task_type TEXT NOT NULL,
+                    constraints_json TEXT NOT NULL DEFAULT '{}',
+                    status TEXT NOT NULL DEFAULT 'queued',
+                    result_state TEXT,
+                    idempotency_key TEXT NOT NULL,
+                    lease_owner TEXT,
+                    lease_expires_at TEXT,
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    cancel_requested_at TEXT,
+                    error_code TEXT,
+                    error_message TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(principal_id, idempotency_key)
+                );
+                CREATE TABLE IF NOT EXISTS artifacts (
+                    artifact_id TEXT PRIMARY KEY,
+                    owner_principal_id TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    content_json TEXT NOT NULL DEFAULT '{}',
+                    visibility TEXT NOT NULL DEFAULT 'private',
+                    evidence_snapshot_json TEXT NOT NULL DEFAULT '[]',
+                    citations_json TEXT NOT NULL DEFAULT '[]',
+                    checksum TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(task_id) REFERENCES agent_tasks(task_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_agent_tasks_owner
+                    ON agent_tasks(principal_id, status, updated_at);
+                CREATE INDEX IF NOT EXISTS idx_agent_tasks_status_lease
+                    ON agent_tasks(status, lease_expires_at);
+                CREATE INDEX IF NOT EXISTS idx_artifacts_owner
+                    ON artifacts(owner_principal_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_artifacts_task
+                    ON artifacts(task_id);
             """)
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_notes_policy_lifecycle "
@@ -406,16 +450,19 @@ class ProductDatabase:
                 "UPDATE evaluation_runs SET status='interrupted', error='Service restarted before completion' WHERE status IN ('queued','running')"
             )
 
-    def execute(self, sql: str, params: tuple[Any, ...] = ()) -> None:
+    def execute(self, sql: str, params: tuple[Any, ...] = ()) -> int:
+        """执行写语句并返回受影响行数（并发 claim/幂等判定依赖该返回值）。"""
         started = time.perf_counter()
         conn = self._cursor_with_retry()
         try:
-            conn.execute(sql, params)
+            cursor = conn.execute(sql, params)
             conn.commit()
+            rowcount = cursor.rowcount if cursor is not None else 0
         except sqlite3.OperationalError:
             conn.rollback()
             raise
         self._log_slow_query(sql, (time.perf_counter() - started) * 1000)
+        return rowcount if rowcount is not None and rowcount >= 0 else 0
 
     def execute_many(self, sql: str, params_list: list[tuple[Any, ...]]) -> None:
         started = time.perf_counter()

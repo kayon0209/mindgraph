@@ -100,6 +100,20 @@ class ServiceContainer:
         from application.conversation_service import ConversationService
 
         self.conversation_service = ConversationService(self.database)
+        # M4-A：后台任务（AGENT_TASKS_ENABLED 路由层门控；worker 由
+        # TASK_WORKER_ENABLED 决定是否随进程启动，默认不启动）。
+        from application.policy_conflict_service import PolicyConflictService
+        from application.task_service import TaskService
+        from application.task_worker import TaskWorker
+
+        self.task_service = TaskService(self.database)
+        self.task_worker = TaskWorker(
+            self.database,
+            evidence_query_service_factory=lambda: __import__(
+                "application.evidence_query_service", fromlist=["EvidenceQueryService"]
+            ).EvidenceQueryService(self.mindgraph_chat),
+            policy_conflict_service=PolicyConflictService(self.database),
+        )
 
     def _init_mindgraph(self) -> None:
         """装配 MindGraph Graph RAG 管线（复用 ChatService + MindGraph 检索包装）。"""

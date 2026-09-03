@@ -89,7 +89,7 @@ def test_fresh_database_has_v10_conversation_tables(tmp_path: Path):
     database = ProductDatabase(tmp_path / "v10.sqlite3")
     database.initialize()
     try:
-        assert _stored_version(database) == 10
+        assert _stored_version(database) == SCHEMA_VERSION
         for table in V10_ONLY_TABLES:
             assert table in _table_names(database)
     finally:
@@ -112,7 +112,7 @@ def test_v9_database_upgrades_to_v10_additively(tmp_path: Path):
     )
     database.initialize()  # 幂等升级
     try:
-        assert _stored_version(database) == 10
+        assert _stored_version(database) == SCHEMA_VERSION
         for table in V10_ONLY_TABLES:
             assert table in _table_names(database)
         row = database.fetch_one("SELECT request_id, result_state FROM query_logs WHERE request_id='req-x'")
@@ -164,10 +164,52 @@ def test_migration_failure_does_not_bump_version(tmp_path: Path):
     database = ProductDatabase(path)
     database.initialize()
     try:
-        assert _stored_version(database) == 10
+        assert _stored_version(database) == SCHEMA_VERSION
         # 篡改版本号本身不模拟迁移失败（真正的失败注入需 mock executescript；
         # 此处固化"版本号与表集一致"的不变量：有 v10 表才允许标 v10）
         tables = _table_names(database)
         assert set(V10_ONLY_TABLES) <= tables
+    finally:
+        database.close()
+
+
+# ── schema v11（M4-A agent_tasks/artifacts） ──
+
+V11_ONLY_TABLES = ("agent_tasks", "artifacts")
+
+
+def test_fresh_database_has_v11_task_tables(tmp_path: Path):
+    database = ProductDatabase(tmp_path / "v11.sqlite3")
+    database.initialize()
+    try:
+        assert _stored_version(database) == SCHEMA_VERSION
+        for table in V11_ONLY_TABLES:
+            assert table in _table_names(database)
+        # 幂等键唯一约束落库
+        ddl = database.fetch_one("SELECT sql FROM sqlite_master WHERE type='table' AND name='agent_tasks'")
+        assert ddl and "UNIQUE(principal_id, idempotency_key)" in (ddl["sql"] or "")
+    finally:
+        database.close()
+
+
+def test_v10_database_upgrades_to_v11_preserving_data(tmp_path: Path):
+    """v10 库原位升级 v11：既有会话数据不变（additive）。"""
+    database = ProductDatabase(tmp_path / "v10-to-v11.sqlite3")
+    database.initialize()
+    with database.connect() as connection:
+        for table in V11_ONLY_TABLES:
+            connection.execute(f"DROP TABLE IF EXISTS {table}")
+        connection.execute("UPDATE schema_meta SET version=10")
+    database.execute(
+        "INSERT INTO conversations (conversation_id, principal_id, title, created_at, updated_at)"
+        " VALUES ('keep-c1', 'keep-user', '保留会话', '2026-09-03T00:00:00', '2026-09-03T00:00:00')"
+    )
+    database.initialize()
+    try:
+        assert _stored_version(database) == SCHEMA_VERSION
+        for table in V11_ONLY_TABLES:
+            assert table in _table_names(database)
+        row = database.fetch_one("SELECT principal_id FROM conversations WHERE conversation_id='keep-c1'")
+        assert row["principal_id"] == "keep-user"
     finally:
         database.close()
