@@ -4115,3 +4115,25 @@ h2,
 @media (max-width: 680px) {
   .guided-capabilities li { padding: 8px 10px; }
 }
+
+/* 走查 X2：服务无响应横幅（唯一全页高强调状态） */
+.service-unresponsive {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  border: 1px solid var(--danger, #b91c1c); border-radius: 8px;
+  background: color-mix(in srgb, var(--danger, #b91c1c) 6%, var(--bg, #fff));
+  padding: 10px 14px; margin: 0 0 10px; font-size: 13px;
+}
+
+/* U1：多步信号徽标（结论可信前置） */
+.agent-execution-summary { display: inline-flex; align-items: center; gap: 6px; }
+.agent-execution-summary:has(+ .answer-body),
+.agent-execution-summary { font-weight: 500; color: var(--ink, #1c1917); }
+
+/* X4：危险操作两步确认按钮 */
+.button.danger { border-color: var(--danger, #b91c1c); color: var(--danger, #b91c1c); }
+
+/* R1：价值主张（安静的一行字，不与主结构争夺注意力） */
+.value-proposition {
+  font-size: 11px; color: var(--muted, #6b7280);
+  margin: 8px 0 0; padding: 0 14px; line-height: 1.5;
+}

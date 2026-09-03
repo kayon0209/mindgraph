@@ -1,3 +1,5 @@
+import time
+
 from fastapi import APIRouter
 
 from api.dependencies import get_container
@@ -6,11 +8,26 @@ from infrastructure.settings import get_settings
 
 router = APIRouter(tags=["system"])
 _settings = get_settings()
+_started_at = time.time()
 
 
 @router.get("/health")
 def health():
-    return {"status": "ok"}
+    """Liveness + 基础可观测字段（走查 S2）：uptime 供外部 Uptime 监控接
+    入；db_probe 区分「进程活」与「数据库可查」——进程卡死/SQLite 阻塞
+    场景下，监控能第一时间报警而不是等到用户发现。"""
+    db_probe = "ok"
+    try:
+        container = get_container()
+        container.database.fetch_one("SELECT 1 AS alive")
+    except Exception as exc:
+        db_probe = f"error: {type(exc).__name__}"
+    return {
+        "status": "ok" if db_probe == "ok" else "degraded",
+        "uptime_seconds": round(time.time() - _started_at, 1),
+        "db_probe": db_probe,
+        "worker_enabled": _settings.TASK_WORKER_ENABLED,
+    }
 
 
 @router.get("/readiness")

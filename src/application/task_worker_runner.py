@@ -61,20 +61,39 @@ class TaskWorkerRunner:
         while not self._stop.is_set():
             try:
                 processed = 0
-                # 每轮排空当前可认领任务（有任务时连续处理）
-                while not self._stop.is_set():
-                    result = self._worker.run_once()
-                    if result is None:
-                        break
-                    processed += 1
+                # 写锁规避（运行时缺陷修复）：worker 的 claim 是 UPDATE（即使
+                # 无任务也开写事务），空转时每 poll 间隔抢一次写锁，与请求
+                # 线程的审计/会话写入冲突（WAL 单写者，busy_timeout 内解不开
+                # 即 database is locked → 请求 500）。空闲探测改为纯 SELECT，
+                # 无候选时本轮完全不碰写路径。
+                if self._has_pending_work():
+                    while not self._stop.is_set():
+                        result = self._worker.run_once()
+                        if result is None:
+                            break
+                        processed += 1
                 if processed:
                     logger.info("task_worker_batch", extra={"processed": processed})
                 # 保留期执行（M3-E 缺口修复）：同线程顺带执行，到期会话归档
+                # （enforce_retention 先 SELECT 后 UPDATE，无到期行不写）
                 if self._retention is not None:
                     self._retention()
             except Exception:
                 logger.exception("task_worker_loop_failed")
             self._stop.wait(self._poll_interval)
+
+    def _has_pending_work(self) -> bool:
+        """只读探测：queued 或 lease 过期的 running 存在才值得 claim。"""
+        try:
+            row = self._container.database.fetch_one(
+                "SELECT 1 AS hit FROM agent_tasks"
+                " WHERE status='queued' OR (status='running' AND lease_expires_at IS NOT NULL AND lease_expires_at < strftime('%Y-%m-%dT%H:%M:%S', 'now', '+00:00'))"
+                " LIMIT 1"
+            )
+            return row is not None
+        except Exception:
+            # 探测失败保守返回 True：交给 run_once 的既有错误处理
+            return True
 
 
 def _build_evidence_service(container: Any):

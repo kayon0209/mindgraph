@@ -61,22 +61,37 @@ export function App() {
   const [checkingHealth, setCheckingHealth] = useState(false);
   // 研究项⑭：模型/服务状态前置——顶栏连接指示可展示当前生成模型与可用性
   const [publicConfig, setPublicConfig] = useState<PublicConfig | null>(null);
-  // M4-A：后台任务面板（探测式入口；flag 关闭时不出现）
+  // M4-A：后台任务面板（探测式入口；flag 关闭时不出现）。
+  // 走查修正 X1：一次性探测会在「页面先于 API 就绪」时永远错过入口
+  // （本地/容器重启的常见时序）。改为 30s 周期重探直至成功，成功即停。
   const [tasksAvailable, setTasksAvailable] = useState(false);
   const [tasksOpen, setTasksOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    void (async () => {
+    let settled = false;
+    const probe = async () => {
       try {
         const enabled = await tasksEnabled();
-        if (!cancelled) setTasksAvailable(enabled);
+        if (enabled && !cancelled) {
+          settled = true;
+          setTasksAvailable(true);
+        }
       } catch {
-        if (!cancelled) setTasksAvailable(false);
+        /* 探测失败保持 false，下轮重试 */
       }
-    })();
+    };
+    void probe();
+    const timer = window.setInterval(() => {
+      if (settled || cancelled) {
+        window.clearInterval(timer);
+        return;
+      }
+      void probe();
+    }, 30_000);
     return () => {
       cancelled = true;
+      window.clearInterval(timer);
     };
   }, []);
 
@@ -93,12 +108,16 @@ export function App() {
     }
   }, []);
 
-  // U5：健康检查可重试——服务后启动时，用户不必刷新整页
+  // U5：健康检查可重试——服务后启动时，用户不必刷新整页。
+  // 走查修正 X2：加周期监测（45s）——进程卡死（连接超时）时连接指示
+  // 自动转灰，并显示全页横幅 + 重试按钮，输入不再石沉大海。
+  const [healthFails, setHealthFails] = useState(0);
   const checkHealth = useCallback(async () => {
     setCheckingHealth(true);
     try {
       await api.health();
       setOnline(true);
+      setHealthFails(0);
       // 健康时顺带取公开配置；失败不影响连接状态本身
       try {
         setPublicConfig(await api.publicConfig());
@@ -107,6 +126,7 @@ export function App() {
       }
     } catch {
       setOnline(false);
+      setHealthFails((n) => n + 1);
     } finally {
       setCheckingHealth(false);
     }
@@ -114,7 +134,11 @@ export function App() {
 
   useEffect(() => {
     void checkHealth();
+    const timer = window.setInterval(() => void checkHealth(), 45_000);
+    return () => window.clearInterval(timer);
   }, [checkHealth]);
+  // 连续两次失败 = 服务无响应（区别于瞬时网络抖动）
+  const unresponsive = healthFails >= 2;
 
   // P5：键盘效率——1-5 切视图，/ 聚焦提问框（输入控件内不触发）
   useEffect(() => {
@@ -186,6 +210,7 @@ export function App() {
             <span>无依据时拒答，不替用户猜测。</span>
           </div>
         </div>
+        <p className="value-proposition">每个结论带版本、来源与核验，可导出给制度责任人复核。</p>
 
         {/* M4-A：后台任务入口（Tasks UI-G2：探测式，非第六主导航；
             AGENT_TASKS_ENABLED 关闭（404）时不渲染） */}
@@ -218,6 +243,16 @@ export function App() {
       ) : null}
 
       <main className="workspace" id="main-content">
+        {/* 走查 X2：服务无响应（连续两次健康检查失败）时的全页横幅——
+            进程卡死不再表现为"输入石沉大海" */}
+        {unresponsive ? (
+          <div className="service-unresponsive" role="alert">
+            <span>服务暂时无响应。你的会话和已生成的回答不受影响。</span>
+            <button className="button secondary small" disabled={checkingHealth} onClick={() => void checkHealth()} type="button">
+              {checkingHealth ? "正在重试…" : "重试连接"}
+            </button>
+          </div>
+        ) : null}
         <div className="workspace-topline">
           {/* 研究项⑭：连接指示同时披露当前生成模型，未配置/不可用时前置提醒，而不是等提问后才发现 */}
           {(() => {

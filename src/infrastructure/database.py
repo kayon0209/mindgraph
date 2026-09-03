@@ -476,18 +476,31 @@ class ProductDatabase:
             )
 
     def execute(self, sql: str, params: tuple[Any, ...] = ()) -> int:
-        """执行写语句并返回受影响行数（并发 claim/幂等判定依赖该返回值）。"""
+        """执行写语句并返回受影响行数（并发 claim/幂等判定依赖该返回值）。
+
+        写锁竞争通用缓解（运行时缺陷修复）：WAL 单写者模型下，请求线程与
+        worker 线程的写写在 busy_timeout 内可能解不开（database is locked
+        直接打穿到请求 500）。此处对 locked 做短指数退避重试（与既有
+        _cursor_with_retry 的连接级重试互补，这是语句级）。
+        """
         started = time.perf_counter()
         conn = self._cursor_with_retry()
-        try:
-            cursor = conn.execute(sql, params)
-            conn.commit()
-            rowcount = cursor.rowcount if cursor is not None else 0
-        except sqlite3.OperationalError:
-            conn.rollback()
-            raise
-        self._log_slow_query(sql, (time.perf_counter() - started) * 1000)
-        return rowcount if rowcount is not None and rowcount >= 0 else 0
+        last_error: sqlite3.OperationalError | None = None
+        for attempt in range(self._MAX_RETRIES):
+            try:
+                cursor = conn.execute(sql, params)
+                conn.commit()
+                rowcount = cursor.rowcount if cursor is not None else 0
+                self._log_slow_query(sql, (time.perf_counter() - started) * 1000)
+                return rowcount if rowcount is not None and rowcount >= 0 else 0
+            except sqlite3.OperationalError as exc:
+                conn.rollback()
+                if "locked" in str(exc).lower() and attempt < self._MAX_RETRIES - 1:
+                    last_error = exc
+                    time.sleep(self._RETRY_DELAY * (attempt + 1))
+                    continue
+                raise
+        raise last_error  # type: ignore[misc]  # 理论不可达：循环内必 return 或 raise
 
     def execute_many(self, sql: str, params_list: list[tuple[Any, ...]]) -> None:
         started = time.perf_counter()

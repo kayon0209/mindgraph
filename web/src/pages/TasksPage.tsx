@@ -51,6 +51,7 @@ export function TasksPage() {
   const [pollError, setPollError] = useState(false);
   const [query, setQuery] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [confirmingCancel, setConfirmingCancel] = useState<string | null>(null);
   const pollTimer = useRef<number | null>(null);
 
   const refreshList = useCallback(async (): Promise<void> => {
@@ -115,7 +116,11 @@ export function TasksPage() {
   };
 
   const cancelTask = async (task: AgentTask) => {
-    if (!window.confirm("取消后不再执行新步骤，已开始的步骤会跑完。确定取消？")) return;
+    setConfirmingCancel(task.task_id);
+  };
+
+  const confirmCancel = async (task: AgentTask) => {
+    setConfirmingCancel(null);
     await api.cancelAgentTask(task.task_id);
     await refreshList();
   };
@@ -199,9 +204,15 @@ export function TasksPage() {
                         <ListChecks size={13} /> 详情
                       </button>
                       {task.status === "queued" || task.status === "running" ? (
-                        <button className="button secondary small" onClick={() => void cancelTask(task)} type="button">
-                          <OctagonX size={13} /> 取消
-                        </button>
+                        confirmingCancel === task.task_id ? (
+                          <button className="button danger small" onClick={() => void confirmCancel(task)} type="button" autoFocus>
+                            <OctagonX size={13} /> 确认取消
+                          </button>
+                        ) : (
+                          <button className="button secondary small" onClick={() => void cancelTask(task)} type="button">
+                            <OctagonX size={13} /> 取消
+                          </button>
+                        )
                       ) : null}
                     </div>
                   </li>

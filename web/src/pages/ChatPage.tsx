@@ -1105,9 +1105,9 @@ export function ChatPage() {
                       <p className="agent-execution-summary">
                         {turn.toolCalls?.length
                           ? turn.toolCalls.every((call) => call.status !== "running")
-                            ? `已完成 ${turn.toolCalls.length} 步查询`
-                            : `正在执行 ${turn.toolCalls.length} 个查询步骤…`
-                          : `已制定 ${turn.plan.steps.length} 个查询步骤`}
+                            ? `✓ 已完成 ${turn.toolCalls.length} 步核对 · 结论经逐步取证`
+                            : `正在执行 ${turn.toolCalls.length} 步核对…`
+                          : `已制定 ${turn.plan.steps.length} 个核对步骤`}
                       </p>
                     ) : null}
                     {turn.fallbackReason ? (
@@ -1265,14 +1265,14 @@ export function ChatPage() {
             <div className="composer-foot">
               <span>{question.length}/2000</span>
               {/* M2：Assist 本地开关（服务端未开启时 404 探测已提示，不再让用户踩空） */}
-              <label className="assist-toggle" title="多步查询会先核对版本与关联制度，回答更慢但依据更完整">
+              <label className="assist-toggle" title="开启后系统会先核对版本与关联制度，再综合回答：更慢一些，但每一步的依据都能追溯">
                 <input
                   checked={assistMode}
                   disabled={assistAvailable === false}
                   onChange={(event) => setAssistMode(event.target.checked)}
                   type="checkbox"
                 />
-                多步查询
+                深度核对
                 {assistAvailable === false ? (
                   <span className="assist-unavailable" role="note">服务端未开启</span>
                 ) : null}
