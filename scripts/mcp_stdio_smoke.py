@@ -141,19 +141,22 @@ def run_cases(principal_all: bool = True) -> list[dict]:
             record("C3", "FAIL", str(exc))
 
         # C4 ACL：受限主体（无角色）只见公开笔记；有权限缺口时 get_note 返回
-        # not_found（不泄漏存在性）。本会话若以 admin 跑，则切换为受限语义验证。
+        # not_found（不泄漏存在性）。断言收紧：公开项必须可见——0 可见即 FAIL
+        # （防"公开内容被错误隐藏"的假阳性），且无私有制度泄漏。
         try:
             if RESTRICTED:
-                # 受限主体：私有库不可见。公开笔记在 demo 数据中标记 acl_public。
                 r = client.tool_call("mindgraph_list_notes", {"limit": 50}, msg_id="c4a")
                 body = StdioMcpClient.tool_body(r)
                 titles = [item["title"] for item in body["items"]]
-                private_titles = [t for t in titles if "差旅" in str(t) or "报销" in str(t)]
-                # 受限主体语义：只能看到公开项（demo 库的公开 external/ 笔记）
-                r2 = client.tool_call("mindgraph_get_note", {"note_id": "nonexistent"}, msg_id="c4b")
-                body2 = StdioMcpClient.tool_body(r2)
-                assert body2 == {"error": "note not found"}, body2
-                record("C4", "PASS", f"restricted principal sees {len(titles)} public notes; missing note → not_found")
+                if not titles:
+                    record("C4", "FAIL", "restricted principal sees 0 notes - public content must stay visible (check acl_public data)")
+                elif any(("差旅" in str(t)) or ("报销" in str(t)) for t in titles):
+                    record("C4", "FAIL", f"restricted principal sees private notes: {[t for t in titles if '差旅' in str(t) or '报销' in str(t)]}")
+                else:
+                    r2 = client.tool_call("mindgraph_get_note", {"note_id": "nonexistent"}, msg_id="c4b")
+                    body2 = StdioMcpClient.tool_body(r2)
+                    assert body2 == {"error": "note not found"}, body2
+                    record("C4", "PASS", f"restricted principal sees {len(titles)} public notes; missing note → not_found")
             else:
                 record("C4", "SKIP", "run with --restricted to exercise ACL case")
         except Exception as exc:

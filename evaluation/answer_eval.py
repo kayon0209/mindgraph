@@ -128,7 +128,20 @@ def evaluate_answer_case(case: dict[str, Any], prediction: dict[str, Any]) -> di
 
     acl_context = case.get("acl_context") or {}
     acl_restricted = bool(acl_context.get("denied_resources") or acl_context.get("denied_actions"))
-    acl_leakage = float(bool(prediction.get("citations")) if acl_restricted else False)
+    # acl_leakage 的确定性子集：受限案例中，引用路径命中被拒资源特征
+    # （denied_resources 是能力/资源名，如 finance_approvals；与 vault 路径
+    # 的 snake_case 特征串匹配）。"拒答但附带可见的普通制度引用"不是泄漏
+    # ——引用的内容调用主体有权查看；核心失败由 refusal_correctness 承载
+    # （应 abstain 却 answered 在那里计分）。
+    acl_leakage = 0.0
+    if acl_restricted:
+        denied_tokens = [
+            str(resource).strip().lower().replace("-", "_")
+            for resource in (acl_context.get("denied_resources") or [])
+            if str(resource).strip()
+        ]
+        cited_paths = " ".join(str(item.get("vault_path") or "") for item in (prediction.get("citations") or []))
+        acl_leakage = float(any(token in cited_paths.lower() for token in denied_tokens))
     conflict_accuracy = float(
         result_state == "conflicting_evidence"
         if case.get("category") == "conflict" or case.get("query_type") == "conflict"

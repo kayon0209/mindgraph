@@ -102,9 +102,11 @@ class AgentService:
         policy = AgentExecutionPolicy()
         plan = policy.plan_for_route(decision.route, [code.value for code in decision.reasons])
         tool_budget = plan.budget_steps()
+        fallback_reason: str | None = None
         if len(tool_budget) > self.max_tool_calls:
             # 预算超限不是继续执行：降级为单遍（loop_fell_back）
-            yield self._event(request_id, "loop_fell_back", {"reason": "tool_budget_exceeded", "route": decision.route})
+            fallback_reason = "tool_budget_exceeded"
+            yield self._event(request_id, "loop_fell_back", {"reason": fallback_reason, "route": decision.route})
             plan = policy.plan_for_route("manual", [])
         yield self._event(
             request_id, "plan_created",
@@ -141,6 +143,7 @@ class AgentService:
             if not step.counts_toward_budget:
                 break  # finalize 由生成段处理
             if executed >= self.max_tool_calls:
+                fallback_reason = fallback_reason or "tool_budget_exceeded"
                 yield self._event(request_id, "loop_fell_back", {"reason": "tool_budget_exceeded", "after": step.name})
                 break
             yield self._event(request_id, "tool_call_started", {"step": step.name, "label": step.label, "index": index})
@@ -168,7 +171,7 @@ class AgentService:
             )
             if policy.should_halt(state, gate_reached=gate_reached):
                 # fail-closed：不扩图、不生成，走现有终态呈现
-                for event in self._terminal_without_generation(request_id, request, result, started):
+                for event in self._terminal_without_generation(request_id, request, result, started, tool_calls_executed=executed):
                     yield event
                 return
 
@@ -181,7 +184,8 @@ class AgentService:
         if not provider.available:
             text = "已找到相关制度证据，但生成模型未配置。请直接查看引用。"
             yield self._event(request_id, "answer_delta", {"text": text, "stream_mode": "deterministic"})
-            for event in self._finalize_completed(request_id, request, result, text, ResultState.model_unavailable, started):
+            for event in self._finalize_completed(request_id, request, result, text, ResultState.model_unavailable, started,
+                                                  tool_calls_executed=executed, fallback_reason=fallback_reason):
                 yield event
             return
 
@@ -205,16 +209,18 @@ class AgentService:
         )
         if not integrity_ok:
             # citation_integrity_failed：不把文本展示为可信结论，回 evidence-only
-            yield self._event(request_id, "loop_fell_back", {"reason": "citation_integrity_failed"})
+            fallback_reason = "citation_integrity_failed"
+            yield self._event(request_id, "loop_fell_back", {"reason": fallback_reason})
             for event in self._finalize_completed(
                 request_id, request, result, "本次回答未通过引用校验，已改为仅显示证据。", ResultState.system_error, started,
-                integrity_failed=True,
+                integrity_failed=True, tool_calls_executed=executed, fallback_reason=fallback_reason,
             ):
                 yield event
             return
         # 校验通过后才发正文
         yield self._event(request_id, "answer_delta", {"text": answer, "stream_mode": "provider_native"})
-        for event in self._finalize_completed(request_id, request, result, answer, ResultState.answered, started, usage=usage):
+        for event in self._finalize_completed(request_id, request, result, answer, ResultState.answered, started,
+                                              usage=usage, tool_calls_executed=executed, fallback_reason=fallback_reason):
             yield event
 
     # ── 步骤执行器 ──
@@ -250,7 +256,7 @@ class AgentService:
 
     # ── 终态组装 ──
 
-    def _terminal_without_generation(self, request_id: str, request: ChatRequest, result: EvidenceQueryResult, started: float) -> Iterable[dict[str, Any]]:
+    def _terminal_without_generation(self, request_id: str, request: ChatRequest, result: EvidenceQueryResult, started: float, *, tool_calls_executed: int = 0) -> Iterable[dict[str, Any]]:
         state = result.bundle.result_state
         if state is EvidenceResultState.conflicting_evidence:
             text = "检测到同一制度在查询日期存在多个有效版本，已停止生成答案。请由制度责任人确认有效版本。"
@@ -262,11 +268,12 @@ class AgentService:
             text = "未在制度文件中找到足够依据。建议联系 HR/财务确认。"
             final_state = ResultState.insufficient_evidence
         yield self._event(request_id, "answer_delta", {"text": text, "stream_mode": "deterministic"})
-        yield from self._finalize_completed(request_id, request, result, text, final_state, started)
+        yield from self._finalize_completed(request_id, request, result, text, final_state, started, tool_calls_executed=tool_calls_executed)
 
     def _finalize_completed(
         self, request_id: str, request: ChatRequest, result: EvidenceQueryResult, answer: str, state: ResultState, started: float,
         *, usage: dict[str, Any] | None = None, integrity_failed: bool = False,
+        tool_calls_executed: int = 0, fallback_reason: str | None = None,
     ) -> Iterable[dict[str, Any]]:
         payload: dict[str, Any] = {
             "request_id": request_id,
@@ -278,8 +285,49 @@ class AgentService:
             "index_version": result.bundle.index_version,
             "citation_integrity": False if integrity_failed else None,
             "total_ms": round((time.perf_counter() - started) * 1000, 1),
+            # assist 运营指标（M2 验收：工具调用数 ≤3 可事后审计、fallback 率可统计）
+            "tool_calls_executed": tool_calls_executed,
+            "fallback_reason": fallback_reason,
         }
         if usage:
             payload["usage"] = usage
+        self._persist_assist(request_id, request, payload)
         yield self._event(request_id, "citations", {"citations": payload["citations"]})
         yield self._event(request_id, "completed", payload)
+
+    def _persist_assist(self, request_id: str, request: ChatRequest, payload: dict[str, Any]) -> None:
+        """assist 轮落 query_logs（prompt_version=assist-agent-v1 标记渠道）：
+        M2 验收要求 fallback 触发率与工具调用数可回溯统计，仅靠 SSE 事件无法
+        事后查询。落库失败绝不阻断应答（与 ChatService._persist 同策略）。"""
+        import hashlib
+
+        from infrastructure.database import dumps
+
+        try:
+            question = request.question if self.chat_service.privacy_log_questions else None
+            trace_payload = {
+                "channel": "assist_agent",
+                "tool_calls_executed": payload.get("tool_calls_executed"),
+                "fallback_reason": payload.get("fallback_reason"),
+                "citation_integrity": payload.get("citation_integrity"),
+            }
+            self.chat_service.database.execute(
+                """INSERT INTO query_logs (
+                    request_id, question, question_hash, answer, result_state, requested_strategy, actual_strategy,
+                    trace_json, citations_json, timing_json, usage_json, created_at, index_version, prompt_version,
+                    requested_provider, actual_provider, query_date, category_filter_json
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    request_id, question,
+                    hashlib.sha256((request.question + "mindgraph-question-salt").encode()).hexdigest(),
+                    str(payload.get("answer") or ""), payload.get("result_state", "system_error"),
+                    request.retrieval_strategy, payload.get("actual_strategy") or "assist",
+                    dumps(trace_payload), dumps(payload.get("citations") or []),
+                    dumps({"total_ms": payload.get("total_ms")}), dumps(payload.get("usage") or {}),
+                    datetime.now(UTC).isoformat(), payload.get("index_version"), "assist-agent-v1",
+                    request.chat_provider or "", "assist",
+                    request.query_date, dumps([]),
+                ),
+            )
+        except Exception:
+            logger.exception("assist_query_log_persist_failed", extra={"request_id": request_id})

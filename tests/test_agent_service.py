@@ -338,3 +338,40 @@ def test_unknown_markers_still_fail_closed(tmp_path: Path):
     assert completed["result_state"] == "system_error"
     assert completed["citation_integrity"] is False
     assert "未通过引用校验" in completed["answer"]  # evidence-only 降级
+
+
+def test_assist_turns_persisted_to_query_logs(tmp_path: Path):
+    """M2 运营指标可回溯（实施方案验收：fallback 触发率单独记录、工具调用数
+    ≤3 可审计）：assist 轮落 query_logs（prompt_version=assist-agent-v1 标记），
+    trace_json 携带 tool_calls_executed / fallback_reason。"""
+    service, database, _pipeline = _build(tmp_path)
+    events = list(service.stream_assist(ChatRequest(question="报销时限是多少天？", retrieval_strategy="hybrid")))
+    completed = events[-1]["data"]
+
+    rows = database.fetch_all(
+        "SELECT request_id, result_state, prompt_version, trace_json FROM query_logs WHERE prompt_version='assist-agent-v1'"
+    )
+    assert len(rows) == 1
+    import json as _json
+
+    trace = _json.loads(rows[0]["trace_json"])
+    assert rows[0]["request_id"] == completed["request_id"]
+    assert rows[0]["result_state"] == "answered"
+    assert trace["channel"] == "assist_agent"
+    assert trace["tool_calls_executed"] == completed["tool_calls_executed"] <= 3
+    assert trace["fallback_reason"] is None  # happy path 无降级
+
+
+def test_assist_persist_failure_never_blocks_answer(tmp_path: Path):
+    """落库失败绝不阻断应答（与 ChatService._persist 同策略）。"""
+    service, database, _pipeline = _build(tmp_path)
+
+    def broken_execute(*_args, **_kwargs):
+        raise RuntimeError("db exploded")
+
+    database.execute = broken_execute  # type: ignore[method-assign]
+    events = list(service.stream_assist(ChatRequest(question="报销时限是多少天？", retrieval_strategy="hybrid")))
+
+    names = [e["event"] for e in events]
+    assert names[-1] == "completed"  # 应答完整收尾
+    assert events[-1]["data"]["result_state"] == "answered"

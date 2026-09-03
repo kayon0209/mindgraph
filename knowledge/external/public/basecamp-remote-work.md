@@ -8,6 +8,7 @@ ingest_date: 2026-08-27
 ingest_tool: scripts/ingest_public_handbooks.py
 original_file: data-sources/handbooks/basecamp/remote-work.md
 status: active
+acl_public: true
 ---
 
 # Basecamp Handbook - Remote Work
