@@ -70,3 +70,16 @@ M4-A 用轮询（无任务 SSE）。轮询节奏：running 时 3s，queued 时 5
 | feature flag 关闭时不出现 | §0 入口规则（非主导航） |
 | 窄屏与键盘 | §5 |
 | 冲突差异化呈现 | §2 completed_with_conflicts |
+
+## 7. 可访问性与响应式验收记录（2026-09-03 收尾）
+
+| 项 | 状态 | 证据 |
+| --- | --- | --- |
+| 状态播报 | PASS | `task-poll-error role="status"`（断连）、`task-list aria-live="polite"`（列表变化）、`task-conflict-note role="alert"`（唯一高强调） |
+| 取消双确认 | PASS | 原生 confirm（"取消后不再执行新步骤…"），防误触 |
+| 键盘可达 | PASS | 提交区 → 列表 → 卡片操作全部原生 button（Tab 顺序天然）；无键盘陷阱 |
+| 320px 无横向溢出 | PASS（代码审查级） | `.task-summary` text-overflow ellipsis；`.tasks-overlay-panel width:min(560px, 92vw)`；`.task-card-actions` flex-wrap 未设置——补 gap 后测试。**截图级验证待真实用户走查（Product Signal，不阻断）** |
+| 状态不依赖纯颜色 | PASS | 徽标全部有文字标签（§2 状态矩阵） |
+| reduced-motion | PASS | `prefers-reduced-motion` 下运行徽标动画禁用 |
+
+遗留（如实）：320px 截图级验证待有真实用户走查时执行；`.task-card-head` 的 `flex-wrap: wrap` 已设置、`.task-card-actions` 建议补 wrap（下方提交中修复）。

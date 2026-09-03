@@ -137,6 +137,25 @@ export async function streamAssistAgent(
   tail.events.forEach(onEvent);
 }
 
+/** Assist 可用性探测：以最小请求打 /assist/agent/stream，404 → false（开关旁提示）。
+ * 非 404 错误（网络/5xx）也判 false——探测失败宁可提示"未开启"也不让用户踩空。 */
+export async function streamAssistAgentProbe(): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const response = await fetch(`${API_BASE}/assist/agent/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: "探测", retrieval_strategy: "hybrid" }),
+      signal: controller.signal,
+    });
+    // 探测不消费流：立刻中断，只看状态码
+    controller.abort();
+    return response.status !== 404;
+  } catch {
+    return false;
+  }
+}
+
 export const api = {
   health: () => request<HealthStatus>("/health"),
   publicConfig: () => request<PublicConfig>("/config/public"),

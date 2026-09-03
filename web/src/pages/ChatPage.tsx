@@ -22,12 +22,16 @@ import {
 } from "lucide-react";
 
 import { AnswerBody } from "../components/AnswerBody";
-import { api, streamAssistAgent, streamChat } from "../lib/api";
+import { api, streamAssistAgent, streamAssistAgentProbe, streamChat } from "../lib/api";
 import { citationValidity, fidelityMissingMarks as citationFidelityMarks, summarizeCitationValidity } from "../lib/citation-status";
 import { buildEvidenceMarkdown, downloadTextFile, evidenceFilename } from "../lib/export-evidence";
 import { completionGenerationState, completionViewState, policyConflictItems } from "../lib/policy-conflicts";
 import { routeDecisionView } from "../lib/route-decision";
 import { confirmDeleteLocalSession, fetchServerConversationsEnabled, migrateAllSessions, migratedSessionsWithLocalCopy, sessionsPendingMigration } from "../lib/session-migration";
+import { buildGuidedTasks } from "../lib/onboarding-tasks";
+
+/** 5 任务可用性脚本的空态引导（一次构建；内容见 onboarding-tasks.ts） */
+const GUIDED_TASKS = buildGuidedTasks();
 import { INITIAL_RAIL, railReducer } from "../lib/chat-rail-reducer";
 import type {
   AnswerResult,
@@ -243,13 +247,16 @@ export function ChatPage() {
   const [graphEnabled, setGraphEnabled] = useState(() => loadSettings().graphEnabled);
   /** M2：本地 Assist 开关（后端 AGENT_ASSIST_ENABLED 关闭时端点 404，回落普通流） */
   const [assistMode, setAssistMode] = useState(false);
+  /** Assist 服务端可用性（null=探测中；false=服务端未开启，开关旁提示） */
+  const [assistAvailable, setAssistAvailable] = useState<boolean | null>(null);
   /** M3：服务端会话迁移（显式、用户主动触发；服务端未开启时隐藏入口） */
   const [serverConversationsEnabled, setServerConversationsEnabled] = useState(false);
   const [migrating, setMigrating] = useState(false);
   const [migrationDone, setMigrationDone] = useState(0);
   const [migrationResult, setMigrationResult] = useState<{ migrated: string[]; failed: string[] } | null>(null);
 
-  /** M3：探测服务端会话是否开启（列表端点 404 = 未开启，入口隐藏） */
+  /** M3：探测服务端会话是否开启（列表端点 404 = 未开启，入口隐藏）；
+   * 同时探测 assist 面——404 = 服务端未开启多步查询，开关旁给出提示。 */
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -258,6 +265,12 @@ export function ChatPage() {
         if (!cancelled) setServerConversationsEnabled(enabled);
       } catch {
         if (!cancelled) setServerConversationsEnabled(false);
+      }
+      try {
+        await streamAssistAgentProbe();
+        if (!cancelled) setAssistAvailable(true);
+      } catch {
+        if (!cancelled) setAssistAvailable(false);
       }
     })();
     return () => {
@@ -1028,6 +1041,30 @@ export function ChatPage() {
                     </button>
                   ))}
                 </div>
+                {/* 5 任务可用性脚本 → 能力演示（引导面板：每个脚本任务一条
+                    一键路径；docs/ui/AGENT-UI-DESIGN-SPEC.md §7） */}
+                <section className="guided-capabilities" aria-label="这个工作台能做什么">
+                  <h3>上手路径</h3>
+                  <ol>
+                    {GUIDED_TASKS.map((task) => (
+                      <li key={task.scriptId}>
+                        <strong>{task.title}</strong>
+                        <span>{task.description}</span>
+                        {task.starterQuestion ? (
+                          <button
+                            className="button secondary small"
+                            onClick={() => void submit(undefined, task.starterQuestion)}
+                            type="button"
+                          >
+                            试一下
+                          </button>
+                        ) : (
+                          <small>{task.actionHint}</small>
+                        )}
+                      </li>
+                    ))}
+                  </ol>
+                </section>
               </div>
             ) : (
               turns.map((turn) => (
@@ -1227,14 +1264,18 @@ export function ChatPage() {
             />
             <div className="composer-foot">
               <span>{question.length}/2000</span>
-              {/* M2：Assist 本地开关（后端未开启时端点 404，会回落普通流并提示） */}
+              {/* M2：Assist 本地开关（服务端未开启时 404 探测已提示，不再让用户踩空） */}
               <label className="assist-toggle" title="多步查询会先核对版本与关联制度，回答更慢但依据更完整">
                 <input
                   checked={assistMode}
+                  disabled={assistAvailable === false}
                   onChange={(event) => setAssistMode(event.target.checked)}
                   type="checkbox"
                 />
                 多步查询
+                {assistAvailable === false ? (
+                  <span className="assist-unavailable" role="note">服务端未开启</span>
+                ) : null}
               </label>
               {running ? (
                 /* U9：中止血用停止图标（Square），RotateCcw 保留给"重试" */

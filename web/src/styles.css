@@ -4055,7 +4055,7 @@ h2,
 .task-card { border: 1px solid var(--border, #d1d5db); border-radius: 8px; padding: 10px 12px; }
 .task-card-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .task-summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
-.task-card-actions { display: flex; gap: 8px; margin-top: 8px; }
+.task-card-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 
 .task-badge {
   font-size: 12px; border: 1px solid var(--border, #d1d5db); border-radius: 4px;
@@ -4089,3 +4089,29 @@ h2,
 .task-artifact-preview small { color: var(--muted, #6b7280); }
 
 @media (prefers-reduced-motion: reduce) { .task-badge.running { animation: none; } }
+
+.assist-unavailable { font-size: 11px; color: var(--muted, #6b7280); margin-left: 4px; }
+.assist-toggle input:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* 空态引导面板（5 任务可用性脚本；Editorial Evidence Workspace——安静、无 AI 味） */
+.guided-capabilities { margin-top: 18px; }
+.guided-capabilities h3 {
+  font-size: 13px; font-weight: 600; color: var(--muted, #6b7280);
+  margin: 0 0 8px; letter-spacing: 0.04em;
+}
+.guided-capabilities ol {
+  list-style: none; margin: 0; padding: 0;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.guided-capabilities li {
+  display: flex; flex-direction: column; gap: 3px;
+  border: 1px solid var(--border, #d1d5db); border-radius: 8px;
+  padding: 9px 12px; position: relative;
+}
+.guided-capabilities li strong { font-size: 13px; }
+.guided-capabilities li span { font-size: 12px; color: var(--muted, #6b7280); }
+.guided-capabilities li small { font-size: 12px; color: var(--muted, #6b7280); }
+.guided-capabilities li .button { align-self: flex-start; margin-top: 4px; }
+@media (max-width: 680px) {
+  .guided-capabilities li { padding: 8px 10px; }
+}
