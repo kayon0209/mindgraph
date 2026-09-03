@@ -22,7 +22,13 @@ MindGraph 把制度知识库暴露为**受治理的只读证据工具**，不是
 
 另有 `mindgraph_assist`（受治理问答，返回机器可判定 verdict），默认关闭，需 `ASSIST_MCP_ENABLED=true`。
 
-**写工具（M5-A 起，独立开关）**：`mindgraph_save_artifact`——把回答+证据快照保存到当前主体的**私有空间**（保存草稿不等于发布；无共享/发布路径）。需 `AGENT_WRITE_TOOLS_ENABLED=true` 才出现在 tools/list，且 handler 内 fail-closed 二次校验。幂等语义：相同 `idempotency_key` + 相同内容重复保存返回同一存档；同键不同内容被拒绝（不静默覆盖）。回滚：flag 置回 false 即隐藏，已保存数据保留。后续写工具（submit_evidence_feedback / propose_relation）按企业风险逐个单独上线，不在本开关内。
+**写工具（M5-A 起，三个工具各自独立开关）**：
+
+- `mindgraph_save_artifact`（低风险，`AGENT_WRITE_TOOLS_ENABLED`）：把回答+证据快照保存到当前主体的**私有空间**（保存草稿不等于发布；无共享/发布路径）。幂等：相同 `idempotency_key` + 相同内容重复保存返回同一存档；同键不同内容被拒绝（不静默覆盖）。
+- `mindgraph_submit_evidence_feedback`（中风险，`AGENT_FEEDBACK_TOOL_ENABLED`）：对一次已完成回答提交质量反馈。**preview/submit 两段确认**：先 `action=preview` 取回答摘要展示给用户，确认后 `action=submit`。一回答一反馈（重复返回 already_submitted）；`not_helpful` 按既有规则进 bad_cases。
+- `mindgraph_propose_relation`（高风险，`AGENT_PROPOSE_RELATION_TOOL_ENABLED`）：提出两个笔记之间的关系候选。**preview/submit 两段确认**（preview 展示两端标题/类型/影响范围，确认语义不缓存）；**只创建 proposed**——人工审核确认后才进入图谱检索扩展，该路径绝不自动；source/target/evidence 三端都必须可见（不可见统一 not found）；同一对笔记任意方向/状态均去重。
+
+每个工具 tools/list 过滤 + handler 内 fail-closed 双门控；回滚均为置回 false 即隐藏，已写数据按各自语义保留（存档不删、反馈不撤、proposed 留在审核队列）。
 
 ### 治理语义（调用方必读）
 

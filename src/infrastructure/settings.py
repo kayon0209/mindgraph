@@ -159,6 +159,15 @@ class Settings(BaseSettings):
     TASK_MAX_ATTEMPTS: int = 3
     # 空轮询间隔（秒）：无任务时线程休眠时长
     TASK_POLL_INTERVAL_SECONDS: float = 2.0
+    # ── M5-A 工具 B：submit_evidence_feedback（中风险，独立开关） ──
+    # true = tools/list 暴露 mindgraph_submit_evidence_feedback（preview/submit
+    # 两段确认模式）。回滚：置回 false 即隐藏，已提交反馈保留（质量账本不回滚）。
+    AGENT_FEEDBACK_TOOL_ENABLED: bool = False
+    # ── M5-A 工具 C：propose_relation（高风险，独立开关） ──
+    # true = tools/list 暴露 mindgraph_propose_relation（preview/submit 两段
+    # 确认 + 仅 proposed + 三端 ACL + 双向幂等）。回滚：置回 false 即隐藏，
+    # 已创建的 proposed 候选留在审核队列（HITL 流不受影响）。
+    AGENT_PROPOSE_RELATION_TOOL_ENABLED: bool = False
     # ── M3-E 会话保留策略（方案：可配置 retention；执行=到期归档，不物理删） ──
     # 0 = 不启用自动保留期（会话永久 active，由用户手动归档）；>0 = 创建会话时
     # 写入 retention_until = now + N 天，由 conversation runner 到期归档。

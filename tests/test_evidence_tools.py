@@ -78,10 +78,16 @@ def test_registry_exposes_three_readonly_tools(registry):
         "mindgraph_concept_gaps",
         "mindgraph_verify_citations",
         "mindgraph_save_artifact",
+        "mindgraph_submit_evidence_feedback",
+        "mindgraph_propose_relation",
     }
-    assert all(spec.mode == "read" for name, spec in specs.items() if name != "mindgraph_save_artifact")
+    write_tools = {name for name, spec in specs.items() if spec.mode == "write"}
+    assert write_tools == {"mindgraph_save_artifact", "mindgraph_submit_evidence_feedback", "mindgraph_propose_relation"}
     save = specs["mindgraph_save_artifact"]
-    assert save.mode == "write" and save.risk == "low" and save.requires_approval is False
+    feedback = specs["mindgraph_submit_evidence_feedback"]
+    propose = specs["mindgraph_propose_relation"]
+    assert (save.risk, feedback.risk, propose.risk) == ("low", "medium", "high")
+    assert save.requires_approval is False and feedback.requires_approval is False and propose.requires_approval is False
     manifest = reg.mcp_tool_manifest()
     assert {tool["name"] for tool in manifest} == set(specs)  # registry 全量；通道过滤在 mcp_server
     for tool in manifest:

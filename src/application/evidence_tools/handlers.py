@@ -29,14 +29,21 @@ MAX_GAPS_LIMIT = 50
 
 
 def build_default_registry(database: ProductDatabase, *, question_miner=None) -> EvidenceToolRegistry:
-    """构造默认工具集：M1 三个只读治理工具 + M5-A save_artifact 写工具
-    （后者经 AGENT_WRITE_TOOLS_ENABLED 双重门控——见 mcp_server 的
-    _registry_tools 过滤与 handler 内 fail-closed 校验）。"""
+    """构造默认工具集：M1 三个只读治理工具 + M5-A 写工具（save_artifact 由
+    AGENT_WRITE_TOOLS_ENABLED 门控、submit_evidence_feedback 由
+    AGENT_FEEDBACK_TOOL_ENABLED 门控——tools/list 过滤与 handler 内
+    fail-closed 校验双保险，见 mcp_server._registry_tools 与各 handler）。"""
     registry = EvidenceToolRegistry(database)
     registry.register(POLICY_HISTORY_SPEC, _handle_policy_history)
     registry.register(CONCEPT_GAPS_SPEC, _make_concept_gaps_handler(question_miner))
     registry.register(VERIFY_CITATIONS_SPEC, _handle_verify_citations)
     registry.register(SAVE_ARTIFACT_SPEC, _make_save_artifact_handler())
+    from application.evidence_tools.feedback_tool import SUBMIT_FEEDBACK_SPEC, make_submit_feedback_handler
+
+    registry.register(SUBMIT_FEEDBACK_SPEC, make_submit_feedback_handler())
+    from application.evidence_tools.propose_relation_tool import PROPOSE_RELATION_SPEC, make_propose_relation_handler
+
+    registry.register(PROPOSE_RELATION_SPEC, make_propose_relation_handler())
     return registry
 
 

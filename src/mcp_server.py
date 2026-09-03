@@ -83,19 +83,30 @@ def _evidence_registry():
 
 def _registry_tools() -> list[dict[str, Any]]:
     """来自共享 registry 的 MCP 工具清单（M1 三个只读治理工具；M5-A 写工具
-    仅在 AGENT_WRITE_TOOLS_ENABLED 开启时暴露——tools/list 过滤与 handler
-    内 fail-closed 校验双保险）。"""
+    按各自独立开关暴露——tools/list 过滤与 handler 内 fail-closed 校验双保险）：
+    save_artifact ← AGENT_WRITE_TOOLS_ENABLED；
+    submit_evidence_feedback ← AGENT_FEEDBACK_TOOL_ENABLED。"""
     registry = _evidence_registry()
     if registry is None:
         return []
     from infrastructure.settings import get_settings
 
-    write_enabled = bool(get_settings().AGENT_WRITE_TOOLS_ENABLED)
+    settings = get_settings()
+    write_enabled = bool(settings.AGENT_WRITE_TOOLS_ENABLED)
+    feedback_enabled = bool(settings.AGENT_FEEDBACK_TOOL_ENABLED)
+    propose_enabled = bool(settings.AGENT_PROPOSE_RELATION_TOOL_ENABLED)
+    write_flags = {
+        "mindgraph_save_artifact": write_enabled,
+        "mindgraph_submit_evidence_feedback": feedback_enabled,
+        "mindgraph_propose_relation": propose_enabled,
+    }
     manifest: list[dict[str, Any]] = []
     for tool in registry.mcp_tool_manifest(context="external_mcp"):
         spec = registry.spec_for(tool["name"])
-        if spec is not None and spec.mode == "write" and not write_enabled:
-            continue  # 写工具默认隐藏
+        if spec is None:
+            continue
+        if spec.mode == "write" and not write_flags.get(tool["name"], False):
+            continue
         manifest.append(tool)
     return manifest
 
