@@ -35,6 +35,7 @@ from api.middleware import (
     RequestSizeLimitMiddleware,
     SecurityHeadersMiddleware,
     TimingMiddleware,
+    WatchdogMiddleware,
 )
 from api.routes import (
     assist,
@@ -121,6 +122,7 @@ app.add_middleware(
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestSizeLimitMiddleware, max_body_bytes=_settings.MAX_UPLOAD_BYTES)
 app.add_middleware(TimingMiddleware)
+app.add_middleware(WatchdogMiddleware, timeout_seconds=30.0)  # P1-P1：全局软看门狗
 app.add_middleware(LoggingMiddleware)  # 必须在 RateLimit 之后添加（内层），以确保 request_id 已设置
 
 # ── 速率限制 ──

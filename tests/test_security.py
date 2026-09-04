@@ -118,3 +118,44 @@ class TestHash:
     def test_hash_is_sha256_length(self):
         h = hash_content(b"test")
         assert len(h) == 64
+
+
+def test_watchdog_times_out_stuck_endpoint():
+    """P1-P1：全局软看门狗——卡死端点 30s 内返回 504，不再无限挂起
+    （走查发现：进程可因 SQLite 锁活着但不响应，拖垮全站连接池）。"""
+    import asyncio
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from api.middleware import WatchdogMiddleware
+
+    mini = FastAPI()
+    mini.add_middleware(WatchdogMiddleware, timeout_seconds=0.3)
+
+    @mini.get("/stuck")
+    async def stuck():
+        await asyncio.sleep(10)
+        return {"ok": True}
+
+    @mini.get("/fast")
+    async def fast():
+        return {"ok": True}
+
+    @mini.post("/mindgraph/chat/stream")
+    async def stream_exempt():
+        await asyncio.sleep(0.5)
+        return {"ok": True}
+
+    client = TestClient(mini, raise_server_exceptions=False)
+    try:
+        resp = client.get("/fast")
+        assert resp.status_code == 200
+        resp = client.get("/stuck")
+        assert resp.status_code == 504
+        assert resp.json()["error"]["code"] == "watchdog_timeout"
+        # SSE 豁免：stream 路径不受超时影响
+        resp = client.post("/mindgraph/chat/stream")
+        assert resp.status_code == 200
+    finally:
+        client.close()

@@ -948,6 +948,12 @@ export function ChatPage() {
                 <Trash2 size={14} /> {confirmClear ? "再点一次确认清空" : "清空对话"}
               </button>
             ) : null}
+            {/* P1-P3（走查）：长对话内存引导——50 轮后提示导出并清空 */}
+            {turns.length >= 50 ? (
+              <p className="long-conversation-hint" role="status">
+                本会话已有 {turns.length} 轮。长时间使用会变慢——建议先导出证据存档，再清空对话。
+              </p>
+            ) : null}
           </div>
           <div className="query-controls">
             <label>
@@ -1156,6 +1162,11 @@ export function ChatPage() {
                     {/* 研究项②：引用了非现行有效版本时，结论旁必须给出显式警示 */}
                     {turn.state === "complete" && (turn.citations?.length ?? 0) > 0 ? (
                       <VersionWarning asOf={turn.queryDate} citations={turn.citations ?? []} />
+                    ) : null}
+                    {/* P1-X5（走查修复）：版本冲突轮的答案卡内联冲突版本族——
+                        治理的核心展示位从折叠证据轨前置到结论旁，可见即卖点 */}
+                    {turn.state === "complete" && turn.resultState === "conflicting_evidence" ? (
+                      <InlineConflictCard turn={turn} />
                     ) : null}
                     {/* M0：确定性引用保真核验——回答标注全部命中本次引用集才通过；
                         warning-first：不阻断，只在失真时给出可行动警示 */}
@@ -1695,6 +1706,35 @@ function ClarificationCard({
       <button className="button primary" disabled={!allFilled} onClick={() => onResolved(answers)} type="button">
         补充并继续
       </button>
+    </div>
+  );
+}
+
+/** P1-X5（走查修复）：冲突轮的答案卡内联冲突版本族。
+ * 数据与右侧证据轨的 conflict-section 同源（turn.trace.policy_conflicts），
+ * 治理卖点前置：系统为何停止回答、冲突在哪、找谁裁决——一眼可见。 */
+function InlineConflictCard({ turn }: { turn: Turn }) {
+  const items = policyConflictItems(turn.trace ?? null);
+  if (!items.length) return null;
+  return (
+    <div className="inline-conflict-card" role="alert">
+      <div className="inline-conflict-head">
+        <AlertTriangle size={15} />
+        <strong>系统已停止回答：同一制度在查询日期存在多个有效版本</strong>
+      </div>
+      <ul>
+        {items.map((item) => (
+          <li key={item.key}>
+            <span className="conflict-doc">{item.title}</span>
+            <span className="conflict-meta">
+              {item.version} · 生效 {item.period} · {item.owner}
+            </span>
+          </li>
+        ))}
+      </ul>
+      <p className="conflict-next">
+        请确认按哪个版本判断；确认后可带日期重新提问（例如「按 {turn.queryDate || "2026-09-01"} 的有效版本，……」）。
+      </p>
     </div>
   );
 }

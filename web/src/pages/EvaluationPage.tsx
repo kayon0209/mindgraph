@@ -5,6 +5,7 @@ import { BarComparison } from "../components/BarComparison";
 import { ContextHint, EmptyState, ErrorState, LoadingState, MetricCard, PageHeader, StatusPill } from "../components/Primitives";
 import { api } from "../lib/api";
 import { evaluationEfficiencyView, latestRunsForMetric, latestRunWithMetric, metricValue, numericMetricValue } from "../lib/metrics";
+import { SPARK_METRICS, sparkNormalize, sparkPath, sparkSeries } from "../lib/quality-spark";
 import type { EvaluationResponse } from "../types";
 
 function percent(value: number | null): string {
@@ -102,6 +103,36 @@ export function EvaluationPage() {
               <MetricCard key={metric.label} label={metric.label} note={metric.note} value={metric.value} />
             ))}
           </div>
+
+          {/* P1-A3：跨轮质量趋势（每轮一点 · Mono 折线） */}
+          {data.runs.length >= 2 ? (
+            <section className="quality-trends reveal reveal-3" aria-label="跨轮质量趋势">
+              <h3>跨轮趋势</h3>
+              <div className="spark-grid">
+                {SPARK_METRICS.map((m) => {
+                  const series = sparkSeries(data.runs, m.key);
+                  if (series.length < 2) return null;
+                  const norm = sparkNormalize(series, m.higherIsBetter);
+                  const path = sparkPath(norm);
+                  const latest = series[series.length - 1].value;
+                  return (
+                    <div className="spark-card" key={m.key} title={`${m.label}：最近 ${series.length} 轮，最新 ${latest}`}>
+                      <span className="spark-label">{m.label}</span>
+                      {path ? (
+                        <svg viewBox="0 0 100 28" preserveAspectRatio="none" aria-hidden="true">
+                          <polyline points={path} fill="none" stroke="var(--ink, #1c1c1a)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                      ) : (
+                        <strong className="spark-single">{m.higherIsBetter ? `${(latest * 100).toFixed(0)}%` : `${latest.toFixed(0)}ms`}</strong>
+                      )}
+                      <small>{series.length} 轮 · 最新 {m.higherIsBetter ? `${(latest * 100).toFixed(0)}%` : `${latest.toFixed(0)}ms`}</small>
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="spark-note">每点一次评测运行；延迟类越低越好。数据与上方指标卡同源（最近 20 轮）。</p>
+            </section>
+          ) : null}
 
           {data.runs.length === 0 ? (
             <EmptyState

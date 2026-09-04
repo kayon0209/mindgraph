@@ -4137,3 +4137,42 @@ h2,
   font-size: 11px; color: var(--muted, #6b7280);
   margin: 8px 0 0; padding: 0 14px; line-height: 1.5;
 }
+
+/* ── P1-X5：答案卡内联冲突版本族（治理可见性前置；全页唯一高强调红系） ── */
+.inline-conflict-card {
+  border: 1px solid var(--danger, #b91c1c);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--danger, #b91c1c) 4%, transparent);
+  padding: 12px 14px;
+  margin: 10px 0 6px;
+}
+.inline-conflict-head {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13.5px; margin-bottom: 8px;
+}
+.inline-conflict-card ul { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.inline-conflict-card li { display: flex; flex-direction: column; gap: 2px; padding-left: 12px; position: relative; }
+.inline-conflict-card li::before { content: "•"; position: absolute; left: 0; color: var(--danger, #b91c1c); }
+.conflict-doc { font-size: 13px; font-weight: 600; }
+.conflict-meta { font-size: 12px; color: var(--muted, #6b7280); }
+.conflict-next { font-size: 12.5px; color: var(--muted, #6b7280); margin: 0; border-top: 1px dashed var(--border, #d1d5db); padding-top: 8px; }
+
+/* ── P1-A3：跨轮质量趋势 sparkline（Mono：炭墨折线 · 纸灰底 · 无装饰） ── */
+.quality-trends { margin-top: 14px; }
+.quality-trends h3 { font-size: 14px; font-weight: 600; margin: 0 0 8px; }
+.spark-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.spark-card {
+  border: 1px solid var(--border, #d1d5db); border-radius: 8px; padding: 8px 10px;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.spark-label { font-size: 12px; font-weight: 600; }
+.spark-card svg { width: 100%; height: 28px; display: block; }
+.spark-single { font-size: 15px; font-weight: 700; }
+.spark-card small { font-size: 11px; color: var(--muted, #6b7280); }
+.spark-note { font-size: 12px; color: var(--muted, #6b7280); margin: 8px 0 0; }
+
+/* P1-P3：长对话引导（50 轮触发） */
+.long-conversation-hint {
+  font-size: 11.5px; color: var(--muted, #6b7280); margin: 4px 0 0;
+  grid-column: 1 / -1;
+}
