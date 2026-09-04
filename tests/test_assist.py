@@ -99,6 +99,40 @@ def _mini_assist_app() -> FastAPI:
     return mini
 
 
+def test_public_config_exposes_assist_agent_enabled_without_probe_side_effects(tmp_path: Path, monkeypatch):
+    """P0-1 后续（探测诚实化）：前端 availability 探测改读 /config/public 的
+    assist_agent_enabled 布尔，不再 POST /assist/agent/stream（旧探测会写
+    一条无问题的 assist_stream 审计记录，甚至触发一次真实 agent 执行）。
+
+    - 默认 false；AGENT_ASSIST_ENABLED=true 时为 true；
+    - 该响应不触发 agent 执行、不写 assist_stream 审计。
+    """
+    service, database = _build_service(tmp_path)
+    override_container(SimpleNamespace(
+        database=database, mindgraph_chat=service, privacy_log=False,
+        provider=_FakeProvider(), chat=service,
+    ))
+    client = TestClient(_mini_assist_app(), raise_server_exceptions=False)
+    try:
+        from api.routes.health import public_config
+
+        monkeypatch.setenv("AGENT_ASSIST_ENABLED", "false")
+        get_settings.cache_clear()
+        assert public_config()["assist_agent_enabled"] is False
+
+        monkeypatch.setenv("AGENT_ASSIST_ENABLED", "true")
+        get_settings.cache_clear()
+        config = public_config()
+        assert config["assist_agent_enabled"] is True
+        # 探测语义：读配置不触发 agent 执行、不写 assist_stream 审计
+        assert database.fetch_all("SELECT action FROM access_audit WHERE action='assist_stream'") == []
+    finally:
+        client.close()
+        override_container(None)
+        monkeypatch.delenv("AGENT_ASSIST_ENABLED", raising=False)
+        get_settings.cache_clear()
+
+
 def test_assist_route_not_mounted_when_flag_off(monkeypatch):
     """默认关闭：真实 app 上没有 /api/v1/assist 路由，请求 404。
 

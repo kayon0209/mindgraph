@@ -53,6 +53,10 @@ def public_config():
         "privacy_log_questions": container.chat.privacy_log_questions,
         "evaluation_queue": "in_process_non_durable",
         "knowledge_categories": categories,
+        # Assist agent 可用性探测改读此布尔（P0-1 后续）：旧探测 POST
+        # /assist/agent/stream 会写一条无问题的 assist_stream 审计甚至触发
+        # 真实 agent 执行；读配置零副作用。
+        "assist_agent_enabled": get_settings().AGENT_ASSIST_ENABLED,
         "authority_weights": {
             "official_policy": 0.020, "official_guideline": 0.015, "approved_faq": 0.010,
             "user_uploaded_reference": 0.005, "external_reference": 0.0,
