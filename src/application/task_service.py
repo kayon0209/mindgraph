@@ -58,9 +58,14 @@ class TaskService:
         department: str | None = None,
         conversation_id: str | None = None,
     ) -> dict[str, Any]:
-        if task_type != "batch_policy_check":
+        if task_type not in ("batch_policy_check", "directory_delta_sync"):
             raise InvalidTaskConstraints(f"unsupported task_type: {task_type}")
-        clean = self._validate_constraints(constraints)
+        if task_type == "directory_delta_sync":
+            if not str(constraints.get("since") or "").strip():
+                raise InvalidTaskConstraints("directory_delta_sync requires constraints.since (ISO timestamp)")
+            clean = self._validate_constraints(constraints, require_target=False)
+        else:
+            clean = self._validate_constraints(constraints)
         existing = self.database.fetch_one(
             "SELECT task_id, status FROM agent_tasks WHERE principal_id=? AND idempotency_key=?",
             (principal_id, idempotency_key),
@@ -79,14 +84,14 @@ class TaskService:
         )
         return self._public(self._get_row(task_id))
 
-    def _validate_constraints(self, constraints: dict[str, Any]) -> dict[str, Any]:
+    def _validate_constraints(self, constraints: dict[str, Any], *, require_target: bool = True) -> dict[str, Any]:
         if not isinstance(constraints, dict):
             raise InvalidTaskConstraints("constraints must be an object")
         unknown = set(constraints) - ALLOWED_CONSTRAINT_KEYS
         if unknown:
             raise InvalidTaskConstraints(f"unknown constraint fields: {sorted(unknown)}")
-        # document_query 与 vault_paths 至少其一（任务必须有明确核对对象）
-        if not ("document_query" in constraints or "vault_paths" in constraints):
+        # 任务 A 必须有明确核对对象；任务 C 的对象是 since 时间轴（快照对比）
+        if require_target and not ("document_query" in constraints or "vault_paths" in constraints):
             raise InvalidTaskConstraints("document_query (or vault_paths) is required")
         clean: dict[str, Any] = {}
         if "document_query" in constraints:
@@ -101,6 +106,14 @@ class TaskService:
             except ValueError as exc:
                 raise InvalidTaskConstraints("as_of must be YYYY-MM-DD") from exc
             clean["as_of"] = as_of
+        if "since" in constraints:
+            # 任务 C（delta sync）的时间轴键：ISO 时间戳，提交期即校验
+            since_value = str(constraints["since"] or "").strip()
+            try:
+                datetime.fromisoformat(since_value)
+            except ValueError as exc:
+                raise InvalidTaskConstraints("since must be an ISO timestamp") from exc
+            clean["since"] = since_value
         if "top_k" in constraints:
             top_k = constraints["top_k"]
             if isinstance(top_k, bool) or not isinstance(top_k, int) or not 1 <= top_k <= MAX_CONSTRAINT_TOP_K:

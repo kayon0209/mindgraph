@@ -114,9 +114,15 @@ class TaskWorker:
             processed += 1
         return processed
 
-    # ── 单任务执行（batch_policy_check 唯一流程） ──
+    # ── 单任务执行（按 task_type 分派：A batch_policy_check / C directory_delta_sync） ──
 
     def _execute(self, task: dict[str, Any]) -> dict[str, Any]:
+        task_id = task["task_id"]
+        if task.get("task_type") == "directory_delta_sync":
+            return self._execute_delta_sync(task)
+        return self._execute_batch_check(task)
+
+    def _execute_batch_check(self, task: dict[str, Any]) -> dict[str, Any]:
         task_id = task["task_id"]
         principal_id = task["principal_id"]
         constraints = json.loads(task["constraints_json"] or "{}")
@@ -206,6 +212,117 @@ class TaskWorker:
             (status, state, _now_iso(), task_id),
         )
         return self._public(task_id, steps)
+
+    # ── 任务 C：目录增量同步 → 版本变化摘要（ADR-004 预留的第二任务类型） ──
+
+    def _execute_delta_sync(self, task: dict[str, Any]) -> dict[str, Any]:
+        """快照对比法：notes 表按 updated_at 对 since 的时间分桶。
+
+        输入：constraints = {"since": ISO 时间戳}（目录语义由提交面约束在
+        allowed_roots——目录 connector 已有校验，任务不越权扫盘）。
+        输出：private artifact（新增/变更/归档三分类摘要 + 每类计数与样例）。
+        权限：仅统计提交者当前可见的笔记（ACL 复用 F4 修正后的主体重建）。
+        """
+        task_id = task["task_id"]
+        principal_id = task["principal_id"]
+        constraints = json.loads(task["constraints_json"] or "{}")
+        since = str(constraints.get("since") or "").strip()
+        steps: list[dict[str, Any]] = []
+
+        def record_step(name: str, status: str, detail: str = "", latency_ms: float = 0.0) -> None:
+            steps.append({"name": name, "status": status, "detail": detail[:80], "latency_ms": round(latency_ms, 1)})
+
+        if self._cancel_requested(task_id):
+            return self._finalize_cancelled(task_id, steps)
+
+        from datetime import UTC, datetime
+
+        try:
+            since_dt = datetime.fromisoformat(since)
+            # 统一 aware-UTC：notes 时间戳带 +00:00，naive since 按 UTC 补齐
+            # （naive/aware 混比会 TypeError——实测修复）
+            since_utc = since_dt.replace(tzinfo=UTC) if since_dt.tzinfo is None else since_dt.astimezone(UTC)
+        except ValueError:
+            return self._fail(task_id, code="invalid_constraints", message="since 必须是 ISO 时间戳（如 2026-09-01T00:00:00）")
+
+        started = time.perf_counter()
+        from application.access_control import build_access_scope, note_acl_matches
+
+        worker_principal: dict[str, Any] = {"name": principal_id, "authenticated": True}
+        if task.get("workspace"):
+            worker_principal["workspaces"] = [task["workspace"]]
+        if task.get("department"):
+            worker_principal["departments"] = [task["department"]]
+        scope = build_access_scope(worker_principal)
+
+        rows = self.database.fetch_all(
+            "SELECT note_id, title, vault_path, created_at, updated_at, policy_status, acl_json, acl_public, workspace, department"
+            " FROM notes"
+        )
+        visible = [r for r in rows if note_acl_matches(r, scope)]
+        added, updated, archived = [], [], []
+        for r in visible:
+            created = r["created_at"] or ""
+            updated_at = r["updated_at"] or ""
+
+            def _aware(stamp: str) -> datetime | None:
+                """ISO 串归一为 aware-UTC（naive 补 UTC；坏值返回 None 不进桶）。"""
+                if not stamp:
+                    return None
+                try:
+                    dt = datetime.fromisoformat(stamp)
+                except ValueError:
+                    return None
+                return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
+
+            created_dt = _aware(created)
+            updated_dt = _aware(updated_at)
+            entry = {"title": r["title"], "vault_path": r["vault_path"]}
+            is_archived = str(r.get("policy_status") or "").lower() in {"archived", "expired", "superseded", "replaced"}
+            if created_dt and created_dt > since_utc:
+                added.append(entry)
+            elif updated_dt and updated_dt > since_utc:
+                (archived if is_archived else updated).append(entry)
+        record_step("delta_scan", "ok", f"visible={len(visible)} +{len(added)} ~{len(updated)} x{len(archived)}", (time.perf_counter() - started) * 1000)
+        self.renew_lease(task_id)
+        if self._cancel_requested(task_id):
+            return self._finalize_cancelled(task_id, steps)
+
+        # artifact（幂等：同 task_id 先查后写）
+        existing_artifact = self.database.fetch_one("SELECT artifact_id FROM artifacts WHERE task_id=?", (task_id,))
+        if existing_artifact is None:
+            content = {
+                "since": since,
+                "total_visible": len(visible),
+                "added": added,
+                "updated": updated,
+                "archived": archived,
+                "counts": {"added": len(added), "updated": len(updated), "archived": len(archived)},
+            }
+            self._write_delta_artifact(task_id, principal_id, content)
+        record_step("build_artifact", "ok", "status=completed", (time.perf_counter() - started) * 1000)
+
+        self.database.execute(
+            "UPDATE agent_tasks SET status=?, result_state=?, lease_owner=NULL, lease_expires_at=NULL, updated_at=? WHERE task_id=?",
+            (TaskStatus.completed.value, "evidence_found", _now_iso(), task_id),
+        )
+        return self._public(task_id, steps)
+
+    def _write_delta_artifact(self, task_id: str, principal_id: str, content: dict[str, Any]) -> str:
+        artifact_id = f"art-{uuid.uuid4().hex[:16]}"
+        checksum = hashlib.sha256(dumps(content).encode("utf-8")).hexdigest()
+        now = _now_iso()
+        self.database.execute(
+            "INSERT INTO artifacts (artifact_id, owner_principal_id, task_id, kind, title, content_json,"
+            " visibility, evidence_snapshot_json, citations_json, checksum, created_at, updated_at)"
+            " VALUES (?,?,?,?,?,?, 'private', '[]', '[]', ?, ?, ?)",
+            (
+                artifact_id, principal_id, task_id, "delta_sync_summary",
+                f"版本变化摘要 · since {content.get('since', '')[:10]}",
+                dumps(content), checksum, now, now,
+            ),
+        )
+        return artifact_id
 
     def _write_artifact(self, task_id: str, principal_id: str, result, conflicts: list[dict], constraints: dict[str, Any]) -> str:
         artifact_id = f"art-{uuid.uuid4().hex[:16]}"

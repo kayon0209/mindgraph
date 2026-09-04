@@ -269,3 +269,184 @@ def test_tasks_router_flag_gated(tmp_path: Path, monkeypatch):
         sys.modules.pop("api.main", None)
         importlib.import_module("api.main")
         get_settings.cache_clear()
+
+
+# ── 任务 C（directory_delta_sync，ADR-004 预留的第二任务类型）──
+
+
+def _seed_notes_with_timestamps(db: ProductDatabase, *, acl_public: bool = True) -> None:
+    """时间分桶 seed：2 新增（created > since）、1 变更（updated > since）、
+    1 归档（updated > since + superseded）、1 旧档（均早于 since）。
+    acl_public=False 时全部为私有笔记（ACL 测试用）。"""
+    rows = [
+        # note_id, title, created, updated, policy_status
+        ("n-new-1", "新增制度甲", "2026-09-03T10:00:00", "2026-09-03T10:00:00", "active"),
+        ("n-new-2", "新增制度乙", "2026-09-03T11:00:00", "2026-09-03T11:00:00", "active"),
+        ("n-chg", "变更制度", "2026-08-01T00:00:00", "2026-09-02T09:00:00", "active"),
+        ("n-arch", "归档制度", "2026-08-01T00:00:00", "2026-09-02T10:00:00", "superseded"),
+        ("n-old", "旧制度", "2026-08-01T00:00:00", "2026-08-15T00:00:00", "active"),
+    ]
+    for note_id, title, created, updated, status in rows:
+        db.execute(
+            "INSERT INTO notes (note_id, vault_path, title, content_hash, document_version, effective_from,"
+            " policy_status, policy_key, owner, acl_public, acl_json, chunk_count, index_status, created_at, updated_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'active',?,?)",
+            (note_id, f"policies/{note_id}.md", title, f"h-{note_id}", "v1", "2026-08-01",
+             status, "expense.general", "财务部", 1 if acl_public else 0, "{}", 1, created, updated),
+        )
+
+
+def test_delta_sync_task_type_registered_and_validated(tmp_path: Path):
+    """任务 C 的提交面：合法类型 + since 必填；无 since / 未知类型拒绝。"""
+    service, _worker, _db = _build(tmp_path)
+    task = service.submit(
+        principal_id="u1", idempotency_key="delta-reg-0001",
+        task_type="directory_delta_sync",
+        constraints={"since": "2026-09-01T00:00:00"},
+    )
+    assert task["task_type"] == "directory_delta_sync"
+    assert task["status"] == "queued"
+    with pytest.raises(InvalidTaskConstraints):
+        service.submit(principal_id="u1", idempotency_key="delta-reg-0002",
+                       task_type="directory_delta_sync", constraints={})
+    with pytest.raises(InvalidTaskConstraints):
+        service.submit(principal_id="u1", idempotency_key="delta-reg-0003",
+                       task_type="arbitrary_goal", constraints={"since": "2026-09-01"})
+
+
+def test_delta_sync_buckets_and_artifact(tmp_path: Path):
+    """任务 C 端到端：时间分桶（新增/变更/归档）+ 摘要 artifact 落库。"""
+    service, worker, db = _build(tmp_path)
+    _seed_notes_with_timestamps(db)
+    service.submit(
+        principal_id="u1", idempotency_key="delta-run-0001",
+        task_type="directory_delta_sync",
+        constraints={"since": "2026-09-01T00:00:00"},
+    )
+    result = worker.run_once()
+    assert result is not None and result["status"] == "completed"
+    detail = service.get_task(task_id=result["task_id"], principal_id="u1")
+    assert len(detail["artifacts"]) == 1
+    artifact = service.get_artifact_content(artifact_id=detail["artifacts"][0]["artifact_id"], principal_id="u1")
+    counts = artifact["content"]["counts"]
+    assert counts["added"] == 2      # 两篇 created > since
+    assert counts["updated"] == 1    # 变更（active）
+    assert counts["archived"] == 1   # 变更且 superseded
+    titles_added = {item["title"] for item in artifact["content"]["added"]}
+    assert titles_added == {"新增制度甲", "新增制度乙"}
+    assert artifact["content"]["total_visible"] == 5
+
+
+def test_delta_sync_rejects_invalid_since(tmp_path: Path):
+    """非法 since：提交期 fail-fast 拒绝（InvalidTaskConstraints——服务层
+    校验先于 worker，不产生必失败的任务）。worker 侧兜底路径由
+    test_delta_sync_task_type_registered_and_validated 的类型门覆盖。"""
+    service, _worker, _db = _build(tmp_path)
+    with pytest.raises(InvalidTaskConstraints, match="since"):
+        service.submit(
+            principal_id="u1", idempotency_key="delta-bad-0001",
+            task_type="directory_delta_sync",
+            constraints={"since": "not-a-timestamp"},
+        )
+    # 无任务落库
+    assert service.list_tasks(principal_id="u1")["items"] == []
+
+
+def test_delta_sync_artifact_idempotent_on_rerun(tmp_path: Path):
+    """artifact 幂等：同 task_id 重跑（at-least-once 语义下 lease 恢复场景）
+    不产生重复 artifact。"""
+    service, worker, db = _build(tmp_path)
+    _seed_notes_with_timestamps(db)
+    task = service.submit(
+        principal_id="u1", idempotency_key="delta-idem-0001",
+        task_type="directory_delta_sync",
+        constraints={"since": "2026-09-01T00:00:00"},
+    )
+    worker.run_once()
+    # 直接复跑（绕过 claim 模拟 lease 恢复后的重执行）
+    row = db.fetch_one("SELECT * FROM agent_tasks WHERE task_id=?", (task["task_id"],))
+    worker._execute(row)
+    count = db.fetch_one("SELECT COUNT(*) AS c FROM artifacts WHERE task_id=?", (task["task_id"],))["c"]
+    assert count == 1
+
+
+def test_batch_check_task_still_works_after_dispatch_refactor(tmp_path: Path):
+    """分派重构回归锁定：任务 A 的原路径行为不变。"""
+    service, worker, db = _build(tmp_path)
+    service.submit(principal_id="u1", idempotency_key="post-dispatch-a",
+                  constraints={"document_query": "费用报销核对", "top_k": 5})
+    result = worker.run_once()
+    assert result is not None
+    assert result["status"] in {"completed", "completed_empty", "completed_with_conflicts"}
+    assert result["task_type"] == "batch_policy_check"
+
+
+def _seed_acl_partitioned_notes(db: ProductDatabase) -> None:
+    """ACL 分区 seed：2 篇 finance 部门笔记（1 新增 1 变更）、1 篇 hr 部门
+    新增笔记。u-finance 提交者只应看到 finance 的两篇。"""
+    rows = [
+        # note_id, title, created, updated, department
+        ("n-fin-new", "财务新制度", "2026-09-03T10:00:00", "2026-09-03T10:00:00", "finance"),
+        ("n-fin-chg", "财务变更制度", "2026-08-01T00:00:00", "2026-09-02T09:00:00", "finance"),
+        ("n-hr-new", "HR 新制度", "2026-09-03T10:00:00", "2026-09-03T10:00:00", "hr"),
+    ]
+    for note_id, title, created, updated, department in rows:
+        db.execute(
+            "INSERT INTO notes (note_id, vault_path, title, content_hash, document_version, effective_from,"
+            " policy_status, policy_key, owner, acl_public, department, acl_json, chunk_count, index_status, created_at, updated_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (note_id, f"policies/{note_id}.md", title, f"h-{note_id}", "v1", "2026-08-01",
+             "active", "expense.general", "财务部", 0, department, "{}", 1, "active", created, updated),
+        )
+
+
+def test_delta_sync_acl_filters_by_department(tmp_path: Path):
+    """任务 C 的 ACL 红线（ADR-004 威胁模型：执行时逐条按当前 ACL 裁剪）：
+    finance 部门的提交者提交 delta sync，artifact 不得包含 hr 部门的笔记——
+    不可见条目不出现、计数不泄漏。"""
+    service, worker, db = _build(tmp_path)
+    _seed_acl_partitioned_notes(db)
+    service.submit(
+        principal_id="u-finance", idempotency_key="delta-acl-0001",
+        task_type="directory_delta_sync",
+        constraints={"since": "2026-09-01T00:00:00"},
+        department="finance",
+    )
+    result = worker.run_once()
+    assert result is not None and result["status"] == "completed"
+    detail = service.get_task(task_id=result["task_id"], principal_id="u-finance")
+    artifact = service.get_artifact_content(artifact_id=detail["artifacts"][0]["artifact_id"], principal_id="u-finance")
+    content = artifact["content"]
+    # 只有 finance 的两篇可见：1 新增 + 1 变更；hr 的新增不出现
+    assert content["counts"] == {"added": 1, "updated": 1, "archived": 0}
+    assert content["total_visible"] == 2
+    titles = {item["title"] for item in content["added"]} | {item["title"] for item in content["updated"]}
+    assert titles == {"财务新制度", "财务变更制度"}
+
+
+def test_delta_sync_defaults_deny_for_scopeless_principal(tmp_path: Path):
+    """任务 C 的 fail-closed：任务行没有 workspace/department（提交主体
+    无部门归属）时，worker 重建的 scope 为空 allow——除 acl_public 外
+    任何笔记都不可见。禁止全库泄漏。"""
+    service, worker, db = _build(tmp_path)
+    _seed_notes_with_timestamps(db, acl_public=False)  # 5 篇私有笔记
+    # 再补一篇公开笔记：无范围主体应只看得到它
+    db.execute(
+        "INSERT INTO notes (note_id, vault_path, title, content_hash, document_version, effective_from,"
+        " policy_status, policy_key, owner, acl_public, acl_json, chunk_count, index_status, created_at, updated_at)"
+        " VALUES ('n-public', 'policies/n-public.md', '公开制度', 'h-pub', 'v1', '2026-08-01',"
+        " 'active', 'expense.general', '财务部', 1, '{}', 1, 'active', '2026-09-03T10:00:00', '2026-09-03T10:00:00')"
+    )
+    service.submit(
+        principal_id="u-scopeless", idempotency_key="delta-scopeless-1",
+        task_type="directory_delta_sync",
+        constraints={"since": "2026-09-01T00:00:00"},
+    )
+    result = worker.run_once()
+    assert result is not None and result["status"] == "completed"
+    detail = service.get_task(task_id=result["task_id"], principal_id="u-scopeless")
+    artifact = service.get_artifact_content(artifact_id=detail["artifacts"][0]["artifact_id"], principal_id="u-scopeless")
+    content = artifact["content"]
+    # 只看得到公开笔记；5 篇私有笔记（含新增/变更）全部被 ACL 拦截
+    assert content["total_visible"] == 1
+    assert {item["title"] for item in content["added"]} == {"公开制度"}
