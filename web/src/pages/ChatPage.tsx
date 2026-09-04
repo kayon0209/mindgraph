@@ -22,7 +22,7 @@ import {
 } from "lucide-react";
 
 import { AnswerBody } from "../components/AnswerBody";
-import { api, streamAssistAgent, streamAssistAgentProbe, streamChat } from "../lib/api";
+import { api, assistAgentEnabled, streamAssistAgent, streamChat } from "../lib/api";
 import { citationValidity, fidelityMissingMarks as citationFidelityMarks, summarizeCitationValidity } from "../lib/citation-status";
 import { buildEvidenceMarkdown, downloadTextFile, evidenceFilename } from "../lib/export-evidence";
 import { completionGenerationState, completionViewState, policyConflictItems } from "../lib/policy-conflicts";
@@ -256,7 +256,9 @@ export function ChatPage() {
   const [migrationResult, setMigrationResult] = useState<{ migrated: string[]; failed: string[] } | null>(null);
 
   /** M3：探测服务端会话是否开启（列表端点 404 = 未开启，入口隐藏）；
-   * 同时探测 assist 面——404 = 服务端未开启多步查询，开关旁给出提示。 */
+   * 同时探测 assist 面——P0-1 后续：改读 /config/public 的
+   * assist_agent_enabled（零副作用），不再 POST agent stream（旧探测会写
+   * 无问题的 assist_stream 审计，flag 开启时甚至触发一次真实 agent 执行）。 */
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -266,12 +268,8 @@ export function ChatPage() {
       } catch {
         if (!cancelled) setServerConversationsEnabled(false);
       }
-      try {
-        await streamAssistAgentProbe();
-        if (!cancelled) setAssistAvailable(true);
-      } catch {
-        if (!cancelled) setAssistAvailable(false);
-      }
+      const assist = await assistAgentEnabled();
+      if (!cancelled) setAssistAvailable(assist);
     })();
     return () => {
       cancelled = true;
@@ -695,7 +693,7 @@ export function ChatPage() {
     setCitationFocus({ rank, nonce: Date.now() });
   };
 
-  const submit = async (event?: FormEvent, preset?: string, retryId?: string, resumeFrom?: string) => {
+  const submit = async (event?: FormEvent, preset?: string, retryId?: string) => {
     event?.preventDefault();
     const finalQuestion = (preset ?? question).trim();
     if (!finalQuestion || running) return;
@@ -732,7 +730,8 @@ export function ChatPage() {
 
     try {
       // M2：Assist 开关（本地状态；后端 AGENT_ASSIST_ENABLED 关闭时端点 404，
-      // 前端捕获后回落到普通流并提示一次）。resume 场景走同一入口（新请求语义）。
+      // 前端捕获后回落到普通流并提示一次）。P0-1：澄清补充 = 新的补充问题请求
+      // （question 拼接补充信息），不发送 resume_from——后端无该字段与服务端恢复。
       const streamer = assistMode ? streamAssistAgent : streamChat;
       await streamer(
         {
@@ -744,7 +743,6 @@ export function ChatPage() {
           graph_enabled: graphEnabled,
           graph_hops: graphHops,
           ...(queryDate ? { query_date: queryDate } : {}),
-          ...(resumeFrom ? { resume_from: resumeFrom } : {}),
         },
         (streamEvent) => handleEvent(id, streamEvent),
         controller.current.signal,
@@ -1126,10 +1124,9 @@ export function ChatPage() {
                       <ClarificationCard
                         clarification={turn.clarification}
                         onResolved={(answers) => {
-                          const clarificationId = turn.clarification?.clarification_id;
                           updateTurn(turn.id, { clarificationAnswered: true });
                           const joined = Object.values(answers).filter(Boolean).join("；");
-                          void submit(undefined, `${turn.question}（补充：${joined}）`, undefined, clarificationId);
+                          void submit(undefined, `${turn.question}（补充：${joined}）`);
                         }}
                       />
                     ) : null}
@@ -1665,7 +1662,8 @@ function FollowUpSuggestions({ turn, onSubmit }: { turn: Turn; onSubmit: (questi
   );
 }
 
-/** M2：澄清卡（UI-G 设计规格 §4.2）——提交即新请求（resume_from），不复用 error retry 语义 */
+/** M2：澄清卡（UI-G 设计规格 §4.2；P0-1 诚实化）——提交即"新的补充问题请求"，
+ * 补充信息拼进 question 重新核对；不声称恢复服务端上一轮执行，不发送 resume_from */
 function ClarificationCard({
   clarification,
   onResolved,
@@ -1681,7 +1679,7 @@ function ClarificationCard({
     return (
       <div className="clarification-card expired" role="status">
         <strong>补充信息已过期</strong>
-        <span>补充链接有时效（30 分钟内有效），请重新提问。</span>
+        <span>补充有时效（30 分钟内有效），请重新提问。</span>
       </div>
     );
   }
@@ -1689,7 +1687,7 @@ function ClarificationCard({
   return (
     <div className="clarification-card" aria-live="polite">
       <strong>为了准确回答，请补充 {clarification.questions.length} 个信息</strong>
-      <span className="clarification-context">以上对话内容已保留，补充后将一起作为依据。</span>
+      <span className="clarification-context">提交后将基于补充信息重新核对制度依据，作为新的问题处理。</span>
       <ol>
         {clarification.questions.map((item) => (
           <li key={item}>

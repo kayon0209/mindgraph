@@ -12,10 +12,14 @@
   服务端缓冲完整输出，CitationIntegrityValidator 通过后才发 answer_delta；
   失败允许一次重生成，仍失败则 citation_integrity_failed + evidence-only。
 
-澄清恢复协议（方案 §4.2）：clarification_required 携带 clarification_id /
+澄清协议（P0-1 诚实化）：clarification_required 携带 clarification_id /
 questions / context_hash / expires_at；随后 completed(result_state=
-waiting_for_input) 正常关流。用户补充后经新请求携带 resume_from=
-clarification_id 恢复——服务校验签名与过期，不信任客户端回传旧计划。
+waiting_for_input) 正常关流。**当前没有服务端恢复**：用户补充后，前端把
+补充信息拼进原问题，作为一次全新的 assist 请求提交（"新的补充问题请求"）。
+clarification_id / context_hash 仅作为澄清卡的定位与过期标记，不由后端
+resume_from 校验消费（服务端无该字段、无校验调用点）；真实的服务端
+conversation resume 需要独立的 clarification_requests 持久化契约（数据库
+schema 授权后另行实现），不在本层预埋半成品 API。
 """
 
 from __future__ import annotations
@@ -44,10 +48,10 @@ CLARIFICATION_TTL_MINUTES = 30
 
 def _clarification_salt() -> bytes:
     """澄清 token 的 HMAC 盐（审查 F10）：部署经 MINDGRAPH_CLARIFICATION_SALT
-    注入；缺省时进程级随机——源码可见的固定盐不可用于伪造。随机盐使
-    跨进程/重启后的 resume 校验失败（可接受：token TTL 30 分钟，重启后
-    用户重新提问即可；接线 resume_from 时如需跨重启校验再引入服务端
-    澄清存储——见 ADR-003 澄清协议）。"""
+    注入；缺省时进程级随机——源码可见的固定盐不可用于伪造。当前 token 仅用于
+    澄清卡展示面的定位与过期判定（前端拼接新请求，不做服务端恢复），跨进程
+    一致性无消费方；若未来引入服务端 resume 校验，需先落地独立的
+    clarification_requests 持久化契约（见模块 docstring）。"""
     import os as _os
     import secrets as _secrets
 
@@ -66,7 +70,10 @@ def _now_iso() -> str:
 
 
 def make_clarification_token(conversation_key: str, questions: list[str]) -> tuple[str, str, str]:
-    """生成 clarification_id + context_hash + expires_at（签名防伪造）。"""
+    """生成 clarification_id + context_hash + expires_at（签名防伪造）。
+
+    context_hash 绑定会话+问题集，clarification_id 是随机定位符（不参与
+    签名）。当前无服务端 resume 消费方——见模块 docstring。"""
     payload = "|".join(questions)
     context_hash = hmac.new(
         _clarification_salt(), (conversation_key + payload).encode(), hashlib.sha256
@@ -77,6 +84,11 @@ def make_clarification_token(conversation_key: str, questions: list[str]) -> tup
 
 
 def verify_clarification_token(clarification_id: str, context_hash: str, *, expires_at: str, conversation_key: str, questions: list[str]) -> bool:
+    """澄清 token 一致性校验（过期 + 签名）。
+
+    P0-1 诚实化：当前生产路径没有调用点（无服务端恢复）；保留为 token
+    语义的确定性定义与测试面。真实 resume 必须等 clarification_requests
+    持久化契约授权后接入，不得在无存储的情况下信任客户端回传。"""
     try:
         if datetime.fromisoformat(expires_at) < datetime.now(UTC):
             return False
@@ -137,6 +149,8 @@ class AgentService:
         )
 
         # ── 澄清路由特例：结构化提问，不检索 ──
+        # P0-1：此路径只发 clarification_required + completed(waiting_for_input)
+        # 后关流，不产出 answer_delta；用户补充后由前端拼成新请求重新提交。
         if decision.route == "clarification_required":
             questions = self._clarification_questions(request.question)
             clarification_id, context_hash, expires_at = make_clarification_token(request.question, questions)

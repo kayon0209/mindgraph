@@ -5,7 +5,7 @@
  * - 新 6 事件（plan/tool×2/clarification/loop_fell_back/citation_integrity_checked）
  *   的 handleEvent 分支语义（以 ChatPage 相同的数据形状驱动）；
  * - 旧客户端兼容：未知事件名不改变 Turn 状态（契约红线）；
- * - 澄清卡过期判定与"新请求 resume_from"语义（不复用 error retry）。
+ * - 澄清卡过期判定与"新的补充问题请求"语义（P0-1：不发送 resume_from）。
  */
 
 import { describe, expect, it } from "vitest";
@@ -141,19 +141,28 @@ describe("M2 assist 事件 → Turn 状态", () => {
   });
 });
 
-describe("澄清卡语义（UI-G §4.2）", () => {
-  it("expires_at 已过 → 过期态（引导重新提问，不走 resume）", () => {
+describe("澄清卡语义（UI-G §4.2；P0-1 诚实化）", () => {
+  it("expires_at 已过 → 过期态（引导重新提问）", () => {
     const expired = new Date(Date.now() - 60_000).toISOString();
     expect(new Date(expired).getTime() < Date.now()).toBe(true);
   });
 
-  it("提交是带 resume_from 的新请求：question 拼接补充信息", () => {
+  it("提交是新的补充问题请求：question 拼接补充信息，payload 不含 resume_from", () => {
     const question = "差旅餐补标准是多少";
     const answers = { "你关注哪个版本？": "2026-07-01 之后的现行版本" };
     const joined = Object.values(answers).filter(Boolean).join("；");
-    const payload = { question: `${question}（补充：${joined}）`, resume_from: "abc123" };
+    // P0-1：后端 AssistRequest 没有 resume_from 字段——前端不得声称或发送服务端恢复
+    const payload: Record<string, unknown> = { question: `${question}（补充：${joined}）` };
     expect(payload.question).toContain("补充：");
-    expect(payload.resume_from).toBe("abc123");
+    expect("resume_from" in payload).toBe(false);
+    expect(JSON.stringify(payload)).not.toContain("resume_from");
+  });
+
+  it("澄清卡文案：说明基于补充信息重新核对，不宣称服务端恢复", () => {
+    const clarificationCardCopy = "补充后将基于补充信息重新核对制度依据，作为新的问题请求处理";
+    expect(clarificationCardCopy).toContain("重新核对");
+    expect(clarificationCardCopy).not.toContain("恢复");
+    expect(clarificationCardCopy).not.toContain("继续上");
   });
 });
 

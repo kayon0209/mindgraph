@@ -225,22 +225,32 @@ def test_citation_integrity_failure_regenerates_once_then_evidence_only(tmp_path
 
 
 def test_clarification_flow_closes_stream_with_waiting_for_input(tmp_path: Path):
-    service, _db, _pipeline = _build(tmp_path, question="两个制度可以同时报销吗还是分别报销？帮我对比一下顺便看看新旧版本")
-    events = _events(service, question="差旅餐补和招待费能不能同时报销？")
+    """澄清协议（P0-1 诚实化）：clarification_required → completed(waiting_for_input)
+    关流；completed 之后不再产生任何事件（含 answer_delta）。
+
+    query_type="clarification" 是 ChatRequest 契约内字段（domain/models.py），
+    确定性命中 Router 的 clarification_required 路由——不依赖触发词偶然命中。
+    """
+    service, _db, _pipeline = _build(tmp_path)
+    events = _events(service, question="差旅餐补和招待费能不能同时报销？", query_type="clarification")
     names = _names(events)
-    # 澄清路由由 Router 的 clarification 触发词决定；这里直接验证协议语义
-    if "clarification_required" in names:
-        clarification = next(e for e in events if e["event"] == "clarification_required")["data"]
-        assert {"clarification_id", "questions", "context_hash", "expires_at"} <= set(clarification)
-        completed = events[-1]
-        assert completed["event"] == "completed"
-        assert completed["data"]["result_state"] == "waiting_for_input"
-        # 澄清后不得再有任何事件
-        assert names[-1] == "completed"
+    assert names[0] == "request_started"
+    assert "clarification_required" in names, f"路由未命中 clarification_required，实际事件：{names}"
+    clarification = next(e for e in events if e["event"] == "clarification_required")["data"]
+    assert {"clarification_id", "questions", "context_hash", "expires_at"} <= set(clarification)
+    assert clarification["questions"]
+    completed_index = names.index("completed")
+    completed = events[completed_index]
+    assert completed["data"]["result_state"] == "waiting_for_input"
+    # 澄清后不得再有任何事件（含 answer_delta——澄清轮不产出答案正文）
+    assert names[completed_index:] == ["completed"]
+    assert "answer_delta" not in names
 
 
 def test_clarification_token_signature_and_expiry():
     cid, context_hash, expires_at = make_clarification_token("conv-1", ["问题A", "问题B"])
+    # context_hash 绑定会话+问题集（clarification_id 不参与签名：见 P0-1 说明——
+    # 服务端没有恢复校验调用点，token 仅作为澄清卡定位符）
     assert verify_clarification_token(cid, context_hash, expires_at=expires_at, conversation_key="conv-1", questions=["问题A", "问题B"])
     # 篡改问题集 → 签名不匹配
     assert not verify_clarification_token(cid, context_hash, expires_at=expires_at, conversation_key="conv-1", questions=["问题C"])
@@ -255,12 +265,39 @@ def test_clarification_token_signature_and_expiry():
 
 
 def test_no_provider_function_calling_surface(tmp_path: Path):
-    """Assist 路径 provider 调用只有 complete/messages；无 tools/tool_choice。"""
-    FakeProvider.calls.clear()
-    service, _db, _pipeline = _build(tmp_path)
-    _events(service)
-    for messages in FakeProvider.calls:
-        assert all("tool_calls" not in str(m).lower() or True for m in messages)  # messages 本身不含工具协议字段
+    """ADR-003 红线：Assist 路径 provider 调用只有 complete/messages；
+    无 tools/tool_choice/tool_calls。
+
+    P0-1 修复：此断言原为 `or True`（恒真假绿）+ `if "clarification_required" in
+    names` 条件跳过。现在两条红线都必须主动命中路径：
+    - 每次流至少走到 provider 调用（结果有 answer）；
+    - provider 收到的 messages 与调用参数中出现 tools/tool_choice/tool_calls
+      任一即失败。
+    """
+    captured: list[list[dict]] = []
+
+    class CapturingProvider(FakeProvider):
+        def __init__(self) -> None:
+            self.available = True
+
+        def complete(self, messages):
+            captured.append(messages)
+            return ("依据 [citation-1]，报销应在 10 个工作日内提交。", {"total_tokens": 10})
+
+    service, _db, _pipeline = _build(tmp_path, provider=CapturingProvider())
+    events = _events(service)
+    names = _names(events)
+    # 红线必须被真实路径覆盖：走到生成，provider 被调用，回答完成
+    assert captured, "红线测试未命中 provider 调用路径（假跳过）"
+    assert names[-1] == "completed"
+    assert events[-1]["data"]["result_state"] == "answered"
+    # messages 内不得携带工具协议字段
+    for messages in captured:
+        for message in messages:
+            assert "tool_calls" not in message, f"provider message 携带 tool_calls：{message}"
+            assert "tool_call_id" not in message, f"provider message 携带 tool_call_id：{message}"
+            assert message.get("role") != "tool", f"provider message 出现 tool 角色：{message}"
+            assert "tools" not in message, f"provider message 携带 tools：{message}"
 
 
 def test_unused_citations_do_not_block_generation(tmp_path: Path):

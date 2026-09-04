@@ -73,6 +73,39 @@ class ProviderTests(unittest.TestCase):
         registry = ProviderRegistry([anthropic], "anthropic")
         self.assertEqual(registry.get().provider_name, "anthropic"); self.assertFalse(registry.capabilities()[0]["verified"])
 
+    def test_providers_never_send_function_calling_params(self):
+        """ADR-003 红线（P0-1）：provider 保持 text-in/text-out——adapter 发出的
+        HTTP 载荷不得携带 tools / tool_choice，消息内不得出现 tool_calls /
+        tool_call_id / role=tool。出现即失败，杜绝 function calling 面。"""
+        forbidden = ("tools", "tool_choice", "tool_calls", "tool_call_id")
+
+        def assert_clean(payload, origin):
+            for key in forbidden:
+                self.assertNotIn(key, payload, f"{origin} 载荷携带 {key}：{payload}")
+            for message in payload.get("messages", []) or ([] if "messages" not in payload else payload["messages"]):
+                self.assertNotIn("tool_calls", message, f"{origin} message 携带 tool_calls：{message}")
+                self.assertNotIn("tool_call_id", message, f"{origin} message 携带 tool_call_id：{message}")
+                self.assertNotEqual(message.get("role"), "tool", f"{origin} message 出现 tool 角色：{message}")
+
+        # OpenAI 兼容 adapter：complete 与 stream 的载荷
+        openai_provider = OpenAICompatibleProvider("deepseek", "https://example.test", "key", "model")
+        ok_response = Mock(status_code=200); ok_response.json.return_value = {"choices": [{"message": {"content": "ok"}}], "usage": {"total_tokens": 3}}
+        with patch("httpx.post", return_value=ok_response) as posted:
+            openai_provider.complete([{"role": "user", "content": "x"}])
+        assert_clean(posted.call_args.kwargs["json"], "openai_complete")
+
+        stream_response = Mock(status_code=200); stream_response.iter_lines.return_value = ['data: {"choices":[{"delta":{"content":"a"}}]}', "data: [DONE]"]
+        with patch.object(openai_provider, "_post", return_value=(Mock(), FakeStreamContext(stream_response))) as posted_payload:
+            list(openai_provider.stream([{"role": "user", "content": "x"}]))
+        assert_clean(posted_payload.call_args.args[0], "openai_stream")
+
+        # Anthropic adapter：complete 的载荷
+        anthropic = AnthropicProvider("key", "claude-test")
+        anthropic_response = Mock(status_code=200); anthropic_response.json.return_value = {"content": [{"type": "text", "text": "ok"}], "usage": {"input_tokens": 2, "output_tokens": 1}}
+        with patch("httpx.post", return_value=anthropic_response) as posted:
+            anthropic.complete([{"role": "user", "content": "x"}])
+        assert_clean(posted.call_args.kwargs["json"], "anthropic_complete")
+
 
 @unittest.skipUnless(os.getenv("RUN_DEEPSEEK_INTEGRATION") == "true", "set RUN_DEEPSEEK_INTEGRATION=true")
 class DeepSeekIntegrationTests(unittest.TestCase):

@@ -106,9 +106,11 @@ export async function streamChat(
   tail.events.forEach(onEvent);
 }
 
-/** M2：确定性 Assist Agent 流（AGENT_ASSIST_ENABLED 开启时可用；404 = 服务端未开） */
+/** M2：确定性 Assist Agent 流（AGENT_ASSIST_ENABLED 开启时可用；404 = 服务端未开）。
+ * P0-1：AssistRequest 契约没有 resume_from / clarification_answers 字段——
+ * 澄清卡提交是一次全新的补充问题请求（question 拼接补充信息），不声称服务端恢复。 */
 export async function streamAssistAgent(
-  payload: ChatRequest & { resume_from?: string; clarification_answers?: Record<string, string> },
+  payload: ChatRequest,
   onEvent: (event: StreamEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
@@ -137,20 +139,14 @@ export async function streamAssistAgent(
   tail.events.forEach(onEvent);
 }
 
-/** Assist 可用性探测：以最小请求打 /assist/agent/stream，404 → false（开关旁提示）。
- * 非 404 错误（网络/5xx）也判 false——探测失败宁可提示"未开启"也不让用户踩空。 */
-export async function streamAssistAgentProbe(): Promise<boolean> {
+/** Assist 深度核对可用性探测：读 /config/public 的 assist_agent_enabled 布尔。
+ * P0-1 后续：旧探测 POST /assist/agent/stream 有副作用（写 assist_stream 审计、
+ * flag 开启时触发一次真实 agent 执行）——读配置零副作用。
+ * 请求失败也判 false：探测失败宁可提示"服务端未开启"也不让用户踩空。 */
+export async function assistAgentEnabled(): Promise<boolean> {
   try {
-    const controller = new AbortController();
-    const response = await fetch(`${API_BASE}/assist/agent/stream`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question: "探测", retrieval_strategy: "hybrid" }),
-      signal: controller.signal,
-    });
-    // 探测不消费流：立刻中断，只看状态码
-    controller.abort();
-    return response.status !== 404;
+    const config = await api.publicConfig();
+    return config.assist_agent_enabled === true;
   } catch {
     return false;
   }

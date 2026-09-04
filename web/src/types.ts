@@ -15,6 +15,8 @@ export type PublicConfig = {
     verified?: boolean;
   }>;
   default_chat_provider?: string;
+  /** P0-1 后续：assist 深度核对可用性探测改读此布尔（零副作用），不再 POST agent stream */
+  assist_agent_enabled?: boolean;
 };
 
 export type ChatRequest = {
@@ -167,7 +169,8 @@ export type AssistToolCall = {
   latency_ms?: number;
 };
 
-/** M2：clarification_required 事件数据（提交后经新请求 resume_from 恢复） */
+/** M2：clarification_required 事件数据（P0-1：提交补充信息 = 新的补充问题请求，
+ *  当前无服务端恢复，前端不发送 resume_from） */
 export type AssistClarification = {
   clarification_id: string;
   questions: string[];
