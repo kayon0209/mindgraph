@@ -450,3 +450,122 @@ def test_delta_sync_defaults_deny_for_scopeless_principal(tmp_path: Path):
     # 只看得到公开笔记；5 篇私有笔记（含新增/变更）全部被 ACL 拦截
     assert content["total_visible"] == 1
     assert {item["title"] for item in content["added"]} == {"公开制度"}
+
+
+# ── 任务 C：directory_root 目录语义对齐（ADR-004 原文「目录路径，限定 allowed_roots」）──
+
+
+def _write_source_vault(root: Path) -> Path:
+    """构造一个受允许根目录下的源目录：2 篇新增笔记（frontmatter 声明
+    workspace=corp-finance，与提交者任务行的 workspace 对齐——企业语义：
+    finance 空间用户的目录在 finance 空间下）。"""
+    source = root / "finance-policies"
+    source.mkdir(parents=True)
+    (source / "a-policy.md").write_text(
+        "---\ntitle: 目录新增甲\nworkspace: corp-finance\n---\n制度甲正文", encoding="utf-8")
+    (source / "b-policy.md").write_text(
+        "---\ntitle: 目录新增乙\nworkspace: corp-finance\n---\n制度乙正文", encoding="utf-8")
+    return source
+
+
+def test_delta_sync_directory_root_scans_real_directory(tmp_path: Path):
+    """目录语义：constraints.directory_root 指向允许根目录下的真实目录时，
+    worker 扫描该目录（只读 upsert，不剪枝、不写 id），分桶结果只含该目录
+    产出的笔记，且 connector_syncs 留下审计行。"""
+    service, worker, db = _build(tmp_path)
+    allowed_root = tmp_path / "roots"
+    allowed_root.mkdir()
+    source = _write_source_vault(allowed_root)
+    task = service.submit(
+        principal_id="u1", idempotency_key="delta-dir-0001",
+        task_type="directory_delta_sync",
+        constraints={"since": "2026-09-01T00:00:00", "directory_root": str(source)},
+        workspace="corp-finance",
+    )
+    assert task["status"] == "queued"
+    # 其余目录的笔记不得混入：seed 一批库内旧笔记（私有，corp-finance 主体不可见）
+    _seed_notes_with_timestamps(db, acl_public=False)
+    worker_with_roots = TaskWorker(
+        db,
+        evidence_query_service_factory=lambda: None,
+        policy_conflict_service=PolicyConflictService(db),
+        allowed_roots=(allowed_root.resolve(),),
+    )
+    result = worker_with_roots.run_once()
+    assert result is not None and result["status"] == "completed"
+    detail = service.get_task(task_id=task["task_id"], principal_id="u1")
+    artifact = service.get_artifact_content(artifact_id=detail["artifacts"][0]["artifact_id"], principal_id="u1")
+    content = artifact["content"]
+    # 目录扫描产出 2 篇新增笔记（可见性：同步默认 acl_public=1 → scopeless 主体可见）
+    assert content["counts"]["added"] == 2
+    titles = {item["title"] for item in content["added"]}
+    assert titles == {"目录新增甲", "目录新增乙"}
+    # seed 的库内旧笔记不进目录模式分桶（不在该目录内）
+    assert "新增制度甲" not in titles
+    # connector_syncs 审计：任务驱动的目录扫描也留痕
+    sync_rows = db.fetch_all("SELECT * FROM connector_syncs WHERE connector_type='agent_task_delta_sync'")
+    assert len(sync_rows) == 1
+    assert sync_rows[0]["status"] == "completed"
+
+
+def test_delta_sync_directory_root_outside_allowed_roots_rejected(tmp_path: Path):
+    """fail-closed：directory_root 在允许根目录之外 → 任务 failed
+    （invalid_constraints），不扫盘、无 artifact。"""
+    service, _worker, db = _build(tmp_path)
+    allowed_root = tmp_path / "roots"
+    allowed_root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "evil.md").write_text("机密", encoding="utf-8")
+    task = service.submit(
+        principal_id="u1", idempotency_key="delta-dir-0002",
+        task_type="directory_delta_sync",
+        constraints={"since": "2026-09-01T00:00:00", "directory_root": str(outside)},
+    )
+    worker_with_roots = TaskWorker(
+        db,
+        evidence_query_service_factory=lambda: None,
+        policy_conflict_service=PolicyConflictService(db),
+        allowed_roots=(allowed_root.resolve(),),
+    )
+    result = worker_with_roots.run_once()
+    assert result is not None
+    assert result["status"] == "failed"
+    assert result["error_code"] == "directory_not_allowed"
+    detail = service.get_task(task_id=task["task_id"], principal_id="u1")
+    assert detail["artifacts"] == []
+    # 越权目录一个字节也没进 notes
+    assert db.fetch_one("SELECT COUNT(*) AS c FROM notes WHERE vault_path LIKE '%outside%'")["c"] == 0
+
+
+def test_delta_sync_directory_root_missing_fails_task(tmp_path: Path):
+    """directory_root 不存在/不是目录 → failed（invalid_constraints），不是 500。"""
+    service, _worker, db = _build(tmp_path)
+    allowed_root = tmp_path / "roots"
+    allowed_root.mkdir()
+    task = service.submit(
+        principal_id="u1", idempotency_key="delta-dir-0003",
+        task_type="directory_delta_sync",
+        constraints={"since": "2026-09-01T00:00:00", "directory_root": str(allowed_root / "ghost")},
+    )
+    worker_with_roots = TaskWorker(
+        db,
+        evidence_query_service_factory=lambda: None,
+        policy_conflict_service=PolicyConflictService(db),
+        allowed_roots=(allowed_root.resolve(),),
+    )
+    result = worker_with_roots.run_once()
+    assert result is not None
+    assert result["status"] == "failed"
+    assert result["error_code"] == "invalid_constraints"
+
+
+def test_delta_sync_directory_root_relative_path_rejected(tmp_path: Path):
+    """相对路径拒绝（提交面 fail-fast）——必须显式绝对路径。"""
+    service, _worker, _db = _build(tmp_path)
+    with pytest.raises(InvalidTaskConstraints, match="absolute"):
+        service.submit(
+            principal_id="u1", idempotency_key="delta-dir-0004",
+            task_type="directory_delta_sync",
+            constraints={"since": "2026-09-01T00:00:00", "directory_root": "relative/path"},
+        )

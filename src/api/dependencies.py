@@ -113,6 +113,9 @@ class ServiceContainer:
                 "application.evidence_query_service", fromlist=["EvidenceQueryService"]
             ).EvidenceQueryService(self.mindgraph_chat),
             policy_conflict_service=PolicyConflictService(self.database),
+            # 任务 C 目录语义：与 DirectoryConnectorService 共用同一 allowed_roots
+            # 语义（knowledge/ + CONNECTOR_ALLOWED_ROOTS）——目录扫描不越出受控根。
+            allowed_roots=(self.root / "knowledge", *settings.connector_allowed_root_list),
         )
         # M5-A：用户显式保存的私有证据存档（SavedArtifactService；MCP 写工具
         # mindgraph_save_artifact 经 registry 双门控复用同一服务）。

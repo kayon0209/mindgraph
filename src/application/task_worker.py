@@ -16,6 +16,7 @@ import logging
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from domain.models import ChatRequest
@@ -46,6 +47,7 @@ class TaskWorker:
         lease_seconds: float = DEFAULT_LEASE_SECONDS,
         max_attempts: int = MAX_ATTEMPTS,
         owner: str | None = None,
+        allowed_roots: tuple[Path, ...] | None = None,
     ) -> None:
         self.database = database
         self._make_evidence_service = evidence_query_service_factory
@@ -53,6 +55,9 @@ class TaskWorker:
         self.lease_seconds = lease_seconds
         self.max_attempts = max_attempts
         self.owner = owner or f"worker-{uuid.uuid4().hex[:8]}"
+        # 任务 C 目录语义（ADR-004「目录路径，限定 allowed_roots」）：None =
+        # 生产容器注入的允许根目录；空 tuple = 显式禁用目录模式（仅快照对比）
+        self.allowed_roots = allowed_roots
 
     # ── claim（短事务语义：条件 UPDATE + 行影响数判定） ──
 
@@ -216,17 +221,22 @@ class TaskWorker:
     # ── 任务 C：目录增量同步 → 版本变化摘要（ADR-004 预留的第二任务类型） ──
 
     def _execute_delta_sync(self, task: dict[str, Any]) -> dict[str, Any]:
-        """快照对比法：notes 表按 updated_at 对 since 的时间分桶。
+        """时间分桶对比：constraints.since 之后新建的笔记入「新增」桶，
+        更新的按 policy_status 分「变更 / 归档」桶。
 
-        输入：constraints = {"since": ISO 时间戳}（目录语义由提交面约束在
-        allowed_roots——目录 connector 已有校验，任务不越权扫盘）。
-        输出：private artifact（新增/变更/归档三分类摘要 + 每类计数与样例）。
+        两种数据源（ADR-004「目录路径（限定 allowed_roots）+ since」）：
+        - directory_root 给定（目录模式）：只读扫描该目录（VaultSyncService，
+          prune_missing=False、不写回 id），allowed_roots 校验 fail-closed，
+          connector_syncs 留审计行；
+        - 未给定（快照模式）：notes 全库按当前 ACL 裁剪（向后兼容语义）。
+        输出：private artifact（新增/变更/归档三分类摘要 + 计数）。
         权限：仅统计提交者当前可见的笔记（ACL 复用 F4 修正后的主体重建）。
         """
         task_id = task["task_id"]
         principal_id = task["principal_id"]
         constraints = json.loads(task["constraints_json"] or "{}")
         since = str(constraints.get("since") or "").strip()
+        directory_root = str(constraints.get("directory_root") or "").strip()
         steps: list[dict[str, Any]] = []
 
         def record_step(name: str, status: str, detail: str = "", latency_ms: float = 0.0) -> None:
@@ -255,10 +265,23 @@ class TaskWorker:
             worker_principal["departments"] = [task["department"]]
         scope = build_access_scope(worker_principal)
 
-        rows = self.database.fetch_all(
-            "SELECT note_id, title, vault_path, created_at, updated_at, policy_status, acl_json, acl_public, workspace, department"
-            " FROM notes"
-        )
+        # ── 数据源选择：目录模式（真实扫描）或快照模式（全库 + ACL） ──
+        rows: list[dict[str, Any]]
+        if directory_root:
+            source = Path(directory_root)
+            if not self.allowed_roots:
+                return self._fail(task_id, code="invalid_constraints", message="directory_root requires worker allowed_roots configuration")
+            if not source.exists() or not source.is_dir():
+                return self._fail(task_id, code="invalid_constraints", message=f"directory_root is not an existing directory: {directory_root}")
+            resolved = source.resolve(strict=True)
+            if not any(resolved == root or root in resolved.parents for root in self.allowed_roots):
+                return self._fail(task_id, code="directory_not_allowed", message=f"directory_root is outside configured allowed roots: {resolved}")
+            rows = self._scan_directory_rows(task, resolved, steps)
+        else:
+            rows = self.database.fetch_all(
+                "SELECT note_id, title, vault_path, created_at, updated_at, policy_status, acl_json, acl_public, workspace, department"
+                " FROM notes"
+            )
         visible = [r for r in rows if note_acl_matches(r, scope)]
         added, updated, archived = [], [], []
         for r in visible:
@@ -307,6 +330,55 @@ class TaskWorker:
             (TaskStatus.completed.value, "evidence_found", _now_iso(), task_id),
         )
         return self._public(task_id, steps)
+
+    def _scan_directory_rows(self, task: dict[str, Any], source: Path, steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """目录模式数据源：VaultSyncService 只读扫描（不剪枝、不写回 id），
+        返回该目录产出笔记的行快照，并写 connector_syncs 审计行。
+
+        与 DirectoryConnectorService 的关系：复用同一 VaultSyncService 增量
+        upsert 语义，但本路径只做任务可见性扫描——不触发索引、不回填 ACL
+        （ACL 回填是 admin 的 connectors API 职责，任务不做静默治理动作）。
+        """
+        task_id = task["task_id"]
+        started = time.perf_counter()
+        from application.vault_sync_service import VaultSyncService
+
+        connector_id = f"task-{task_id[:20]}"
+        sync = VaultSyncService(
+            self.database,
+            source,
+            write_ids=False,
+            path_prefix=connector_id,
+            id_namespace=str(source),
+        )
+        result = sync.scan_vault(prune_missing=False)
+        steps.append({
+            "name": "directory_scan", "status": "ok",
+            "detail": f"scanned={len(result.scanned)} skipped={len(result.skipped)}"[:80],
+            "latency_ms": round((time.perf_counter() - started) * 1000, 1),
+        })
+        if not result.scanned:
+            return []
+        placeholders = ",".join("?" for _ in result.scanned)
+        note_ids = tuple(sorted(note.note_id for note in result.scanned))
+        rows = self.database.fetch_all(
+            f"SELECT note_id, title, vault_path, created_at, updated_at, policy_status, acl_json, acl_public, workspace, department"  # nosec B608 -- placeholders 仅由常量 '?' 拼接
+            f" FROM notes WHERE note_id IN ({placeholders})",
+            note_ids,
+        )
+        # connector_syncs 审计：任务驱动的目录扫描同样可追溯（ADR-004 运营要求）
+        self.database.execute(
+            "INSERT OR REPLACE INTO connector_syncs "
+            "(connector_id, connector_type, source_path, workspace, department, status, "
+            "file_count, added, updated, pruned, error, metadata_json, started_at, finished_at) "
+            "VALUES (?, 'agent_task_delta_sync', ?, ?, ?, 'completed', ?, ?, ?, 0, NULL, ?, ?, ?)",
+            (
+                connector_id, str(source), task.get("workspace"), task.get("department"),
+                len(result.scanned), 0, 0, dumps({"task_id": task_id}),
+                _now_iso(), _now_iso(),
+            ),
+        )
+        return list(rows)
 
     def _write_delta_artifact(self, task_id: str, principal_id: str, content: dict[str, Any]) -> str:
         artifact_id = f"art-{uuid.uuid4().hex[:16]}"

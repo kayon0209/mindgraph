@@ -13,6 +13,7 @@ import json
 import time
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from domain.task_models import (
@@ -114,6 +115,18 @@ class TaskService:
             except ValueError as exc:
                 raise InvalidTaskConstraints("since must be an ISO timestamp") from exc
             clean["since"] = since_value
+        if "directory_root" in constraints:
+            # 任务 C 的目录语义锚点：提交期只做形状校验（非空、绝对路径）；
+            # 存在性与 allowed_roots 归属由 worker 执行期 fail-closed 判定——
+            # 提交面不应依赖文件系统状态（提交与执行之间路径可能变化）。
+            root_value = str(constraints["directory_root"] or "").strip()
+            if not root_value:
+                raise InvalidTaskConstraints("directory_root must be a non-empty absolute path")
+            if not Path(root_value).is_absolute():
+                raise InvalidTaskConstraints("directory_root must be an absolute path")
+            if len(root_value) > 1000:
+                raise InvalidTaskConstraints("directory_root too long (max 1000 chars)")
+            clean["directory_root"] = root_value
         if "top_k" in constraints:
             top_k = constraints["top_k"]
             if isinstance(top_k, bool) or not isinstance(top_k, int) or not 1 <= top_k <= MAX_CONSTRAINT_TOP_K:

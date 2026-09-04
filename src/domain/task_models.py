@@ -28,6 +28,7 @@ TERMINAL_STATUSES = frozenset(
 )
 
 # 提交时可指定的约束白名单（结构化，非自由文本 prompt——威胁模型要求）
-ALLOWED_CONSTRAINT_KEYS = frozenset({"top_k", "include_historical", "as_of", "document_query", "vault_paths", "since"})
+# directory_root：任务 C 的可选目录语义锚点（绝对路径；worker 校验 allowed_roots）
+ALLOWED_CONSTRAINT_KEYS = frozenset({"top_k", "include_historical", "as_of", "document_query", "vault_paths", "since", "directory_root"})
 MAX_CONSTRAINT_TOP_K = 50
 MAX_CONSTRAINT_VAULT_PATHS = 20
