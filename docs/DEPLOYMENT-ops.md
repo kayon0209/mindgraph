@@ -74,7 +74,7 @@ powershell -ExecutionPolicy Bypass -File scripts\start-dev.ps1
 
 ## 8. MCP 客户端兼容矩阵（2026-09-03 终稿）
 
-服务器：stdio JSON-RPC 2.0，行分隔；协议版本协商支持集 `2024-11-05 / 2025-03-26 / 2025-06-18`（echo 客户端请求版本，未知回退 2025-06-18）；server `mindgraph-mcp 3.2.0`。工具面：12 个（5 旧只读 + 3 治理只读 + 1 assist + 3 受控写，各自独立 flag）。
+服务器：stdio JSON-RPC 2.0，行分隔；协议版本协商支持集 `2024-11-05 / 2025-03-26 / 2025-06-18`（echo 客户端请求版本，未知回退 2025-06-18）；server `mindgraph-mcp 3.2.0`。另有受认证 HTTP JSON-RPC 工具通道，但它不是 Streamable HTTP/OAuth transport。工具面：12 个（5 旧只读 + 3 治理只读 + 1 assist + 3 受控写，各自独立 flag）。
 
 | 客户端 | 状态 | 证据 |
 | --- | --- | --- |

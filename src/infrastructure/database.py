@@ -3,16 +3,19 @@ from __future__ import annotations
 import json
 import logging
 import os
-import sqlite3
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
+import sqlite3
+
+from infrastructure.sqlite_runtime import require_safe_sqlite_runtime
+
 logger = logging.getLogger("mindgraph.database")
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 15
 
 
 class ProductDatabase:
@@ -42,6 +45,7 @@ class ProductDatabase:
             self._SLOW_QUERY_THRESHOLD_MS = 500.0
 
     def connect(self) -> sqlite3.Connection:
+        require_safe_sqlite_runtime()
         connection = sqlite3.connect(
             str(self.path),
             check_same_thread=False,
@@ -106,15 +110,19 @@ class ProductDatabase:
         if connection is not None:
             try:
                 connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                connection.close()
             except Exception as exc:
                 logger.warning("database_close_warning", extra={"error": str(exc)})
             finally:
-                self._local.connection = None
+                try:
+                    connection.close()
+                except Exception as exc:
+                    logger.warning("database_connection_close_warning", extra={"error": str(exc)})
+                finally:
+                    self._local.connection = None
         logger.info("database_closed_with_checkpoint")
 
     def initialize(self) -> None:
-        with self.connect() as connection:
+        with closing(self.connect()) as connection, connection:
             connection.executescript("""
                 CREATE TABLE IF NOT EXISTS schema_meta (version INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS query_logs (
@@ -405,6 +413,14 @@ class ProductDatabase:
                     updated_at TEXT NOT NULL,
                     FOREIGN KEY(task_id) REFERENCES agent_tasks(task_id)
                 );
+                -- schema v15：task_id 唯一 claim 用于 at-least-once worker 的副作用围栏。
+                -- 保留历史 artifacts（即使旧版本曾产生重复），只为每个 task 选定一个 canonical artifact。
+                CREATE TABLE IF NOT EXISTS artifact_task_claims (
+                    task_id TEXT PRIMARY KEY,
+                    artifact_id TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(task_id) REFERENCES agent_tasks(task_id)
+                );
                 CREATE INDEX IF NOT EXISTS idx_agent_tasks_owner
                     ON agent_tasks(principal_id, status, updated_at);
                 CREATE INDEX IF NOT EXISTS idx_agent_tasks_status_lease
@@ -435,6 +451,23 @@ class ProductDatabase:
                     ON saved_artifacts(owner_principal_id, created_at);
                 CREATE INDEX IF NOT EXISTS idx_saved_artifacts_request
                     ON saved_artifacts(request_id);
+                -- ── schema v14（additive；clarification_requests 表保留，
+                --      当前无业务消费方；不得降低 schema 版本或 DROP 此表） ──
+                CREATE TABLE IF NOT EXISTS clarification_requests (
+                    clarification_id TEXT PRIMARY KEY,
+                    principal_id TEXT NOT NULL,
+                    conversation_id TEXT,
+                    original_request_hash TEXT NOT NULL,
+                    questions_json TEXT NOT NULL DEFAULT '[]',
+                    context_hash TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    consumed_at TEXT,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_clarification_requests_owner
+                    ON clarification_requests(principal_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_clarification_requests_consume
+                    ON clarification_requests(clarification_id, consumed_at);
             """)
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_notes_policy_lifecycle "
@@ -453,6 +486,10 @@ class ProductDatabase:
                 "CREATE INDEX IF NOT EXISTS idx_notes_acl_public ON notes(acl_public)"
             )
             row = connection.execute("SELECT version FROM schema_meta LIMIT 1").fetchone()
+            connection.execute(
+                "INSERT OR IGNORE INTO artifact_task_claims (task_id, artifact_id, created_at) "
+                "SELECT task_id, MIN(artifact_id), MIN(created_at) FROM artifacts GROUP BY task_id"
+            )
             if row is None:
                 connection.execute("INSERT INTO schema_meta(version) VALUES (?)", (SCHEMA_VERSION,))
             elif row[0] < SCHEMA_VERSION:

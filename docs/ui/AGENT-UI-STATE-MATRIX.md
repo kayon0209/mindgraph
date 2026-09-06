@@ -15,7 +15,7 @@
 | S6 | tool failed | `tool_call_finished` status=error | 摘要「其中 1 步未完成」 | 步骤=×，原因（脱敏） | 后续步骤继续或 fail-closed 进入 S9/S11 |
 | S7 | tool denied | status=denied（ACL） | 无生成，permission 文案（现有） | 步骤=×，"权限不足" | 申请权限（request_access 指引） |
 | S8 | tool timeout | status=timeout | 摘要「其中 1 步超时」 | 步骤=×，"超时" | 重试提问（retry） |
-| S9 | clarification required | `clarification_required` | ClarificationCard（≤3 问） | 不动 | 提交补充 → 新请求 resume_from |
+| S9 | clarification required | `clarification_required` | ClarificationCard（≤3 问） | 不动 | 提交补充 → 拼接为独立新问题；不发送恢复字段 |
 | S10 | policy conflict | `policy_conflict_detected` | ConflictCard：已停止生成 + 版本族 | 引用列表 + 冲突标记 | 导出证据 / 人工裁决 |
 | S11 | insufficient evidence | completed(state=insufficient_evidence) | 现有占位文案 | 现有占位 | 补充信息（走 S9 澄清语义）或重新提问 |
 | S12 | permission denied | completed(state=permission_denied) | 现有 ShieldQuestion 占位 | 现有占位 | 联系管理员 |

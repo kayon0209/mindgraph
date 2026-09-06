@@ -59,18 +59,19 @@ ChatWorkspace
 
 `plan_created` 到达 → AgentExecutionSummary 显示「正在按 N 个步骤查询」；每个 `tool_call_started/finished` 更新 PlanPanel 对应步骤状态点；全部完成后摘要定格为「已完成 N 步」。PlanPanel 与 ToolActivityPanel 均 `details` 折叠，**不打断主区阅读**。
 
-### 4.2 澄清恢复流（关闭流 → 新请求）
+### 4.2 澄清补充流（关闭流 → 独立新问题）
 
 ```
 clarification_required 事件到达
-  → chat-main 渲染 ClarificationCard（含 clarification_id 上下文提示「以上对话上下文已保留」）
+  → chat-main 渲染 ClarificationCard（clarification_id 仅用于该卡片的定位与过期显示）
   → completed(result_state=waiting_for_input) 到达，流正常关闭
   → 用户填写并提交
-  → 前端发起新请求 POST /api/v1/assist/stream，body 带 resume_from=clarification_id + answers
+  → 前端把原问题与补充内容拼成新的 question，发起独立 POST /api/v1/assist/stream
+  → 请求体不携带 resume_from / clarification_answers；当前没有服务端恢复端点或持久化消费语义
   → 新 Turn 渲染，旧澄清卡保持已回答态（不复用 error retry 语义，无「重试」字样）
 ```
 
-超时（expires_at 已过）：提交时后端返回 invalid_clarification → 卡片就地转为「补充信息已过期，请重新提问」，按钮回到普通提问。
+超时（expires_at 已过）：前端不再提交该卡，提示「补充信息已过期，请重新提问」。服务端不提供 `invalid_clarification` 恢复协议。
 
 ### 4.3 冲突卡与降级
 

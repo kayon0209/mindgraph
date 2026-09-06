@@ -29,6 +29,7 @@ from domain.evidence import (
     PolicyConflictEntry,
 )
 from domain.models import ChatRequest, Citation
+from infrastructure.date_utils import parse_date_safe
 
 logger = logging.getLogger("mindgraph.evidence")
 
@@ -161,7 +162,7 @@ class EvidenceQueryService:
         return EvidenceBundle(
             trace_id=str(uuid.uuid4()),
             query=request.question,
-            as_of=request.query_date,
+            as_of=parse_date_safe(request.query_date),
             result_state=state,
             route=EvidenceRouteInfo(
                 name=decision.route,

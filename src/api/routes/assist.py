@@ -49,14 +49,13 @@ def assist(payload: AssistRequest, request: Request) -> AssistResult:
     但结果不再回传客户端。
     """
     scope = resolve_access_scope(request)
-    actor = current_actor(request)
     container = get_container()
     audit_metadata = {"scope_user": (scope or {}).get("user")}
     if container.privacy_log:
         audit_metadata["question"] = payload.question[:80]
     record_access_audit(
         container.database,
-        actor=actor,
+        actor=current_actor(request),
         action="assist",
         resource="assist",
         decision="allow",
@@ -164,10 +163,11 @@ async def assist_agent_stream(payload: AssistRequest, request: Request):
         raise HTTPException(status_code=404, detail="assist agent is disabled")
 
     scope = resolve_access_scope(request)
+    actor = current_actor(request)
     container = get_container()
     record_access_audit(
         container.database,
-        actor=current_actor(request),
+        actor=actor,
         action="assist_stream",
         resource="assist/agent/stream",
         decision="allow",

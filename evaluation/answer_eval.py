@@ -141,7 +141,8 @@ def evaluate_answer_case(case: dict[str, Any], prediction: dict[str, Any]) -> di
             if str(resource).strip()
         ]
         cited_paths = " ".join(str(item.get("vault_path") or "") for item in (prediction.get("citations") or []))
-        acl_leakage = float(any(token in cited_paths.lower() for token in denied_tokens))
+        normalized_cited_paths = cited_paths.lower().replace("-", "_")
+        acl_leakage = float(any(token in normalized_cited_paths for token in denied_tokens))
     conflict_accuracy = float(
         result_state == "conflicting_evidence"
         if case.get("category") == "conflict" or case.get("query_type") == "conflict"

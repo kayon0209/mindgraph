@@ -9,20 +9,25 @@
 
 ### 1.1 前置依赖
 
-- Python ≥ 3.11
+- CPython 3.13.15（仓库 `.python-version` 与 `uv.lock` 的唯一支持运行时）
+- uv 0.12.3（CI 与 Docker 固定版本）
+- SQLite ≥ 3.51.3，或精确回补版本 3.44.6 / 3.50.7；其他版本会在产品数据库连接前 fail closed
 - Node.js ≥ 18（Web 前端，可选）
+
+仓库 `Dockerfile.api` 固定为 CPU 推理镜像：锁定的 PyTorch 来自官方 CPU wheel 索引，镜像内编译的 SQLite 为 3.53.4。它不提供 GPU/CUDA 加速；若部署目标需要 GPU，应另行设计、锁定并验收独立镜像。
 
 ### 1.2 启动步骤
 
 ```bash
-# 1) 安装依赖
-pip install -e ".[dev]"
+# 1) 安装固定 Python 与锁定依赖
+uv python install 3.13.15
+uv sync --frozen --extra dev
 
 # 2) 复制配置（demo 模式，无需密钥即可启动）
 cp .env.example .env
 
 # 3) 启动 API
-python -m uvicorn api.main:app --reload
+uv run --frozen --no-sync python -m uvicorn api.main:app --app-dir src --reload
 
 # 4)（可选）启动 Web 前端
 cd web
@@ -256,7 +261,7 @@ pytest tests/test_directory_connector.py -v
 
 ### 3.3 MCP 只读工具
 
-MindGraph 提供两种 MCP 传输：
+MindGraph 提供本地 MCP stdio transport，以及一个复用相同工具目录的受认证 HTTP JSON-RPC 通道：
 
 #### 3.3.1 本地 stdio MCP（开发者调试）
 
@@ -266,7 +271,7 @@ python -m mcp_server
 
 从 stdin 逐行读取 JSON-RPC，向 stdout 写出响应。principal 可通过 `MCP_PRINCIPAL` 环境变量注入（仅本地调试）。
 
-#### 3.3.2 企业 HTTP MCP
+#### 3.3.2 受认证 HTTP JSON-RPC 工具通道
 
 ```
 POST /api/v1/mcp
@@ -283,6 +288,8 @@ Content-Type: application/json
   }
 }
 ```
+
+该路由不是标准 MCP Streamable HTTP/OAuth transport；当前远程标准 transport 尚未实现，不应将此路由宣传为通用远程 MCP Server。
 
 #### 3.3.3 可用工具（全部只读）
 
@@ -346,13 +353,13 @@ pytest tests/test_oidc.py -v
 
 ### 4.1 Schema 版本
 
-当前 `SCHEMA_VERSION=7`。启动时自动迁移：
+当前 `SCHEMA_VERSION=15`。启动时以加法方式创建或升级治理、会话、任务和
+artifact 表；已有 `notes` 的工作区/部门/ACL 列也会被补齐。v15 新增
+`artifact_task_claims`：为每个任务保留一个 canonical artifact 领取记录，升级时
+会从既有 artifact 回填，**不会删除**历史重复 artifact。
 
-- `notes` 表新增 `workspace` / `department` / `acl_json` / `acl_public` 列；
-- 新增 `connector_syncs` 表（连接器同步审计）；
-- 新增 `access_audit` 表（权限审计）。
-
-老库迁移不丢数据，迁移逻辑见 `infrastructure/database.py` 的 `_ensure_columns`。
+老库迁移不丢数据；兼容和回填逻辑见 `infrastructure/database.py`，并由
+`tests/test_schema_compat.py` 覆盖。
 
 ### 4.2 备份
 

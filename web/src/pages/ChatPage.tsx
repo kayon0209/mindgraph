@@ -26,6 +26,7 @@ import { api, assistAgentEnabled, streamAssistAgent, streamChat } from "../lib/a
 import { citationValidity, fidelityMissingMarks as citationFidelityMarks, summarizeCitationValidity } from "../lib/citation-status";
 import { buildEvidenceMarkdown, downloadTextFile, evidenceFilename } from "../lib/export-evidence";
 import { completionGenerationState, completionViewState, policyConflictItems } from "../lib/policy-conflicts";
+import { shouldSuppressAnswer } from "../lib/answer-visibility";
 import { routeDecisionView } from "../lib/route-decision";
 import { confirmDeleteLocalSession, fetchServerConversationsEnabled, migrateAllSessions, migratedSessionsWithLocalCopy, sessionsPendingMigration } from "../lib/session-migration";
 import { buildGuidedTasks } from "../lib/onboarding-tasks";
@@ -501,7 +502,10 @@ export function ChatPage() {
         applicable: data.applicable !== false,
         checks: (data.checks as AssistIntegrity["checks"]) ?? {},
       };
-      updateTurn(turnId, { citationIntegrity: integrity });
+      patchTurnWith((turn) => ({
+        citationIntegrity: integrity,
+        answer: integrity.applicable && !integrity.passed ? "" : turn.answer,
+      }));
       return;
     }
     // ── 既有 14 事件（行为不变） ──
@@ -524,7 +528,9 @@ export function ChatPage() {
       dispatch({ type: "generation_started" });
     }
     if (event.event === "answer_delta" && typeof data.text === "string") {
-      appendAnswer(turnId, data.text);
+      patchTurnWith((turn) => (
+        shouldSuppressAnswer(turn) ? {} : { answer: `${turn.answer}${data.text}` }
+      ));
     }
     if (event.event === "citations" && Array.isArray(data.citations)) {
       dispatch({ type: "citations", citations: data.citations as Citation[] });
@@ -544,6 +550,9 @@ export function ChatPage() {
       // I4：降级不再只是一个隐藏的步骤状态，原因要对用户可见
       const reason = typeof data.reason === "string" && data.reason ? data.reason : null;
       degradedRef.current = reason;
+      if (event.event === "policy_conflict_detected") {
+        patchTurnWith(() => ({ answer: "", resultState: "conflicting_evidence" }));
+      }
       dispatch({ type: "degraded", reason });
     }
     if (event.event === "completed") {
@@ -553,8 +562,8 @@ export function ChatPage() {
         retrieval: result.retrieval_trace ? "done" : stepsRef.current.retrieval,
         generation: completionGenerationState(result),
       };
-      updateTurn(turnId, {
-        answer: result.answer,
+      patchTurnWith((turn) => ({
+        answer: shouldSuppressAnswer({ ...turn, resultState: completionViewState(result) }) ? "" : result.answer,
         state: "complete",
         requestId: result.request_id,
         citations: result.citations || [],
@@ -568,7 +577,7 @@ export function ChatPage() {
         elapsedMs: startedAtRef.current ? Date.now() - startedAtRef.current : undefined,
         model: result.model,
         indexVersion: result.index_version ?? null,
-      });
+      }));
       dispatch({ type: "completed", result: {
         citations: (result.citations || []) as Citation[],
         trace: (result.retrieval_trace || null) as RetrievalTrace | null,
@@ -1146,16 +1155,16 @@ export function ChatPage() {
                       </div>
                     ) : null}
                     {/* 研究项①⑤：Markdown 渲染 + [citation-N] 内联锚点（点击定位证据链） */}
-                    {turn.answer ? (
+                    {turn.answer && !shouldSuppressAnswer(turn) ? (
                       <AnswerBody
                         citations={turn.citations ?? []}
                         onCitationClick={(rank) => focusCitation(turn.id, rank)}
                         streaming={turn.state === "streaming"}
                         text={turn.answer}
                       />
-                    ) : (
+                    ) : !shouldSuppressAnswer(turn) ? (
                       <p>正在核对制度与证据……</p>
-                    )}
+                    ) : null}
                     {/* 研究项②：引用了非现行有效版本时，结论旁必须给出显式警示 */}
                     {turn.state === "complete" && (turn.citations?.length ?? 0) > 0 ? (
                       <VersionWarning asOf={turn.queryDate} citations={turn.citations ?? []} />
@@ -1662,8 +1671,7 @@ function FollowUpSuggestions({ turn, onSubmit }: { turn: Turn; onSubmit: (questi
   );
 }
 
-/** M2：澄清卡（UI-G 设计规格 §4.2；P0-1 诚实化）——提交即"新的补充问题请求"，
- * 补充信息拼进 question 重新核对；不声称恢复服务端上一轮执行，不发送 resume_from */
+/** M2：澄清卡——提交时将补充信息拼进原问题，作为新的问题处理。 */
 function ClarificationCard({
   clarification,
   onResolved,
@@ -1687,7 +1695,9 @@ function ClarificationCard({
   return (
     <div className="clarification-card" aria-live="polite">
       <strong>为了准确回答，请补充 {clarification.questions.length} 个信息</strong>
-      <span className="clarification-context">提交后将基于补充信息重新核对制度依据，作为新的问题处理。</span>
+      <span className="clarification-context">
+        提交后将基于补充信息重新核对制度依据，作为新的问题处理。
+      </span>
       <ol>
         {clarification.questions.map((item) => (
           <li key={item}>

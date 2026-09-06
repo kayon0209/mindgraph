@@ -48,6 +48,7 @@ def submit_task(
             constraints=payload.constraints,
             workspace=principal.get("workspace"),
             department=principal.get("department"),
+            directory_scan_authorized="admin" in principal.get("roles", []),
         )
     except InvalidTaskConstraints as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

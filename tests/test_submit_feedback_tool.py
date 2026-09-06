@@ -224,9 +224,12 @@ def test_bad_cases_endpoints_admin_only(tmp_path: Path):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from api.main import app as real_app
     from api.routes import feedback as feedback_route
+    from application.feedback_service import FeedbackService
 
+    database = ProductDatabase(tmp_path / "bad-cases.sqlite3")
+    database.initialize()
+    override_container(SimpleNamespace(database=database, feedback=FeedbackService(database)))
     mini = FastAPI()
     mini.include_router(feedback_route.router, prefix="/api/v1")
     client = TestClient(mini, raise_server_exceptions=False)
@@ -236,5 +239,7 @@ def test_bad_cases_endpoints_admin_only(tmp_path: Path):
         assert resp.status_code == 200
     finally:
         client.close()
+        override_container(None)
+        database.close()
         # 门禁存在性由 require_role 结构保证（非 admin 主体 403 路径在
         # test_auth_boundaries 已覆盖 role 语义）

@@ -22,6 +22,7 @@ from api.dependencies import get_container
 from api.schemas.chat import ChatRequest
 from api.sse import iter_sync_events
 from application.conversation_service import ConversationNotFoundError, SequenceConflictError
+from domain.models import RetrievalStrategy
 
 logger = logging.getLogger("mindgraph.api.conversations_stream")
 
@@ -38,7 +39,7 @@ class ConversationMessageRequest(BaseModel):
     """会话内续问：question 必填；其余检索参数与 ChatRequest 同语义。"""
 
     question: str = Field(min_length=1, max_length=2000)
-    retrieval_strategy: str = "auto"
+    retrieval_strategy: RetrievalStrategy = "auto"
     final_top_k: int = Field(default=5, ge=1, le=50)
     query_date: str | None = None
     include_historical: bool = False

@@ -107,8 +107,7 @@ export async function streamChat(
 }
 
 /** M2：确定性 Assist Agent 流（AGENT_ASSIST_ENABLED 开启时可用；404 = 服务端未开）。
- * P0-1：AssistRequest 契约没有 resume_from / clarification_answers 字段——
- * 澄清卡提交是一次全新的补充问题请求（question 拼接补充信息），不声称服务端恢复。 */
+ * P0-1：澄清补充作为新的问题提交；AssistRequest 契约没有 resume_from。 */
 export async function streamAssistAgent(
   payload: ChatRequest,
   onEvent: (event: StreamEvent) => void,

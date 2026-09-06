@@ -213,22 +213,27 @@ class TestMiningRules:
         assert result["proposed_created"] == 0
 
 
-@pytest.fixture(scope="module")
-def api_client(tmp_path_factory):
+@pytest.fixture
+def api_client(tmp_path):
     from unittest.mock import patch
 
     import api.auth as auth
+    from api.dependencies import override_container
 
     previous_auth_mode = auth.AUTH_MODE
     auth.AUTH_MODE = "off"
-    test_database = ProductDatabase(tmp_path_factory.mktemp("miner_api") / "product.sqlite3")
-    with patch("api.dependencies.ProductDatabase", return_value=test_database), \
-         patch("api.dependencies.DocumentLifecycleService.import_existing_markdown"), \
-         patch("api.dependencies.ServiceContainer._register_builtin_datasets"):
-        from api.main import app
-        with TestClient(app) as c:
-            yield c, test_database
-    auth.AUTH_MODE = previous_auth_mode
+    test_database = ProductDatabase(tmp_path / "product.sqlite3")
+    override_container(None)
+    try:
+        with patch("api.dependencies.ProductDatabase", return_value=test_database), \
+             patch("api.dependencies.DocumentLifecycleService.import_existing_markdown"), \
+             patch("api.dependencies.ServiceContainer._register_builtin_datasets"):
+            from api.main import app
+            with TestClient(app) as c:
+                yield c, test_database
+    finally:
+        override_container(None)
+        auth.AUTH_MODE = previous_auth_mode
 
 
 class TestEndpoints:
@@ -254,14 +259,17 @@ class TestEndpoints:
 
     def test_concept_gaps_endpoint_contract(self, api_client):
         c, db = api_client
-        # 上一用例已写入 夜班餐补（seen_count=1）；默认阈值 2 不展示
+        # 每个 endpoint 用例使用独立临时库：第一次命中默认阈值 2 前不展示。
+        _add_question(db, "《夜班餐补》到底怎么算？", "2026-08-20T10:00:00+00:00")
+        assert c.post("/api/v1/mindgraph/relations/mine-questions", json={}).status_code == 200
         response = c.get("/api/v1/mindgraph/concept-gaps", params={"limit": 10})
         assert response.status_code == 200
         data = response.json()
         assert set(data.keys()) == {"gaps", "total"}
         assert all(term in g for g in data["gaps"] for term in ("term", "seen_count", "first_seen", "last_seen"))
+        assert data["total"] == 0
 
-        # 再问一次（显式 《》 引用才累计概念信号）→ seen_count=2 → 达到阈值出现
+        # 第二次显式 《》 引用累计到 seen_count=2，达到默认阈值后出现。
         _add_question(db, "《夜班餐补》到底怎么算？", "2026-08-21T10:00:00+00:00")
         assert c.post("/api/v1/mindgraph/relations/mine-questions", json={}).status_code == 200
         data = c.get("/api/v1/mindgraph/concept-gaps").json()

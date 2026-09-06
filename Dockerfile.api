@@ -1,49 +1,71 @@
-# ════════════════════════════════════════════
-# Stage 1: Build — 安装依赖
-# ════════════════════════════════════════════
-FROM python:3.12-slim AS builder
+# Both dependency and runtime stages use the exact Python ABI that was probed.
+ARG PYTHON_IMAGE=python:3.13.15-slim-trixie@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285
+
+# Shared compiler toolchain for the two build-only stages.
+FROM ${PYTHON_IMAGE} AS build-base
+
+RUN apt-get update -qq && \
+    apt-get install -y --no-install-recommends build-essential ca-certificates libffi-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+# The official Python slim image currently carries SQLite 3.46.1. Build a
+# verified upstream SQLite shared library so stdlib sqlite3 contains the
+# WAL-reset fix without replacing Python or using an alternate DB adapter.
+FROM build-base AS sqlite-builder
+
+ARG SQLITE_AUTOCONF=3530400
+ARG SQLITE_VERSION=3.53.4
+ARG SQLITE_SHA3=454e45f61c6bd75b7420e7190732dea03ce6639c63ada47bbc592f67fc340338
+
+RUN python -c "import hashlib, pathlib, urllib.request; url='https://www.sqlite.org/2026/sqlite-autoconf-${SQLITE_AUTOCONF}.tar.gz'; data=urllib.request.urlopen(url, timeout=60).read(); digest=hashlib.sha3_256(data).hexdigest(); assert digest == '${SQLITE_SHA3}', (digest, '${SQLITE_SHA3}'); pathlib.Path('/tmp/sqlite.tar.gz').write_bytes(data)" && \
+    mkdir -p /tmp/sqlite-src && \
+    tar -xzf /tmp/sqlite.tar.gz -C /tmp/sqlite-src --strip-components=1 && \
+    cd /tmp/sqlite-src && \
+    ./configure --prefix=/opt/sqlite --disable-static --enable-shared && \
+    make -j2 && \
+    make install
+
+# Install the application dependencies from the committed lock file.
+FROM build-base AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    UV_LINK_MODE=copy \
+    UV_HTTP_TIMEOUT=300 \
+    UV_HTTP_RETRIES=10
 
 WORKDIR /app
 
-# 安装编译依赖
-RUN apt-get update -qq && \
-    apt-get install -y --no-install-recommends \
-        gcc g++ libffi-dev && \
-    rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir uv==0.12.3
 
-# 先复制 requirements 利用 Docker 缓存层
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY pyproject.toml uv.lock ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-install-project
 
-# ════════════════════════════════════════════
-# Stage 2: Runtime — 最小运行时镜像
-# ════════════════════════════════════════════
-FROM python:3.12-slim AS runtime
+# Runtime uses the same immutable Python image and ABI as the builder.
+FROM ${PYTHON_IMAGE} AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app/src \
+    PATH=/app/.venv/bin:$PATH \
     ENVIRONMENT=production \
     LOG_FORMAT=json \
     LOG_LEVEL=INFO
 
 WORKDIR /app
 
-# 安全: 创建非 root 用户
+COPY --from=sqlite-builder /opt/sqlite/lib/libsqlite3.so* /usr/local/lib/
+RUN ldconfig && \
+    python -c "import sqlite3; assert sqlite3.sqlite_version == '3.53.4', sqlite3.sqlite_version"
+
 RUN groupadd -r appuser && useradd -r -g appuser -d /app -s /sbin/nologin appuser && \
     mkdir -p /app/data /app/evaluation && \
     chown -R appuser:appuser /app
 
-# 从 builder 复制已安装的包
-COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
-COPY --from=builder /usr/local/bin /usr/local/bin
-
-# 复制应用代码
+COPY --from=builder /app/.venv /app/.venv
 COPY --chown=appuser:appuser src ./src
 COPY --chown=appuser:appuser evaluation ./evaluation
 COPY --chown=appuser:appuser knowledge ./knowledge

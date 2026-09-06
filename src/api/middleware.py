@@ -7,7 +7,7 @@ import logging
 import time
 import uuid
 from collections import defaultdict
-from typing import Callable, cast
+from typing import Awaitable, Callable, cast
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -22,7 +22,8 @@ def _actor_from_request(request: Request) -> str:
     token = api_key or (auth_header[7:] if auth_header.startswith("Bearer ") else "")
     if not token:
         return "anonymous"
-    return f"api_key:{token[:6]}…"
+    # 审计只描述鉴权存在性；任何 token 前缀仍然属于不应落库的凭据材料。
+    return "credential_present"
 
 
 def _record_access_audit(request: Request, response: Response, elapsed_ms: float) -> None:
@@ -43,7 +44,8 @@ def _record_access_audit(request: Request, response: Response, elapsed_ms: float
                 json.dumps({
                     "status_code": response.status_code,
                     "latency_ms": elapsed_ms,
-                    "query": request.url.query,
+                    # URL query 可能含搜索词、业务 ID 或临时凭据；只记录形状。
+                    "query_param_count": len(request.query_params),
                 }, ensure_ascii=False),
                 time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             ),
@@ -57,7 +59,11 @@ def _record_access_audit(request: Request, response: Response, elapsed_ms: float
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """添加生产级安全响应头。"""
 
-    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
         response: Response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
@@ -148,7 +154,11 @@ class WatchdogMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self.timeout_seconds = float(timeout_seconds)
 
-    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
         if request.url.path.endswith("/stream") or "text/event-stream" in request.headers.get("accept", ""):
             return await call_next(request)
         try:

@@ -22,6 +22,10 @@ from pathlib import Path
 
 # 项目根目录
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
+
+from infrastructure.sqlite_runtime import require_safe_sqlite_runtime
+
 DATA_DIR = PROJECT_ROOT / "data"
 BACKUP_DIR = Path(os.getenv("BACKUP_DIR", str(DATA_DIR / "backups")))
 RETENTION_DAYS = int(os.getenv("BACKUP_RETENTION_DAYS", "30"))
@@ -72,6 +76,7 @@ def backup() -> Path:
     Returns:
         Path: 备份文件路径
     """
+    require_safe_sqlite_runtime()
     ensure_backup_dir()
     backup_file = BACKUP_DIR / get_backup_filename()
 
@@ -181,6 +186,7 @@ def restore(backup_file: Path) -> bool:
     Returns:
         bool: 恢复成功返回 True
     """
+    require_safe_sqlite_runtime()
     if not backup_file.exists():
         logger.error("Backup file not found: %s", backup_file)
         return False

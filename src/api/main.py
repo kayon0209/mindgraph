@@ -58,6 +58,7 @@ from domain.errors import (
 )
 from infrastructure.logging_config import configure_logging
 from infrastructure.settings import get_settings
+from infrastructure.sqlite_runtime import require_safe_sqlite_runtime
 
 # ── 日志配置（使用 logging_config 中的结构化日志） ──
 _settings = get_settings()
@@ -74,6 +75,7 @@ logger = logging.getLogger("mindgraph.api")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """启动时初始化 ServiceContainer，关闭时清理资源。"""
+    require_safe_sqlite_runtime()
     logger.info("application_starting", extra={"environment": _settings.ENVIRONMENT})
     container = get_container()
     logger.info("service_container_initialized")

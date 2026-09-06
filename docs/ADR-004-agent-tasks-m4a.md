@@ -15,10 +15,11 @@
 - **冲突场景**：命中 policy_key 在 as_of 有多个有效版本 → 该文档条目标记 `conflicting_evidence`，任务整体降为 `completed_with_conflicts`，不生成确定性结论段落
 - **失败场景**：检索不可用（重试后失败 → 任务 failed + error_code）；文档全部不可见（→ completed_empty，不是错误）
 
-### 任务 C：目录增量同步 → 版本变化摘要（第二轮扩展，本轮仅预留 task_type）
-- 输入：目录路径（限定 allowed_roots）、since 时间戳
-- 输出：新增/变更/归档文档清单 artifact
-- 权限/失败语义与 A 同构；实现待任务 A 稳定后按 M5-A 的逐个模式增加
+### 任务 C：目录增量同步 → 版本变化摘要（后端已实现，当前 UI 不暴露）
+- 输入：`directory_root`（可选；提供时必须位于 worker `allowed_roots`）、`since` 时间戳；不提供目录时使用当前库快照
+- 输出：按当前主体 ACL 裁剪后的新增/变更/归档文档清单 private artifact
+- 目录模式只读源文件，不写回 ID、不剪枝；会更新产品库笔记快照并写 `connector_syncs` 审计记录
+- 当前 `TasksPage` 只提交任务 A；任务 C 仅能经受认证 API 显式提交，避免界面宣称尚未提供的目录选择与授权流程
 
 ## 数据模型（schema v11）
 

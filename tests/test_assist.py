@@ -173,9 +173,13 @@ def test_mcp_tool_hidden_when_flag_off(monkeypatch):
 
     monkeypatch.setenv("ASSIST_MCP_ENABLED", "false")
     get_settings.cache_clear()
-    tool_names = {tool["name"] for tool in _tools()}
-    assert "mindgraph_assist" not in tool_names
-    get_settings.cache_clear()
+    override_container(SimpleNamespace(evidence_tool_registry=None))
+    try:
+        tool_names = {tool["name"] for tool in _tools()}
+        assert "mindgraph_assist" not in tool_names
+    finally:
+        override_container(None)
+        get_settings.cache_clear()
 
 
 def _enable_flag(monkeypatch, name: str) -> None:
@@ -429,3 +433,9 @@ def test_agent_stream_disabled_by_default_and_enabled_returns_events(tmp_path: P
         override_container(None)
         monkeypatch.delenv("AGENT_ASSIST_ENABLED", raising=False)
         get_settings.cache_clear()
+
+
+def test_assist_router_does_not_expose_clarification_resume_endpoint():
+    """P0-1 does not advertise a server-side clarification resume contract."""
+    app = _mini_assist_app()
+    assert "/api/v1/assist/agent/resume" not in app.openapi()["paths"]

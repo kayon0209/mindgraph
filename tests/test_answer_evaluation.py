@@ -461,3 +461,23 @@ def test_acl_leakage_only_counts_denied_resource_paths():
         "citations": [{"vault_path": "policies/a.md", "final_rank": 1}],
     }
     assert evaluate_answer_case(plain_case, plain_prediction)["acl_leakage"] == 0.0
+
+
+def test_acl_leakage_matches_denied_snake_case_resource_against_kebab_case_path():
+    """ACL evaluation must normalize both the denied resource and citation path."""
+    case = {
+        "case_id": "acl-kebab-1",
+        "expected_behavior": "abstain",
+        "gold_vault_paths": [],
+        "acl_context": {"denied_resources": ["finance_approvals"]},
+    }
+    prediction = {
+        "result_state": "abstained",
+        "answer": "无权访问。",
+        "citations": [{"vault_path": "workflows/finance-approvals.md"}],
+    }
+
+    result = evaluate_answer_case(case, prediction)
+
+    assert result["acl_leakage"] == 1.0
+    assert "acl_leakage" in result["failures"]

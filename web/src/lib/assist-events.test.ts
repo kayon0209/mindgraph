@@ -5,12 +5,13 @@
  * - 新 6 事件（plan/tool×2/clarification/loop_fell_back/citation_integrity_checked）
  *   的 handleEvent 分支语义（以 ChatPage 相同的数据形状驱动）；
  * - 旧客户端兼容：未知事件名不改变 Turn 状态（契约红线）；
- * - 澄清卡过期判定与"新的补充问题请求"语义（P0-1：不发送 resume_from）。
+ * - 澄清卡过期判定与补充信息作为新问题提交的语义。
  */
 
 import { describe, expect, it } from "vitest";
 
 import { parseSseFrames } from "./api";
+import { shouldSuppressAnswer } from "./answer-visibility";
 import type { AssistClarification, AssistIntegrity, AssistPlan, AssistToolCall, StreamEvent } from "../types";
 
 /** 与 ChatPage.handleEvent 的 assist 分支等价的纯函数重述（保持同一数据形状） */
@@ -71,6 +72,13 @@ function applyAssistEvent(turn: Record<string, unknown>, event: StreamEvent): Re
 }
 
 describe("M2 assist 事件 → Turn 状态", () => {
+  it("证据完整性失败或版本冲突时不展示模型正文", () => {
+    expect(shouldSuppressAnswer({ citationIntegrity: { passed: false, applicable: true, checks: {} } })).toBe(true);
+    expect(shouldSuppressAnswer({ resultState: "conflicting_evidence" })).toBe(true);
+    expect(shouldSuppressAnswer({ citationIntegrity: { passed: false, applicable: false, checks: {} } })).toBe(false);
+    expect(shouldSuppressAnswer({ resultState: "answered" })).toBe(false);
+  });
+
   it("plan_created 建立步骤序列并清空工具记录", () => {
     const turn = applyAssistEvent(
       { answer: "" },
@@ -147,22 +155,11 @@ describe("澄清卡语义（UI-G §4.2；P0-1 诚实化）", () => {
     expect(new Date(expired).getTime() < Date.now()).toBe(true);
   });
 
-  it("提交是新的补充问题请求：question 拼接补充信息，payload 不含 resume_from", () => {
-    const question = "差旅餐补标准是多少";
-    const answers = { "你关注哪个版本？": "2026-07-01 之后的现行版本" };
-    const joined = Object.values(answers).filter(Boolean).join("；");
-    // P0-1：后端 AssistRequest 没有 resume_from 字段——前端不得声称或发送服务端恢复
-    const payload: Record<string, unknown> = { question: `${question}（补充：${joined}）` };
-    expect(payload.question).toContain("补充：");
-    expect("resume_from" in payload).toBe(false);
-    expect(JSON.stringify(payload)).not.toContain("resume_from");
-  });
-
-  it("澄清卡文案：说明基于补充信息重新核对，不宣称服务端恢复", () => {
-    const clarificationCardCopy = "补充后将基于补充信息重新核对制度依据，作为新的问题请求处理";
-    expect(clarificationCardCopy).toContain("重新核对");
-    expect(clarificationCardCopy).not.toContain("恢复");
-    expect(clarificationCardCopy).not.toContain("继续上");
+  it("补充提交只构造新问题，不携带 resume 状态", () => {
+    const request = { question: "差旅餐补（补充：2026-07 之后）" };
+    expect(request.question).toContain("补充：");
+    expect("resume_from" in request).toBe(false);
+    expect("clarification_answers" in request).toBe(false);
   });
 });
 

@@ -10,8 +10,10 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from api.dependencies import override_container
 from api.routes.conversations import router as conversations_router
@@ -21,6 +23,13 @@ from application.conversation_service import (
     SequenceConflictError,
 )
 from infrastructure.database import ProductDatabase
+
+
+def test_conversation_stream_request_rejects_unknown_retrieval_strategy() -> None:
+    from api.routes.conversation_stream import ConversationMessageRequest
+
+    with pytest.raises(ValidationError):
+        ConversationMessageRequest(question="报销时限？", retrieval_strategy="unknown")
 
 
 def _build(tmp_path: Path):
@@ -172,6 +181,7 @@ def test_api_flow_on_mounted_router(tmp_path: Path):
     """开启状态下（直接挂载路由测试 app）全链路：创建→导入轮次→读消息→归档。
     principal 名以 API 实际解析为准（不猜测 auth 模式的命名）。"""
     service, database, app = _build(tmp_path)
+    override_container(SimpleNamespace(database=database, conversation_service=service))
     client = TestClient(app, raise_server_exceptions=False)
     try:
         resp = client.post("/api/v1/mindgraph/conversations", json={"title": "测试会话"})
@@ -206,6 +216,7 @@ def test_api_flow_on_mounted_router(tmp_path: Path):
         assert resp.status_code == 404
     finally:
         client.close()
+        override_container(None)
 
 
 def test_conversation_message_stream_end_to_end(tmp_path: Path):

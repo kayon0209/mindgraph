@@ -95,7 +95,7 @@ MCP_PRINCIPAL=your_name        # 名字；非空即 authenticated
 MCP_PRINCIPAL_ROLES=admin      # 可选，逗号分隔角色。admin → 全量可见
 ```
 
-**注意**：无角色主体的 allow/deny 均空 → 属于受限 scope，**私有内容不可见**（这是 ACL 语义，不是故障）。企业部署请走 HTTP MCP（`/api/v1/mcp`，API Key 认证 + 审计 + 速率限制）。
+**注意**：无角色主体的 allow/deny 均空 → 属于受限 scope，**私有内容不可见**（这是 ACL 语义，不是故障）。受控内网接入可走 `/api/v1/mcp`（API Key 认证 + 审计 + 速率限制），但该路由是 HTTP JSON-RPC 工具通道，不是标准 MCP Streamable HTTP/OAuth transport。
 
 ## 推荐的 Agent 使用模式
 

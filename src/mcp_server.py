@@ -2,7 +2,8 @@
 
 分两层：
 - 早期本地 stdio MCP：仅用于开发者本地调试，每个工具默认只读；
-- 企业 HTTP MCP：挂载于 /api/v1/mcp，走 API Key 认证 + ACL + 审计 + 速率限制。
+- 受认证 HTTP JSON-RPC 工具通道：挂载于 /api/v1/mcp，走 API Key 认证 + ACL + 审计 + 速率限制；
+  它不是标准 MCP Streamable HTTP/OAuth transport。
 
 实现原则（对齐 Phase 5）：
 - MCP 是 MindGraph 的交付通道，不是护城河；
@@ -377,7 +378,9 @@ def _call_tool(
         chat_service = getattr(container, "mindgraph_chat", None)
         if chat_service is not None:
             evidence_service = EvidenceQueryService(chat_service)
-            request = _ChatRequest(question=query, retrieval_strategy=strategy, final_top_k=top_k)
+            request = _ChatRequest.model_validate(
+                {"question": query, "retrieval_strategy": strategy, "final_top_k": top_k}
+            )
             result = evidence_service.query(request, access_scope=scope, excerpt_limit=400)
             citations = [
                 {

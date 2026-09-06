@@ -28,6 +28,8 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 
+from infrastructure.sqlite_runtime import require_safe_sqlite_runtime
+
 RESULTS: list[dict] = []
 
 
@@ -44,6 +46,7 @@ BUSINESS_TABLES = ("notes", "query_logs", "access_audit", "conversations", "agen
 
 def snapshot_fingerprint(db_path: Path) -> dict:
     """数据指纹：表集 + 每表行数 + schema 版本 + notes 标题排序哈希。"""
+    require_safe_sqlite_runtime()
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
@@ -66,6 +69,7 @@ def snapshot_fingerprint(db_path: Path) -> dict:
 
 
 def run_drill() -> None:
+    require_safe_sqlite_runtime()
     live_db = PROJECT_ROOT / "data" / "product" / "product.sqlite3"
     if not live_db.exists():
         record("PRE", "FAIL", f"live database missing: {live_db}")

@@ -151,6 +151,16 @@ def test_idle_runner_skips_write_path(tmp_path: Path):
     assert runner._has_pending_work() is True
 
 
+def test_runner_inherits_container_worker_allowed_roots(tmp_path: Path):
+    """The production runner must preserve the container's audited directory boundary."""
+    container, _service = _container(tmp_path)
+    container.task_worker.allowed_roots = (tmp_path / "knowledge",)
+
+    runner = TaskWorkerRunner(container)
+
+    assert runner.worker.allowed_roots == (tmp_path / "knowledge",)
+
+
 def test_execute_retries_on_locked(tmp_path: Path, monkeypatch):
     """语句级 locked 重试：第一次 locked、第二次成功 → 调用方无感知。
     sqlite3.Connection 不可 patch——在实例上替换 _cursor_with_retry 返回的

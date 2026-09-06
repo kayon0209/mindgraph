@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+import sqlite3
 
 import pytest
 
@@ -117,6 +118,33 @@ def test_submit_is_idempotent(tmp_path: Path):
     assert other["task_id"] != first["task_id"]
 
 
+def test_submit_returns_existing_task_when_insert_loses_idempotency_race(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A unique-key race must return the original task instead of leaking IntegrityError."""
+    service, _worker, database = _build(tmp_path)
+    existing = service.submit(principal_id="user-a", idempotency_key="race-key-1234", constraints=CONSTRAINTS)
+    real_fetch_one = database.fetch_one
+    first_lookup = True
+
+    def stale_first_lookup(sql: str, params: tuple = ()):
+        nonlocal first_lookup
+        if first_lookup and "SELECT task_id, status FROM agent_tasks" in sql:
+            first_lookup = False
+            return None
+        return real_fetch_one(sql, params)
+
+    def losing_insert(sql: str, params: tuple = ()) -> int:
+        if "INSERT INTO agent_tasks" in sql:
+            raise sqlite3.IntegrityError("UNIQUE constraint failed")
+        raise AssertionError(f"unexpected write: {sql}")
+
+    monkeypatch.setattr(database, "fetch_one", stale_first_lookup)
+    monkeypatch.setattr(database, "execute", losing_insert)
+
+    result = service.submit(principal_id="user-a", idempotency_key="race-key-1234", constraints=CONSTRAINTS)
+
+    assert result["task_id"] == existing["task_id"]
+
+
 def test_completed_task_not_revived_by_resubmit(tmp_path: Path):
     service, worker, _db = _build(tmp_path)
     task = service.submit(principal_id="user-a", idempotency_key="key-12345678", constraints=CONSTRAINTS)
@@ -216,11 +244,38 @@ def test_concurrent_claim_single_winner(tmp_path: Path):
     assert (claimed_a is None) != (claimed_b is None)  # 恰一个抢到
 
 
+def test_expired_worker_cannot_write_artifact_or_terminal_state(tmp_path: Path):
+    """租约被接管后，旧 worker 既不能落 artifact，也不能覆盖新 owner 的状态。"""
+    service, _worker, db = _build(tmp_path)
+    task = service.submit(principal_id="user-a", idempotency_key="lease-fence-0001", constraints=CONSTRAINTS)
+    stale_worker = TaskWorker(db, lambda: None, PolicyConflictService(db), owner="worker-stale")
+    current_worker = TaskWorker(db, lambda: None, PolicyConflictService(db), owner="worker-current")
+    assert stale_worker.claim_next() is not None
+    db.execute(
+        "UPDATE agent_tasks SET lease_expires_at=? WHERE task_id=?",
+        ((datetime.now(UTC) - timedelta(seconds=1)).isoformat(), task["task_id"]),
+    )
+    assert current_worker.claim_next() is not None
+
+    assert stale_worker._write_delta_artifact(task["task_id"], "user-a", {"since": "2026-09-01"}) is None
+    stale_worker._fail(task["task_id"], code="worker_exception", message="stale worker must not win")
+
+    row = db.fetch_one("SELECT status, lease_owner FROM agent_tasks WHERE task_id=?", (task["task_id"],))
+    assert row["status"] == TaskStatus.running.value
+    assert row["lease_owner"] == "worker-current"
+    assert db.fetch_one("SELECT COUNT(*) AS c FROM artifacts WHERE task_id=?", (task["task_id"],))["c"] == 0
+
+    artifact_id = current_worker._write_delta_artifact(task["task_id"], "user-a", {"since": "2026-09-01"})
+    assert artifact_id is not None
+    assert db.fetch_one("SELECT COUNT(*) AS c FROM artifacts WHERE task_id=?", (task["task_id"],))["c"] == 1
+
+
 def test_attempt_budget_exhaustion_fails(tmp_path: Path):
     service, worker, db = _build(tmp_path, scenario="empty")
     task = service.submit(principal_id="user-a", idempotency_key="key-12345678", constraints=CONSTRAINTS)
     # 直接把尝试次数推到上限（避免造 3 次真实失败循环）
     db.execute("UPDATE agent_tasks SET attempt_count=? WHERE task_id=?", (worker.max_attempts, task["task_id"]))
+    assert worker.claim_next() is not None
     # empty 场景实际会 completed_empty；用检索异常路径验证 fail 才是目的——改为直接验证 worker._fail 状态写入
     failed = worker._fail(task["task_id"], code="retrieval_unavailable", message="x")
     assert failed["status"] == TaskStatus.failed.value and failed["error_code"] == "retrieval_unavailable"
@@ -481,6 +536,7 @@ def test_delta_sync_directory_root_scans_real_directory(tmp_path: Path):
         task_type="directory_delta_sync",
         constraints={"since": "2026-09-01T00:00:00", "directory_root": str(source)},
         workspace="corp-finance",
+        directory_scan_authorized=True,
     )
     assert task["status"] == "queued"
     # 其余目录的笔记不得混入：seed 一批库内旧笔记（私有，corp-finance 主体不可见）
@@ -521,6 +577,7 @@ def test_delta_sync_directory_root_outside_allowed_roots_rejected(tmp_path: Path
         principal_id="u1", idempotency_key="delta-dir-0002",
         task_type="directory_delta_sync",
         constraints={"since": "2026-09-01T00:00:00", "directory_root": str(outside)},
+        directory_scan_authorized=True,
     )
     worker_with_roots = TaskWorker(
         db,
@@ -547,6 +604,7 @@ def test_delta_sync_directory_root_missing_fails_task(tmp_path: Path):
         principal_id="u1", idempotency_key="delta-dir-0003",
         task_type="directory_delta_sync",
         constraints={"since": "2026-09-01T00:00:00", "directory_root": str(allowed_root / "ghost")},
+        directory_scan_authorized=True,
     )
     worker_with_roots = TaskWorker(
         db,
@@ -568,4 +626,16 @@ def test_delta_sync_directory_root_relative_path_rejected(tmp_path: Path):
             principal_id="u1", idempotency_key="delta-dir-0004",
             task_type="directory_delta_sync",
             constraints={"since": "2026-09-01T00:00:00", "directory_root": "relative/path"},
+        )
+
+
+def test_directory_root_requires_trusted_admin_authorization(tmp_path: Path):
+    """普通 TaskService 调用不能把本机目录扫描写入异步队列。"""
+    service, _worker, _db = _build(tmp_path)
+    with pytest.raises(InvalidTaskConstraints, match="admin-authorized"):
+        service.submit(
+            principal_id="u1",
+            idempotency_key="delta-directory-auth-0001",
+            task_type="directory_delta_sync",
+            constraints={"since": "2026-09-01T00:00:00", "directory_root": str(tmp_path)},
         )

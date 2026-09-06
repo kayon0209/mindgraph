@@ -13,7 +13,7 @@
 <p>
   <a href="https://github.com/kayon0209/mindgraph/actions/workflows/ci-cd.yml"><img src="https://img.shields.io/github/actions/workflow/status/kayon0209/mindgraph/ci-cd.yml?branch=main&style=flat-square&label=CI" alt="CI"></a>
   <a href="https://github.com/kayon0209/mindgraph/stargazers"><img src="https://img.shields.io/github/stars/kayon0209/mindgraph?style=flat-square&logo=github" alt="GitHub stars"></a>
-  <img src="https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.11+">
+  <img src="https://img.shields.io/badge/Python-3.13.15-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.13.15">
   <img src="https://img.shields.io/badge/MCP-ready-7C3AED?style=flat-square" alt="MCP ready">
   <img src="https://img.shields.io/badge/local--first-yes-0F766E?style=flat-square" alt="Local first">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-22C55E?style=flat-square" alt="MIT License"></a>
@@ -83,7 +83,7 @@ The first vertical is policy-heavy knowledge such as expense, finance and compli
 
 | Layer | Technology |
 |---|---|
-| Runtime | Python 3.11+ |
+| Runtime | CPython 3.13.15; SQLite ≥3.51.3 or approved backport 3.44.6/3.50.7 |
 | API | FastAPI (REST + SSE), MCP server |
 | Retrieval | BGE embeddings · FAISS (dense) · BM25 (sparse) · RRF fusion |
 | Storage | SQLite (WAL), versioned FAISS index |
@@ -92,7 +92,7 @@ The first vertical is policy-heavy knowledge such as expense, finance and compli
 
 ## Quickstart
 
-> **Prerequisite:** Python 3.11 or newer.
+> **Prerequisite:** CPython 3.13.15 and [uv](https://docs.astral.sh/uv/). Product WAL paths fail closed on an unapproved SQLite runtime.
 
 ### Option A: verify the pipeline without keys
 
@@ -102,10 +102,9 @@ The public `demo-vault/` contains synthetic policies, workflows and cases. This 
 git clone https://github.com/kayon0209/mindgraph.git
 cd mindgraph
 
-python -m venv .venv
-source .venv/bin/activate              # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-python scripts/validate_mindgraph_offline.py
+uv python install 3.13.15
+uv sync --frozen --extra dev
+uv run --frozen --no-sync python scripts/validate_mindgraph_offline.py
 ```
 
 The offline check uses deterministic fake embeddings and a fake LLM. It proves that the engineering path is reproducible; it does not claim real-model quality.

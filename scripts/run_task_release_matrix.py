@@ -19,6 +19,7 @@ import json
 import statistics
 import sys
 import tempfile
+import threading
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -86,14 +87,14 @@ def build(tmp: Path):
 CONSTRAINTS = {"document_query": "费用报销核对", "top_k": 5}
 
 
-def case_normal(service, worker):
+def case_normal(service, worker, _db):
     service.submit(principal_id="u1", idempotency_key="mp-normal-0001", constraints=CONSTRAINTS)
     result = worker.run_once()
     ok = result and result["status"] == "completed"
     record("MP1 正常完成", "PASS" if ok else "FAIL", f"status={result['status'] if result else 'none'}")
 
 
-def case_duplicate(service, worker, db):
+def case_duplicate(service, _worker, db):
     first = service.submit(principal_id="u1", idempotency_key="mp-dup-00001", constraints=CONSTRAINTS)
     second = service.submit(principal_id="u1", idempotency_key="mp-dup-00001", constraints=CONSTRAINTS)
     count = db.fetch_one("SELECT COUNT(*) AS c FROM agent_tasks WHERE idempotency_key='mp-dup-00001'")["c"]
@@ -101,25 +102,32 @@ def case_duplicate(service, worker, db):
     record("MP2 重复提交幂等", "PASS" if ok else "FAIL", f"tasks={count}")
 
 
-def case_concurrent_claim(service, _worker, db):
-    """并发语义：两个 worker 的 claim 必须落在不同任务上（同一任务不可被双认领）。
-    库中可能残留此前场景的 queued 任务——各自被认领是正确行为，断言的是
-    "没有同一任务被两个 worker 同时持有"。"""
+def case_concurrent_claim(tmp: Path):
+    """并行抢同一个隔离队列；必须恰有一个 worker 获得唯一任务。"""
+    service, _worker, db = build(tmp / "mp3-concurrent")
     service.submit(principal_id="u1", idempotency_key="mp-cc-0000002", constraints=CONSTRAINTS)
     a = TaskWorker(db, lambda: None, PolicyConflictService(db), owner="wa2")
     b = TaskWorker(db, lambda: None, PolicyConflictService(db), owner="wb2")
-    ca, cb = a.claim_next(), b.claim_next()
-    both = ca is not None and cb is not None
-    overlap = both and ca["task_id"] == cb["task_id"]
-    ok = not overlap
-    detail = f"a={ca['task_id'][-6:] if ca else None},b={cb['task_id'][-6:] if cb else None}"
-    if overlap:
-        row = db.fetch_one("SELECT lease_owner, status FROM agent_tasks WHERE task_id=?", (ca["task_id"],))
-        detail += f" double-claim! owner={row['lease_owner']}"
+    barrier = threading.Barrier(2)
+    claimed: list[tuple[str, dict | None]] = []
+
+    def claim(label: str, worker: TaskWorker) -> None:
+        barrier.wait(timeout=5)
+        claimed.append((label, worker.claim_next()))
+
+    threads = [threading.Thread(target=claim, args=("a", a)), threading.Thread(target=claim, args=("b", b))]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+    winners = [(label, task) for label, task in claimed if task is not None]
+    ok = len(claimed) == 2 and len(winners) == 1
+    detail = f"claims={[(label, task['task_id'][-6:] if task else None) for label, task in claimed]}"
     record("MP3 并发 claim 单赢家", "PASS" if ok else "FAIL", detail)
+    db.close()
 
 
-def case_cancel_queued(service, worker):
+def case_cancel_queued(service, worker, _db):
     task = service.submit(principal_id="u1", idempotency_key="mp-cancel-001", constraints=CONSTRAINTS)
     service.cancel_task(task_id=task["task_id"], principal_id="u1")
     worker.run_once()
@@ -143,12 +151,13 @@ def case_lease_recovery(service, worker, db):
 def case_attempt_budget(service, worker, db):
     task = service.submit(principal_id="u1", idempotency_key="mp-attempt-01", constraints=CONSTRAINTS)
     db.execute("UPDATE agent_tasks SET attempt_count=? WHERE task_id=?", (worker.max_attempts, task["task_id"]))
+    worker.claim_next()
     failed = worker._fail(task["task_id"], code="retrieval_unavailable", message="注入失败")
     ok = failed["status"] == "failed" and failed["error_code"] == "retrieval_unavailable"
     record("MP6 attempt 超限失败", "PASS" if ok else "FAIL", f"status={failed['status']}")
 
 
-def case_owner_isolation(service, worker):
+def case_owner_isolation(service, worker, _db):
     task = service.submit(principal_id="u1", idempotency_key="mp-iso-000001", constraints=CONSTRAINTS)
     worker.run_once()
     try:
@@ -159,7 +168,7 @@ def case_owner_isolation(service, worker):
     record("MP7 owner 隔离", "PASS" if ok else "FAIL", "cross-principal → not found" if ok else "LEAKED")
 
 
-def case_constraints_whitelist(service, worker):
+def case_constraints_whitelist(service, _worker, _db):
     try:
         service.submit(principal_id="u1", idempotency_key="mp-white-001", constraints={"document_query": "q", "injected": 1})
         ok = False
@@ -168,7 +177,7 @@ def case_constraints_whitelist(service, worker):
     record("MP8 约束白名单", "PASS" if ok else "FAIL", "injected field rejected" if ok else "accepted!")
 
 
-def case_flag_off(service, worker):
+def case_flag_off(_service, _worker, _db):
     import importlib
     import os
 
@@ -215,6 +224,15 @@ def run_benchmark(tmp: Path, runs: int = 20):
     db.close()
 
 
+def run_isolated_case(tmp: Path, name: str, case) -> None:
+    """每个 must-pass case 独占队列，避免遗留 queued task 污染断言。"""
+    service, worker, db = build(tmp / name)
+    try:
+        case(service, worker, db)
+    finally:
+        db.close()
+
+
 JSON_ONLY = False
 
 
@@ -228,19 +246,18 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="mg-matrix-") as raw_tmp:
         tmp = Path(raw_tmp)
-        service, worker, db = build(tmp / "matrix")
         try:
-            case_normal(service, worker)
-            case_duplicate(service, worker, db)
-            case_concurrent_claim(service, worker, db)
-            case_cancel_queued(service, worker)
-            case_lease_recovery(service, worker, db)
-            case_attempt_budget(service, worker, db)
-            case_owner_isolation(service, worker)
-            case_constraints_whitelist(service, worker)
-            case_flag_off(service, worker)
+            run_isolated_case(tmp, "mp1-normal", case_normal)
+            run_isolated_case(tmp, "mp2-duplicate", case_duplicate)
+            case_concurrent_claim(tmp)
+            run_isolated_case(tmp, "mp4-cancel", case_cancel_queued)
+            run_isolated_case(tmp, "mp5-lease", case_lease_recovery)
+            run_isolated_case(tmp, "mp6-attempt", case_attempt_budget)
+            run_isolated_case(tmp, "mp7-isolation", case_owner_isolation)
+            run_isolated_case(tmp, "mp8-constraints", case_constraints_whitelist)
+            run_isolated_case(tmp, "mp9-flag", case_flag_off)
         finally:
-            db.close()
+            pass
         run_benchmark(tmp, runs=args.runs)
 
     for item in RESULTS:

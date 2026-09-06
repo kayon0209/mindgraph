@@ -87,7 +87,7 @@ class StdioMcpClient:
         return json.loads(response["result"]["content"][0]["text"])
 
 
-def run_cases(principal_all: bool = True) -> list[dict]:
+def run_cases(principal_all: bool = True, *, query: str = DEFAULT_QUERY) -> list[dict]:
     results: list[dict] = []
 
     def record(case: str, status: str, detail: str = "") -> None:
@@ -132,7 +132,7 @@ def run_cases(principal_all: bool = True) -> list[dict]:
 
         # C3 检索主路径：citations 带版本/生效期/policy_key 元数据
         try:
-            r = client.tool_call("mindgraph_search", {"query": DEFAULT_QUERY, "top_k": 5, "strategy": "hybrid"}, msg_id="c3")
+            r = client.tool_call("mindgraph_search", {"query": query, "top_k": 5, "strategy": "hybrid"}, msg_id="c3")
             body = StdioMcpClient.tool_body(r)
             citations = body["citations"]
             assert citations, "no citations returned"
@@ -204,7 +204,7 @@ def run_cases(principal_all: bool = True) -> list[dict]:
             samples = []
             for i in range(5):
                 started = time.perf_counter()
-                client.tool_call("mindgraph_search", {"query": DEFAULT_QUERY, "top_k": 3}, msg_id=f"c8-{i}")
+                client.tool_call("mindgraph_search", {"query": query, "top_k": 3}, msg_id=f"c8-{i}")
                 samples.append((time.perf_counter() - started) * 1000)
             p95 = sorted(samples)[int(0.95 * len(samples)) - 1]
             record("C8", "PASS", f"search latency ~p95 {p95:.0f} ms (5 samples, informational)")
@@ -227,7 +227,7 @@ def main() -> int:
     args = parser.parse_args()
     JSON_ONLY, RESTRICTED = args.json, args.restricted
 
-    results = run_cases()
+    results = run_cases(query=args.query)
     for item in results:
         print(json.dumps(item, ensure_ascii=False))
     blocking = [item for item in results if item["case"] not in {"C8"} and item["status"] == "FAIL"]

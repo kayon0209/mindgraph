@@ -36,6 +36,7 @@ class TaskWorkerRunner:
             lease_seconds=lease_seconds,
             max_attempts=max_attempts,
             owner="in-process-runner",
+            allowed_roots=container.task_worker.allowed_roots,
         )
 
     @property

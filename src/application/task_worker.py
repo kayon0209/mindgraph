@@ -66,7 +66,7 @@ class TaskWorker:
 
         并发/多实例语义：SQLite 单条 UPDATE 原子执行，两个 worker 不可能
         同时赢——RETURNING 行有值才是赢家；候选选择子查询内 LIMIT 1。
-        RETURNING 需要 SQLite ≥ 3.35；Python 3.12 自带满足。
+        RETURNING 需要 SQLite ≥ 3.35；产品数据库入口的运行时门禁要求更高的安全版本。
         """
         now = _now_iso()
         lease = _iso_in(self.lease_seconds)
@@ -76,25 +76,35 @@ class TaskWorker:
             ("status='queued'", ()),
             ("status='running' AND lease_expires_at IS NOT NULL AND lease_expires_at < ?", (now,)),
         ):
-            row = self.database.fetch_one(
+            candidate = self.database.fetch_one(
+                # candidate_where 仅取自本方法上方定义的两个常量，绝不来自请求输入。
+                f"SELECT task_id FROM agent_tasks WHERE {candidate_where} ORDER BY created_at LIMIT 1",  # nosec B608
+                candidate_params,
+            )
+            if candidate is None:
+                continue
+            # 保留 candidate 条件做 compare-and-set：两个 worker 读到同一 task 时
+            # 只能有一个 UPDATE 成功。execute() 会重试 SQLite 的短暂写锁。
+            updated = self.database.execute(
                 "UPDATE agent_tasks SET status='running', lease_owner=?, lease_expires_at=?,"
                 " attempt_count=attempt_count+1, updated_at=?"
-                f" WHERE task_id=(SELECT task_id FROM agent_tasks WHERE {candidate_where}"
-                " ORDER BY created_at LIMIT 1) RETURNING task_id",
-                (self.owner, lease, now, *candidate_params),
+                # candidate_where 仅取自本方法上方定义的两个常量，绝不来自请求输入。
+                f" WHERE task_id=? AND {candidate_where}",  # nosec B608
+                (self.owner, lease, now, candidate["task_id"], *candidate_params),
             )
-            if row is not None:
-                claimed_id = row["task_id"]
+            if updated == 1:
+                claimed_id = candidate["task_id"]
                 break
         if claimed_id is None:
             return None
         return self.database.fetch_one("SELECT * FROM agent_tasks WHERE task_id=?", (claimed_id,))
 
-    def renew_lease(self, task_id: str) -> None:
-        self.database.execute(
+    def renew_lease(self, task_id: str) -> bool:
+        """续租仅对当前 owner 生效；False 表示该执行器已经失去围栏。"""
+        return self.database.execute(
             "UPDATE agent_tasks SET lease_expires_at=?, updated_at=? WHERE task_id=? AND lease_owner=?",
             (_iso_in(self.lease_seconds), _now_iso(), task_id, self.owner),
-        )
+        ) == 1
 
     # ── 执行一批（进程内运行模型：run_until_drained 供测试/单机循环） ──
 
@@ -171,13 +181,15 @@ class TaskWorker:
             if attempt < self.max_attempts:
                 # 重试语义：退回 queued（at-least-once）
                 self.database.execute(
-                    "UPDATE agent_tasks SET status='queued', lease_owner=NULL, lease_expires_at=NULL, updated_at=? WHERE task_id=?",
-                    (_now_iso(), task_id),
+                    "UPDATE agent_tasks SET status='queued', lease_owner=NULL, lease_expires_at=NULL, updated_at=? "
+                    "WHERE task_id=? AND status='running' AND lease_owner=?",
+                    (_now_iso(), task_id, self.owner),
                 )
                 return self._public(task_id, steps)
             return self._fail(task_id, code="retrieval_unavailable", message="检索在多次尝试后仍不可用")
         record_step("retrieve_evidence", "ok", f"citations={len(result.citations)}", (time.perf_counter() - started) * 1000)
-        self.renew_lease(task_id)
+        if not self.renew_lease(task_id):
+            return self._public(task_id, steps)
         if self._cancel_requested(task_id):
             return self._finalize_cancelled(task_id, steps)
 
@@ -193,7 +205,8 @@ class TaskWorker:
             access_scope=scope,
         )
         record_step("check_conflicts", "ok", f"conflicts={len(conflicts)}", (time.perf_counter() - started) * 1000)
-        self.renew_lease(task_id)
+        if not self.renew_lease(task_id):
+            return self._public(task_id, steps)
         if self._cancel_requested(task_id):
             return self._finalize_cancelled(task_id, steps)
 
@@ -207,18 +220,14 @@ class TaskWorker:
         else:
             status = TaskStatus.completed.value
             state = "evidence_found"
-        existing_artifact = self.database.fetch_one("SELECT artifact_id FROM artifacts WHERE task_id=?", (task_id,))
-        if existing_artifact is None and result.citations:
+        if result.citations:
             self._write_artifact(task_id, principal_id, result, conflicts, constraints)
         record_step("build_artifact", "ok", f"status={status}", (time.perf_counter() - started) * 1000)
 
-        self.database.execute(
-            "UPDATE agent_tasks SET status=?, result_state=?, lease_owner=NULL, lease_expires_at=NULL, updated_at=? WHERE task_id=?",
-            (status, state, _now_iso(), task_id),
-        )
+        self._finish_if_owned(task_id, status=status, result_state=state)
         return self._public(task_id, steps)
 
-    # ── 任务 C：目录增量同步 → 版本变化摘要（ADR-004 预留的第二任务类型） ──
+    # ── 任务 C：目录增量同步 → 版本变化摘要（ADR-004 第二任务类型） ──
 
     def _execute_delta_sync(self, task: dict[str, Any]) -> dict[str, Any]:
         """时间分桶对比：constraints.since 之后新建的笔记入「新增」桶，
@@ -283,7 +292,9 @@ class TaskWorker:
                 " FROM notes"
             )
         visible = [r for r in rows if note_acl_matches(r, scope)]
-        added, updated, archived = [], [], []
+        added: list[dict[str, Any]] = []
+        updated: list[dict[str, Any]] = []
+        archived: list[dict[str, Any]] = []
         for r in visible:
             created = r["created_at"] or ""
             updated_at = r["updated_at"] or ""
@@ -307,28 +318,24 @@ class TaskWorker:
             elif updated_dt and updated_dt > since_utc:
                 (archived if is_archived else updated).append(entry)
         record_step("delta_scan", "ok", f"visible={len(visible)} +{len(added)} ~{len(updated)} x{len(archived)}", (time.perf_counter() - started) * 1000)
-        self.renew_lease(task_id)
+        if not self.renew_lease(task_id):
+            return self._public(task_id, steps)
         if self._cancel_requested(task_id):
             return self._finalize_cancelled(task_id, steps)
 
         # artifact（幂等：同 task_id 先查后写）
-        existing_artifact = self.database.fetch_one("SELECT artifact_id FROM artifacts WHERE task_id=?", (task_id,))
-        if existing_artifact is None:
-            content = {
-                "since": since,
-                "total_visible": len(visible),
-                "added": added,
-                "updated": updated,
-                "archived": archived,
-                "counts": {"added": len(added), "updated": len(updated), "archived": len(archived)},
-            }
-            self._write_delta_artifact(task_id, principal_id, content)
+        content = {
+            "since": since,
+            "total_visible": len(visible),
+            "added": added,
+            "updated": updated,
+            "archived": archived,
+            "counts": {"added": len(added), "updated": len(updated), "archived": len(archived)},
+        }
+        self._write_delta_artifact(task_id, principal_id, content)
         record_step("build_artifact", "ok", "status=completed", (time.perf_counter() - started) * 1000)
 
-        self.database.execute(
-            "UPDATE agent_tasks SET status=?, result_state=?, lease_owner=NULL, lease_expires_at=NULL, updated_at=? WHERE task_id=?",
-            (TaskStatus.completed.value, "evidence_found", _now_iso(), task_id),
-        )
+        self._finish_if_owned(task_id, status=TaskStatus.completed.value, result_state="evidence_found")
         return self._public(task_id, steps)
 
     def _scan_directory_rows(self, task: dict[str, Any], source: Path, steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -380,23 +387,24 @@ class TaskWorker:
         )
         return list(rows)
 
-    def _write_delta_artifact(self, task_id: str, principal_id: str, content: dict[str, Any]) -> str:
+    def _write_delta_artifact(self, task_id: str, principal_id: str, content: dict[str, Any]) -> str | None:
         artifact_id = f"art-{uuid.uuid4().hex[:16]}"
         checksum = hashlib.sha256(dumps(content).encode("utf-8")).hexdigest()
         now = _now_iso()
-        self.database.execute(
-            "INSERT INTO artifacts (artifact_id, owner_principal_id, task_id, kind, title, content_json,"
-            " visibility, evidence_snapshot_json, citations_json, checksum, created_at, updated_at)"
-            " VALUES (?,?,?,?,?,?, 'private', '[]', '[]', ?, ?, ?)",
-            (
-                artifact_id, principal_id, task_id, "delta_sync_summary",
-                f"版本变化摘要 · since {content.get('since', '')[:10]}",
-                dumps(content), checksum, now, now,
-            ),
+        return self._write_artifact_if_owned(
+            task_id=task_id,
+            artifact_id=artifact_id,
+            principal_id=principal_id,
+            kind="delta_sync_summary",
+            title=f"版本变化摘要 · since {content.get('since', '')[:10]}",
+            content_json=dumps(content),
+            evidence_snapshot_json="[]",
+            citations_json="[]",
+            checksum=checksum,
+            now=now,
         )
-        return artifact_id
 
-    def _write_artifact(self, task_id: str, principal_id: str, result, conflicts: list[dict], constraints: dict[str, Any]) -> str:
+    def _write_artifact(self, task_id: str, principal_id: str, result, conflicts: list[dict], constraints: dict[str, Any]) -> str | None:
         artifact_id = f"art-{uuid.uuid4().hex[:16]}"
         citations_payload = [item.model_dump(mode="json") for item in result.citations]
         evidence_snapshot = [
@@ -423,15 +431,63 @@ class TaskWorker:
             (dumps(evidence_snapshot) + dumps(citations_payload)).encode("utf-8")
         ).hexdigest()
         now = _now_iso()
-        self.database.execute(
+        return self._write_artifact_if_owned(
+            task_id=task_id,
+            artifact_id=artifact_id,
+            principal_id=principal_id,
+            kind="evidence_bundle",
+            title=f"核对证据包 · {constraints.get('document_query', '')[:60]}",
+            content_json=dumps(content),
+            evidence_snapshot_json=dumps(evidence_snapshot),
+            citations_json=dumps(citations_payload),
+            checksum=checksum,
+            now=now,
+        )
+
+    def _write_artifact_if_owned(
+        self,
+        *,
+        task_id: str,
+        artifact_id: str,
+        principal_id: str,
+        kind: str,
+        title: str,
+        content_json: str,
+        evidence_snapshot_json: str,
+        citations_json: str,
+        checksum: str,
+        now: str,
+    ) -> str | None:
+        """在一个事务中领取 task artifact 槽并写内容。
+
+        ``artifact_task_claims`` 是兼容旧 artifacts 多行数据的不可变领取表；
+        它让新 worker 的 artifact 副作用严格绑定到仍持有的 lease owner。
+        """
+        with self.database.transaction() as connection:
+            owned = connection.execute(
+                "SELECT 1 FROM agent_tasks WHERE task_id=? AND status='running' AND lease_owner=?",
+                (task_id, self.owner),
+            ).fetchone()
+            if owned is None:
+                return None
+            claim = connection.execute(
+                "INSERT OR IGNORE INTO artifact_task_claims (task_id, artifact_id, created_at) VALUES (?,?,?)",
+                (task_id, artifact_id, now),
+            )
+            if claim.rowcount != 1:
+                existing = connection.execute(
+                    "SELECT artifact_id FROM artifact_task_claims WHERE task_id=?", (task_id,)
+                ).fetchone()
+                if existing is None:
+                    raise RuntimeError(f"artifact claim disappeared: {task_id}")
+                return str(existing["artifact_id"])
+            connection.execute(
             "INSERT INTO artifacts (artifact_id, owner_principal_id, task_id, kind, title, content_json,"
             " visibility, evidence_snapshot_json, citations_json, checksum, created_at, updated_at)"
             " VALUES (?,?,?,?,?,?, 'private', ?, ?, ?, ?, ?)",
             (
-                artifact_id, principal_id, task_id, "evidence_bundle",
-                f"核对证据包 · {constraints.get('document_query', '')[:60]}",
-                dumps(content), dumps(evidence_snapshot),
-                dumps(citations_payload), checksum, now, now,
+                artifact_id, principal_id, task_id, kind, title, content_json,
+                evidence_snapshot_json, citations_json, checksum, now, now,
             ),
         )
         return artifact_id
@@ -445,21 +501,31 @@ class TaskWorker:
     def _finalize_cancelled(self, task_id: str, steps: list[dict[str, Any]]) -> dict[str, Any]:
         self.database.execute(
             "UPDATE agent_tasks SET status='cancelled', result_state='cancelled', lease_owner=NULL,"
-            " lease_expires_at=NULL, updated_at=? WHERE task_id=?",
-            (_now_iso(), task_id),
+            " lease_expires_at=NULL, updated_at=? WHERE task_id=? AND status='running' AND lease_owner=?",
+            (_now_iso(), task_id, self.owner),
         )
         return self._public(task_id, steps)
 
     def _fail(self, task_id: str, *, code: str, message: str) -> dict[str, Any]:
         self.database.execute(
             "UPDATE agent_tasks SET status='failed', result_state='failed', error_code=?, error_message=?,"
-            " lease_owner=NULL, lease_expires_at=NULL, updated_at=? WHERE task_id=?",
-            (code, message, _now_iso(), task_id),
+            " lease_owner=NULL, lease_expires_at=NULL, updated_at=? WHERE task_id=? AND status='running' AND lease_owner=?",
+            (code, message, _now_iso(), task_id, self.owner),
         )
         return self._public(task_id, [])
 
+    def _finish_if_owned(self, task_id: str, *, status: str, result_state: str) -> bool:
+        """仅当前 lease owner 能把任务带入终态，避免过期执行器覆盖接管者。"""
+        return self.database.execute(
+            "UPDATE agent_tasks SET status=?, result_state=?, lease_owner=NULL, lease_expires_at=NULL, updated_at=? "
+            "WHERE task_id=? AND status='running' AND lease_owner=?",
+            (status, result_state, _now_iso(), task_id, self.owner),
+        ) == 1
+
     def _public(self, task_id: str, steps: list[dict[str, Any]]) -> dict[str, Any]:
         row = self.database.fetch_one("SELECT * FROM agent_tasks WHERE task_id=?", (task_id,))
+        if row is None:
+            raise RuntimeError(f"agent task disappeared while reading result: {task_id}")
         payload = {k: row[k] for k in row.keys()}
         payload["steps"] = steps
         payload.pop("constraints_json", None)

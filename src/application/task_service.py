@@ -10,6 +10,7 @@ Worker 执行逻辑在 application/task_worker.py；本服务只负责队列与�
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 import uuid
 from datetime import UTC, datetime
@@ -58,6 +59,7 @@ class TaskService:
         workspace: str | None = None,
         department: str | None = None,
         conversation_id: str | None = None,
+        directory_scan_authorized: bool = False,
     ) -> dict[str, Any]:
         if task_type not in ("batch_policy_check", "directory_delta_sync"):
             raise InvalidTaskConstraints(f"unsupported task_type: {task_type}")
@@ -65,6 +67,8 @@ class TaskService:
             if not str(constraints.get("since") or "").strip():
                 raise InvalidTaskConstraints("directory_delta_sync requires constraints.since (ISO timestamp)")
             clean = self._validate_constraints(constraints, require_target=False)
+            if clean.get("directory_root") and not directory_scan_authorized:
+                raise InvalidTaskConstraints("directory_root requires an admin-authorized submission")
         else:
             clean = self._validate_constraints(constraints)
         existing = self.database.fetch_one(
@@ -76,13 +80,22 @@ class TaskService:
             return self._public(self._get_row(existing["task_id"]))
         task_id = f"task-{uuid.uuid4().hex[:16]}"
         now = _now_iso()
-        self.database.execute(
-            "INSERT INTO agent_tasks (task_id, principal_id, workspace, department, conversation_id,"
-            " task_type, constraints_json, status, idempotency_key, created_at, updated_at)"
-            " VALUES (?,?,?,?,?,?,?, 'queued', ?, ?, ?)",
-            (task_id, principal_id, workspace, department, conversation_id,
-             task_type, dumps(clean), idempotency_key, now, now),
-        )
+        try:
+            self.database.execute(
+                "INSERT INTO agent_tasks (task_id, principal_id, workspace, department, conversation_id,"
+                " task_type, constraints_json, status, idempotency_key, created_at, updated_at)"
+                " VALUES (?,?,?,?,?,?,?, 'queued', ?, ?, ?)",
+                (task_id, principal_id, workspace, department, conversation_id,
+                 task_type, dumps(clean), idempotency_key, now, now),
+            )
+        except sqlite3.IntegrityError:
+            raced_task = self.database.fetch_one(
+                "SELECT task_id FROM agent_tasks WHERE principal_id=? AND idempotency_key=?",
+                (principal_id, idempotency_key),
+            )
+            if raced_task is None:
+                raise
+            return self._public(self._get_row(raced_task["task_id"]))
         return self._public(self._get_row(task_id))
 
     def _validate_constraints(self, constraints: dict[str, Any], *, require_target: bool = True) -> dict[str, Any]:

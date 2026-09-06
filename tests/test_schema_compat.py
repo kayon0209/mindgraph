@@ -47,6 +47,33 @@ def test_initialize_is_idempotent(tmp_path: Path):
         database.close()
 
 
+def test_upgrade_backfills_one_artifact_claim_without_deleting_legacy_duplicates(tmp_path: Path):
+    """The artifact fencing migration preserves historical rows and elects one writer."""
+    database = ProductDatabase(tmp_path / "artifact-claims.sqlite3")
+    database.initialize()
+    try:
+        database.execute(
+            "INSERT INTO agent_tasks (task_id, principal_id, task_type, constraints_json, status, idempotency_key, created_at, updated_at) "
+            "VALUES ('task-legacy', 'u', 'batch_policy_check', '{}', 'completed', 'legacy-artifact-claim', 't', 't')"
+        )
+        for artifact_id in ("art-legacy-a", "art-legacy-b"):
+            database.execute(
+                "INSERT INTO artifacts (artifact_id, owner_principal_id, task_id, kind, title, content_json, "
+                "visibility, evidence_snapshot_json, citations_json, checksum, created_at, updated_at) "
+                "VALUES (?, 'u', 'task-legacy', 'evidence_bundle', 'legacy', '{}', 'private', '[]', '[]', ?, 't', 't')",
+                (artifact_id, artifact_id),
+            )
+
+        database.initialize()
+
+        claim = database.fetch_one("SELECT artifact_id FROM artifact_task_claims WHERE task_id='task-legacy'")
+        assert claim is not None
+        assert claim["artifact_id"] in {"art-legacy-a", "art-legacy-b"}
+        assert database.fetch_one("SELECT COUNT(*) AS count FROM artifacts WHERE task_id='task-legacy'")["count"] == 2
+    finally:
+        database.close()
+
+
 def test_upgrade_from_simulated_v8_is_additive_and_preserves_rows(tmp_path: Path):
     """模拟 v8 库（回退版本号 + 删除 v9 表）→ 再跑 initialize()：
 

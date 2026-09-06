@@ -173,9 +173,12 @@ class AnswerResult(BaseModel):
         return self
 
 
+RetrievalStrategy = Literal["auto", "dense", "bm25", "hybrid", "hybrid_rerank"]
+
+
 class ChatRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
-    retrieval_strategy: Literal["auto", "dense", "bm25", "hybrid", "hybrid_rerank"] = "auto"
+    retrieval_strategy: RetrievalStrategy = "auto"
     chat_model: str | None = None
     chat_provider: str | None = None
     final_top_k: int = Field(default=5, ge=1, le=10)

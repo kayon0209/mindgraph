@@ -16,6 +16,10 @@ import sys
 from datetime import datetime, timezone
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "src"))
+
+from infrastructure.sqlite_runtime import require_safe_sqlite_runtime
+
 DB = os.path.join(ROOT, "data", "product", "product.sqlite3")
 MODEL_VERSION = "seed-v1"
 PROMPT_VERSION = "seed-v1"
@@ -50,6 +54,7 @@ def title_keywords(title: str) -> set:
 
 
 def load_notes(db: str):
+    require_safe_sqlite_runtime()
     con = sqlite3.connect(db)
     rows = con.execute(
         "SELECT note_id, vault_path, title, frontmatter_json "

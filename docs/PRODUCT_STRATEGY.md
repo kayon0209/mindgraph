@@ -99,7 +99,7 @@ MindGraph 是**本地优先的企业制度与决策依据知识服务**。首个
 - [x] SSO/OIDC 最小可行接入（Bearer JWT 校验 + claims → principal 映射）
 - [x] 审计日志（`access_audit` 表：谁问了什么、引用了什么、依据什么版本回答）
 - [x] 本地 stdio MCP（开发者预览，默认只读）
-- [x] 企业 HTTP MCP（`/api/v1/mcp`，走认证 + ACL + 审计）
+- [x] 受认证 HTTP JSON-RPC 工具通道（`/api/v1/mcp`，走认证 + ACL + 审计；不是 MCP Streamable HTTP/OAuth transport）
 - [x] 部署指南（`docs/DEPLOYMENT.md`）
 
 验收：越权检索为零（`tests/test_access_control.py` 全绿），回答可按用户、来源版本和证据完整回放（`access_audit` 可追溯）。
@@ -121,7 +121,7 @@ MindGraph 是**本地优先的企业制度与决策依据知识服务**。首个
 - [x] 更新 `.env.example` 标题与兼容配置说明
 - [x] 更新 Nginx、Docker 镜像名和 CI/CD 标签
 - [x] 提供公开合成 `demo-vault/` 与无需外部模型的全链路验证
-- [x] 将无密钥离线全链路演示加入 Python 3.12 CI smoke test
+- [x] 将无密钥离线全链路演示加入 CPython 3.13.15 锁文件 CI smoke test
 - [x] React Web 前端并入 `web/`，与 API 同仓构建和发布
 - [ ] 更新 GitHub 仓库简介、Topics、Release 和演示素材
 

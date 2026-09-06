@@ -3,7 +3,7 @@ name = "mindgraph"
 version = "3.1.0"
 description = "本地优先的企业制度与决策依据知识服务"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.13.15,<3.14"
 license = { text = "MIT" }
 authors = [{ name = "MindGraph Team" }]
 keywords = ["rag", "graphrag", "enterprise-search", "knowledge-governance", "llm"]
@@ -26,6 +26,11 @@ dependencies = [
     "zhipuai>=2.1.0",
     "PyJWT[crypto]>=2.8.0",
     "jsonschema>=4.23.0",
+    # Compatibility dependency: zhipuai imports sniffio but does not declare it.
+    "sniffio>=1.3.1",
+    # sentence-transformers needs torch; pin its source to the CPU-only index
+    # below so the supported single-node profile never resolves CUDA runtimes.
+    "torch>=2.2.0",
 ]
 
 [project.optional-dependencies]
@@ -36,7 +41,8 @@ dev = [
     "httpx>=0.28.0",
     "ruff>=0.8.0",
     "mypy>=1.14.0",
-    "bandit>=1.8.0",
+    "bandit==1.9.4",
+    "safety==3.8.1",
     "pre-commit>=4.0.0",
     "reportlab>=4.0.0",
 ]
@@ -46,9 +52,17 @@ ocr = ["paddleocr>=2.9.0", "paddlepaddle>=3.0.0"]
 requires = ["setuptools>=75.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
 # ── Ruff: Linter + Formatter ──
 [tool.ruff]
-target-version = "py311"
+target-version = "py313"
 line-length = 140
 exclude = [
     ".git",
@@ -93,7 +107,7 @@ line-ending = "auto"
 
 # ── Mypy: Type Checking ──
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.13"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false
