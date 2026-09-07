@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from application.vault_sync_service import VaultSyncService
+from application.source_ownership_service import SourceOwnershipService
 from infrastructure.database import ProductDatabase
 
 logger = logging.getLogger("mindgraph.connectors.directory")
@@ -61,6 +62,7 @@ class DirectoryConnectorService:
         index_service: Any | None = None,
         vault_sync: VaultSyncService | None = None,
         allowed_roots: tuple[Path, ...] | None = None,
+        ownership_service: SourceOwnershipService | None = None,
     ) -> None:
         self.database = database
         self.vault_root = Path(vault_root)
@@ -68,6 +70,7 @@ class DirectoryConnectorService:
         self._vault_sync = vault_sync
         configured_roots = allowed_roots if allowed_roots is not None else (self.vault_root,)
         self.allowed_roots = tuple(Path(root).resolve() for root in configured_roots)
+        self.ownership_service = ownership_service or SourceOwnershipService(database)
 
     def _validate_source(self, source_path: Path) -> Path:
         if not source_path.exists() or not source_path.is_dir():
@@ -135,6 +138,7 @@ class DirectoryConnectorService:
         acl_public: bool = False,
         trigger_index: bool = False,
         connector_id: str | None = None,
+        dry_run: bool = True,
     ) -> dict[str, Any]:
         """同步一个本地 Markdown 目录。
 
@@ -147,6 +151,18 @@ class DirectoryConnectorService:
         source = self._validate_source(Path(source_path))
 
         connector_id = connector_id or f"dir-{hashlib.sha256(str(source).casefold().encode()).hexdigest()[:12]}"
+        registration = self.ownership_service.register_directory_source(connector_id, source)
+        if dry_run:
+            audit = self.ownership_service.dry_run_audit(registration.source_id)
+            return {
+                "connector_id": connector_id,
+                "source_id": registration.source_id,
+                "status": "dry_run",
+                "audit_run_id": audit.audit_run_id,
+                "audit_status": audit.status,
+                "finding_count": audit.finding_count,
+            }
+        self.ownership_service.require_sync_authorized(connector_id, source)
         started_at = _utc_iso()
         root_acl_map = self._load_root_acl_map(source)
 

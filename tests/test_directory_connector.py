@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from application.directory_connector_service import DirectoryConnectorService
+from application.source_ownership_service import SourceOwnershipService
 from application.vault_sync_service import VaultSyncService
 from infrastructure.database import ProductDatabase
 
@@ -52,13 +53,56 @@ effective_from: 2026-01-01
     return source
 
 
+def _sync_real(service: DirectoryConnectorService, source: Path, **kwargs):
+    dry_run = service.sync(source, dry_run=True, **kwargs)
+    assert dry_run["status"] == "dry_run"
+    return service.sync(source, dry_run=False, **kwargs)
+
+
+def test_directory_connector_defaults_to_dry_run_without_note_mutation(tmp_path: Path):
+    database = ProductDatabase(tmp_path / "product.sqlite3")
+    database.initialize()
+    source = _make_single_note_source(tmp_path, "source", "note-a")
+    service = DirectoryConnectorService(
+        database,
+        tmp_path,
+        index_service=None,
+        ownership_service=SourceOwnershipService(database),
+    )
+
+    result = service.sync(source, connector_id="connector-a")
+
+    assert result["status"] == "dry_run"
+    assert result["audit_status"] == "clean"
+    assert database.fetch_one("SELECT COUNT(*) AS count FROM notes")["count"] == 0
+
+
+def test_directory_connector_requires_prior_clean_audit_for_real_sync(tmp_path: Path):
+    database = ProductDatabase(tmp_path / "product.sqlite3")
+    database.initialize()
+    source = _make_single_note_source(tmp_path, "source", "note-a")
+    service = DirectoryConnectorService(
+        database,
+        tmp_path,
+        index_service=None,
+        ownership_service=SourceOwnershipService(database),
+    )
+
+    with pytest.raises(Exception, match="audit_required"):
+        service.sync(source, connector_id="connector-a", dry_run=False)
+
+    _sync_real(service, source, connector_id="connector-a")
+
+    assert database.fetch_one("SELECT source_id FROM notes WHERE note_id='note-a'")["source_id"] == "connector-a"
+
+
 def test_directory_connector_sync_writes_workspace_department_and_acl(tmp_path: Path):
     database = ProductDatabase(tmp_path / "product.sqlite3")
     database.initialize()
     source = _make_source(tmp_path)
 
     svc = DirectoryConnectorService(database, source, index_service=None)
-    result = svc.sync(source, workspace="corp", trigger_index=False)
+    result = _sync_real(svc, source, workspace="corp", trigger_index=False)
 
     assert result["status"] == "completed"
     assert result["file_count"] == 2
@@ -85,14 +129,14 @@ def test_directory_connector_incremental_sync_detects_changes(tmp_path: Path):
     source = _make_source(tmp_path)
     svc = DirectoryConnectorService(database, source, index_service=None)
 
-    first = svc.sync(source, workspace="corp")
+    first = _sync_real(svc, source, workspace="corp")
     assert first["added"] >= 1
 
     # 修改文件内容 → 应触发 pending
     expense = source / "finance" / "expense.md"
     expense.write_text(expense.read_text(encoding="utf-8") + "\n\n新增条款。", encoding="utf-8")
 
-    second = svc.sync(source, workspace="corp")
+    second = _sync_real(svc, source, workspace="corp")
     assert second["status"] == "completed"
     note = database.fetch_one("SELECT index_status FROM notes WHERE vault_path LIKE '%expense.md'")
     assert note["index_status"] == "pending"
@@ -104,10 +148,10 @@ def test_directory_connector_prunes_only_its_owned_source(tmp_path: Path):
     source = _make_source(tmp_path)
     svc = DirectoryConnectorService(database, source, index_service=None)
 
-    svc.sync(source, workspace="corp")
+    _sync_real(svc, source, workspace="corp")
     (source / "hr" / "leave.md").unlink()
 
-    second = svc.sync(source, workspace="corp")
+    second = _sync_real(svc, source, workspace="corp")
     assert second["pruned"] == 1
     remaining = database.fetch_one("SELECT COUNT(*) AS c FROM notes WHERE vault_path LIKE '%leave.md'")
     assert remaining["c"] == 0
@@ -119,7 +163,7 @@ def test_directory_connector_status_returns_history(tmp_path: Path):
     source = _make_source(tmp_path)
     svc = DirectoryConnectorService(database, source, index_service=None)
 
-    svc.sync(source, workspace="corp")
+    _sync_real(svc, source, workspace="corp")
     history = svc.status()
     assert len(history) == 1
     assert history[0]["status"] == "completed"
@@ -148,8 +192,8 @@ def test_syncing_second_connector_does_not_delete_first_source(tmp_path: Path):
         allowed_roots=(tmp_path,),
     )
 
-    svc.sync(source_a, connector_id="connector-a")
-    svc.sync(source_b, connector_id="connector-b")
+    _sync_real(svc, source_a, connector_id="connector-a")
+    _sync_real(svc, source_b, connector_id="connector-b")
 
     rows = database.fetch_all("SELECT note_id FROM notes ORDER BY note_id")
     assert [row["note_id"] for row in rows] == ["note-a", "note-b"]
@@ -171,7 +215,7 @@ def test_connector_sync_does_not_modify_source_markdown(tmp_path: Path):
         allowed_roots=(source,),
     )
 
-    svc.sync(source)
+    _sync_real(svc, source)
 
     assert note_path.read_bytes() == original
 
