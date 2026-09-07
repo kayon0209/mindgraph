@@ -96,6 +96,19 @@ def test_sync_authorization_requires_a_clean_current_audit(tmp_path: Path):
     assert json.loads(database.fetch_one("SELECT summary_json FROM source_ownership_audit_runs WHERE audit_run_id=?", (result.audit_run_id,))["summary_json"]) == {"finding_count": 0}
 
 
+def test_source_lookup_rejects_an_unknown_persisted_source_status(tmp_path: Path):
+    database = _database(tmp_path)
+    root = tmp_path / "source"
+    root.mkdir()
+    service = SourceOwnershipService(database)
+    service.register_directory_source("connector-a", root)
+    database.execute("PRAGMA ignore_check_constraints=ON")
+    database.execute("UPDATE knowledge_sources SET status='unexpected' WHERE connector_id='connector-a'")
+
+    with pytest.raises(SourceOwnershipError, match="source_status_invalid"):
+        service.source_for_connector("connector-a")
+
+
 def test_operator_docs_state_source_ownership_safety_contract():
     for relative_path in ("README.md", "README.zh-CN.md", "docs/DEPLOYMENT.md"):
         text = (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")

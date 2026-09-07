@@ -9,9 +9,11 @@ from typing import Any
 import uuid
 
 from domain.source_ownership import (
+    AuditStatus,
     OwnershipAuditResult,
     OwnershipFinding,
     RegisteredSource,
+    SourceStatus,
     SourceOwnershipError,
 )
 from infrastructure.database import ProductDatabase
@@ -23,13 +25,22 @@ def _utc_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _source_status_from_row(value: Any) -> SourceStatus:
+    status = str(value)
+    if status == "active":
+        return "active"
+    if status == "disabled":
+        return "disabled"
+    raise SourceOwnershipError("source_status_invalid")
+
+
 def _source_from_row(row: Any) -> RegisteredSource:
     return RegisteredSource(
         source_id=str(row["source_id"]),
         connector_id=str(row["connector_id"]),
         connector_type=str(row["connector_type"]),
         root_locator=str(row["root_locator"]),
-        status=str(row["status"]),
+        status=_source_status_from_row(row["status"]),
     )
 
 
@@ -120,7 +131,7 @@ class SourceOwnershipService:
 
         audit_run_id = uuid.uuid4().hex
         now = _utc_iso()
-        status = "clean" if not findings else "needs_review"
+        status: AuditStatus = "clean" if not findings else "needs_review"
         summary_json = json.dumps({"finding_count": len(findings)}, sort_keys=True)
         with self.database.transaction() as connection:
             connection.execute(
