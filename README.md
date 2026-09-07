@@ -30,7 +30,7 @@
   <a href="#faq">FAQ</a>
 </p>
 
-<img src="assets/hero-banner.jpg" alt="MindGraph — Govern the evidence, then generate." width="100%">
+<img src="assets/hero-governed-source-flow-v2.png" alt="MindGraph — source registration and dry-run audit gate governed evidence before retrieval or controlled Agent execution." width="100%">
 
 </div>
 

@@ -30,7 +30,7 @@
   <a href="#常见问题">FAQ</a>
 </p>
 
-<img src="assets/hero-banner.jpg" alt="MindGraph — 先治理证据，再生成答案" width="100%">
+<img src="assets/hero-governed-source-flow-v2.png" alt="MindGraph — 来源登记与 dry-run 审计先治理证据，再进入检索或受控 Agent 执行" width="100%">
 
 </div>
 

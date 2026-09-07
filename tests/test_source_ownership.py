@@ -106,8 +106,12 @@ def test_operator_docs_state_source_ownership_safety_contract():
 
 
 def test_readmes_state_agent_capabilities_and_safety_gates():
+    hero_path = PROJECT_ROOT / "assets" / "hero-governed-source-flow-v2.png"
+    assert hero_path.is_file()
+
     for relative_path in ("README.md", "README.zh-CN.md"):
         text = (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
+        assert "assets/hero-governed-source-flow-v2.png" in text
         assert "AGENT_TASKS_ENABLED" in text
         assert "ASSIST_MCP_ENABLED" in text
         assert "AGENT_WRITE_TOOLS_ENABLED" in text
