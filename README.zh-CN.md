@@ -235,6 +235,10 @@ python scripts/run_answer_evaluation.py --live --strategy hybrid
 
 产品边界和完整路线见 [`docs/PRODUCT_STRATEGY.md`](docs/PRODUCT_STRATEGY.md)。
 
+## 目录同步的来源归属（schema v16）
+
+管理员目录端点默认执行 **dry-run**：它只登记并校验规范化来源、记录来源归属审计，不会创建、更新、裁剪、索引或 ACL 回填笔记。只有同一 connector 与来源已经获得 **clean audit** 后，才可显式传入 `dry_run=false` 同步。未知归属、根目录重叠、来源停用和无效 ACL 都是 fail-closed finding。本版本中 **directory-root task** 不是资料导入入口。
+
 ## 常见问题
 
 **MindGraph 必须要模型 Provider 或 API Key 吗？**

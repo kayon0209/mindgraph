@@ -9,6 +9,8 @@ from application.source_ownership_service import SourceOwnershipService
 from domain.source_ownership import SourceOwnershipError
 from infrastructure.database import ProductDatabase
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 
 def _database(tmp_path: Path) -> ProductDatabase:
     database = ProductDatabase(tmp_path / "ownership.sqlite3")
@@ -92,3 +94,12 @@ def test_sync_authorization_requires_a_clean_current_audit(tmp_path: Path):
     assert result.status == "clean"
     assert service.require_sync_authorized("connector-a", root).source_id == "connector-a"
     assert json.loads(database.fetch_one("SELECT summary_json FROM source_ownership_audit_runs WHERE audit_run_id=?", (result.audit_run_id,))["summary_json"]) == {"finding_count": 0}
+
+
+def test_operator_docs_state_source_ownership_safety_contract():
+    for relative_path in ("README.md", "README.zh-CN.md", "docs/DEPLOYMENT.md"):
+        text = (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
+        assert "schema v16" in text
+        assert "dry-run" in text
+        assert "clean audit" in text
+        assert "directory-root task" in text

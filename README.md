@@ -235,6 +235,10 @@ The current frozen set (`mindgraph_golden_v2.jsonl`, version `2.4.0`) contains 9
 
 See [`docs/PRODUCT_STRATEGY.md`](docs/PRODUCT_STRATEGY.md) for the product boundary and roadmap.
 
+## Source ownership for directory sync (schema v16)
+
+The administrator directory endpoint now defaults to **dry-run**. It registers and validates the canonical source, then records an ownership audit; it does not create, update, prune, index, or ACL-backfill notes. Use `dry_run=false` only after a **clean audit** for the same connector and source. Unknown ownership, overlapping roots, disabled sources, and malformed ACL are fail-closed findings. A **directory-root task** is not an import path in this release.
+
 ## FAQ
 
 **Does MindGraph require a model provider or API key?**
