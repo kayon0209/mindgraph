@@ -23,11 +23,8 @@ dependencies = [
     "httpx>=0.28.0",
     "streamlit>=1.59.1",
     "scikit-learn>=1.6.0",
-    "zhipuai>=2.1.0",
-    "PyJWT[crypto]>=2.8.0",
+    "PyJWT[crypto]>=2.13.0",
     "jsonschema>=4.23.0",
-    # Compatibility dependency: zhipuai imports sniffio but does not declare it.
-    "sniffio>=1.3.1",
     # sentence-transformers needs torch; pin its source to the CPU-only index
     # below so the supported single-node profile never resolves CUDA runtimes.
     "torch>=2.2.0",

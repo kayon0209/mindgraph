@@ -9,8 +9,10 @@ import httpx
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from infrastructure.anthropic_provider import AnthropicProvider
+from infrastructure.chat_provider import ZhipuChatProvider
 from infrastructure.openai_compatible_provider import NormalizedProviderError, OpenAICompatibleProvider
 from infrastructure.provider_registry import ProviderRegistry
+from infrastructure.zhipu_compatible_client import ZhipuCompatibleClient
 
 
 class FakeStreamContext:
@@ -20,6 +22,52 @@ class FakeStreamContext:
 
 
 class ProviderTests(unittest.TestCase):
+    def test_zhipu_compatible_client_uses_documented_openai_endpoints(self):
+        client = ZhipuCompatibleClient("key")
+        embedding_response = Mock(status_code=200)
+        embedding_response.json.return_value = {
+            "data": [
+                {"index": 1, "embedding": [0.2]},
+                {"index": 0, "embedding": [0.1]},
+            ]
+        }
+        with patch("httpx.post", return_value=embedding_response) as posted:
+            result = client.embeddings.create(input=["first", "second"], model="embedding-3")
+        self.assertEqual(
+            posted.call_args.args[0],
+            "https://open.bigmodel.cn/api/paas/v4/embeddings",
+        )
+        self.assertEqual(posted.call_args.kwargs["headers"]["Authorization"], "Bearer key")
+        self.assertEqual([item.index for item in result.data], [1, 0])
+
+        chat_response = Mock(status_code=200)
+        chat_response.json.return_value = {
+            "choices": [{"message": {"content": "answer"}}],
+            "usage": {"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3},
+        }
+        with patch("httpx.post", return_value=chat_response) as posted:
+            completion = client.chat.completions.create(
+                model="glm-4.7", messages=[{"role": "user", "content": "question"}], temperature=0.2
+            )
+        self.assertEqual(
+            posted.call_args.args[0],
+            "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+        )
+        self.assertEqual(completion.choices[0].message.content, "answer")
+        self.assertEqual(completion.usage.total_tokens, 3)
+
+    def test_zhipu_chat_provider_uses_openai_compatible_transport(self):
+        provider = ZhipuChatProvider("key", "glm-4.7")
+        response = Mock(status_code=200)
+        response.json.return_value = {"choices": [{"message": {"content": "ok"}}]}
+        with patch("httpx.post", return_value=response) as posted:
+            text, _usage = provider.complete([{"role": "user", "content": "x"}])
+        self.assertEqual(text, "ok")
+        self.assertEqual(provider.provider_name, "zhipu")
+        self.assertEqual(
+            posted.call_args.args[0],
+            "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+        )
     def test_openai_compatible_complete_usage_and_capability(self):
         provider = OpenAICompatibleProvider("deepseek", "https://example.test", "key", "model")
         response = Mock(status_code=200); response.json.return_value = {"choices": [{"message": {"content": "ok"}}], "usage": {"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3}}
