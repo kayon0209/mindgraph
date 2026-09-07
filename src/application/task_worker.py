@@ -285,7 +285,11 @@ class TaskWorker:
             resolved = source.resolve(strict=True)
             if not any(resolved == root or root in resolved.parents for root in self.allowed_roots):
                 return self._fail(task_id, code="directory_not_allowed", message=f"directory_root is outside configured allowed roots: {resolved}")
-            rows = self._scan_directory_rows(task, resolved, steps)
+            return self._fail(
+                task_id,
+                code="source_registration_required",
+                message="directory_root requires a registered connector source",
+            )
         else:
             rows = self.database.fetch_all(
                 "SELECT note_id, title, vault_path, created_at, updated_at, policy_status, acl_json, acl_public, workspace, department"

@@ -31,6 +31,7 @@ class SyncDirectoryRequest(BaseModel):
     acl_json: str | None = Field(None, description="默认 ACL JSON（如 {\"allow\":[\"workspace:corp\"]}）")
     acl_public: bool = Field(False, description="是否将该目录下未声明 ACL 的笔记标记为公开")
     trigger_index: bool = Field(False, description="同步后是否触发索引构建")
+    dry_run: bool = Field(True, description="仅登记来源并执行归属审计，不写入笔记")
 
 
 @router.post("/directories")
@@ -53,6 +54,7 @@ def sync_directory(
             acl_json=body.acl_json,
             acl_public=body.acl_public,
             trigger_index=body.trigger_index,
+            dry_run=body.dry_run,
         )
         record_access_audit(
             container.database,
@@ -60,7 +62,11 @@ def sync_directory(
             action="sync_directory",
             resource=f"connectors/directories:{result.get('connector_id')}",
             decision="allow",
-            metadata={"source_path": body.source_path, "file_count": result.get("file_count")},
+            metadata={
+                "dry_run": body.dry_run,
+                "audit_status": result.get("audit_status"),
+                "finding_count": result.get("finding_count"),
+            },
         )
         return result
     except ValueError as exc:

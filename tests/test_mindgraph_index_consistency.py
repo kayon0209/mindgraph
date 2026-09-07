@@ -151,7 +151,9 @@ def test_connector_note_is_loaded_from_its_configured_source(tmp_path: Path) -> 
         allowed_roots=(external_source,),
     )
 
-    result = connector.sync(external_source, trigger_index=True)
+    dry_run = connector.sync(external_source, trigger_index=True, dry_run=True)
+    assert dry_run["status"] == "dry_run"
+    result = connector.sync(external_source, trigger_index=True, dry_run=False)
 
     assert result["index_version"]
     manifest = json.loads(

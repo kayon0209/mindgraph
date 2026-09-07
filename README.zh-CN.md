@@ -30,7 +30,7 @@
   <a href="#常见问题">FAQ</a>
 </p>
 
-<img src="assets/hero-banner.jpg" alt="MindGraph — 先治理证据，再生成答案" width="100%">
+<img src="assets/hero-governed-source-flow-v2.png" alt="MindGraph — 来源登记与 dry-run 审计先治理证据，再进入检索或受控 Agent 执行" width="100%">
 
 </div>
 
@@ -76,7 +76,7 @@ MindGraph 把 Markdown 或 Obsidian Vault 变成人与 AI Agent 都能使用的�
 ### 接口与评测
 
 - **Web 与 Obsidian 客户端**：问答、检查证据、审核关系和比较评测结果
-- **Agent 接口**：REST、SSE 与只读 MCP Server
+- **Agent 执行**：REST/SSE、受 feature flag 约束的后台任务与受治理 MCP 工具
 - **评测账本**：检索、答案可信度、路由、图门槛、延迟和成本统一留档
 
 ## 技术栈
@@ -125,7 +125,7 @@ docker compose up --build
 
 ## 使用说明 MCP
 
-MindGraph 内置只读 MCP Server，目前提供五个工具：
+MindGraph 默认提供 **8 个只读基础工具（eight read-only）**：
 
 | Tool | 用途 |
 |---|---|
@@ -134,6 +134,9 @@ MindGraph 内置只读 MCP Server，目前提供五个工具：
 | `mindgraph_search` | 搜索知识并返回证据 |
 | `mindgraph_list_relations` | 查看双端均可见的确认关系 |
 | `mindgraph_evaluation_overview` | 查看评测运行摘要 |
+| `mindgraph_get_policy_history` | 查看一个 policy key 下当前主体可见的版本 |
+| `mindgraph_concept_gaps` | 查看聚合的知识缺口，不暴露提问原文 |
+| `mindgraph_verify_citations` | 校验 citation 标记完整性，不证明结论被证据支持 |
 
 启动 stdio Server：
 
@@ -158,7 +161,21 @@ Claude Desktop 风格配置：
 }
 ```
 
-当前 MCP 有意保持只读。经过审核的关系提议、证据反馈和评测案例写回仍在路线图中。
+### MCP 能力与开关
+
+`mindgraph_assist` 是受治理问答工具，默认关闭；只有设置 `ASSIST_MCP_ENABLED=true` 才会出现。以下三类受控写工具已经存在，但各自必须显式启用：
+
+- `mindgraph_save_artifact` 需要 `AGENT_WRITE_TOOLS_ENABLED=true`，只能将回答与证据快照保存到调用主体的私有 artifact 空间；不会编辑知识来源内容，也不会发布数据。
+- `mindgraph_submit_evidence_feedback` 需要 `AGENT_FEEDBACK_TOOL_ENABLED=true`，必须经过 preview/submit 两步确认。
+- `mindgraph_propose_relation` 需要 `AGENT_PROPOSE_RELATION_TOOL_ENABLED=true`，只能创建 `proposed` 关系；人工确认前绝不进入图谱扩展。
+
+工具发现与调用都执行 feature flag、认证、ACL 与审计双重边界。知识来源内容写回、关系自动确认和治理处置工作流仍未交付。
+
+## Agent Tasks
+
+REST 任务 API 可以提交幂等的后台证据核对、查询任务状态、取消 queued/running 任务，并读取提交主体自己的私有 artifact。它默认关闭，必须设置 `AGENT_TASKS_ENABLED=true`；实际执行还要求显式启用 worker。
+
+任务只消费已受治理的证据。**directory-root task** 在当前版本不是目录导入入口：会以 `source_registration_required` fail-closed。管理员必须通过 connector 的来源登记与 clean audit 流程导入目录。
 
 ## 架构
 
@@ -234,6 +251,10 @@ python scripts/run_answer_evaluation.py --live --strategy hybrid
 | Web、Obsidian 与只读 MCP | 更完整的 Ruff、mypy 与覆盖率门禁 | 多跳推理 |
 
 产品边界和完整路线见 [`docs/PRODUCT_STRATEGY.md`](docs/PRODUCT_STRATEGY.md)。
+
+## 目录同步的来源归属（schema v16）
+
+管理员目录端点默认执行 **dry-run**：它只登记并校验规范化来源、记录来源归属审计，不会创建、更新、裁剪、索引或 ACL 回填笔记。只有同一 connector 与来源已经获得 **clean audit** 后，才可显式传入 `dry_run=false` 同步。未知归属、根目录重叠、来源停用和无效 ACL 都是 fail-closed finding。本版本中 **directory-root task** 不是资料导入入口。
 
 ## 常见问题
 

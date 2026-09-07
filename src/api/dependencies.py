@@ -147,17 +147,20 @@ class ServiceContainer:
         # 本地目录 / Markdown 目录增量同步连接器（Phase 5-2）
         from application.directory_connector_service import DirectoryConnectorService
         from application.mindgraph_index_service import MindGraphIndexService
+        from application.source_ownership_service import SourceOwnershipService
         self.mindgraph_index_service = MindGraphIndexService(
             self.database,
             self.root / "knowledge",
             self.mindgraph_index_root,
             on_activated=self.invalidate_pipelines,
         )
+        self.source_ownership = SourceOwnershipService(self.database)
         self.directory_connector = DirectoryConnectorService(
             self.database,
             self.root / "knowledge",
             self.mindgraph_index_service,
             allowed_roots=(self.root / "knowledge", *settings.connector_allowed_root_list),
+            ownership_service=self.source_ownership,
         )
 
     def _maybe_auto_mine_concepts(self) -> None:

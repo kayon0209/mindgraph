@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from api.main import app
+from api.routes.connectors import SyncDirectoryRequest
 
 
 @pytest.fixture()
@@ -69,6 +70,12 @@ def test_directory_sync_rejects_non_admin_api_key(monkeypatch, tmp_path):
     client.close()
 
     assert response.status_code == 403, response.text
+
+
+def test_directory_sync_request_defaults_to_dry_run():
+    request = SyncDirectoryRequest(source_path="C:/synthetic/source")
+
+    assert request.dry_run is True
 
 
 def test_auth_mode_resolution_priority(monkeypatch):

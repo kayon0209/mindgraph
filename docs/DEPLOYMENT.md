@@ -426,6 +426,8 @@ POST /api/v1/knowledge/index/incremental-rebuild
 
 ### 6.3 连接器同步失败
 
+目录连接器使用 schema v16 的来源归属门禁。`POST /api/v1/connectors/directories` 默认是 dry-run：仅登记/校验来源并写入审计，不写入、裁剪、索引或 ACL 回填笔记。只有同一 connector 与目录最近一次结果为 clean audit，才可显式传 `dry_run=false`。未知归属、重叠根目录、停用来源与无效 ACL 一律 fail-closed；directory-root task 在本版本不能作为导入通道。
+
 ```
 SQL: SELECT * FROM connector_syncs WHERE status='failed'
 ```

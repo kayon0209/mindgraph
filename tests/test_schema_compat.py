@@ -264,3 +264,40 @@ def test_v11_upgrades_to_v12_preserving_tasks(tmp_path: Path):
         assert "saved_artifacts" in _table_names(database)
     finally:
         database.close()
+
+
+# ── schema v16（UG-008 source ownership foundation） ──
+
+V16_ONLY_TABLES = (
+    "knowledge_sources",
+    "source_ownership_audit_runs",
+    "source_ownership_findings",
+)
+
+
+def test_v15_upgrades_to_v16_additively_preserving_notes(tmp_path: Path):
+    """模拟 v15 数据库升级：只新增来源归属审计结构，不改变既有笔记。"""
+    database = ProductDatabase(tmp_path / "v15-to-v16.sqlite3")
+    database.initialize()
+    try:
+        database.execute(
+            "INSERT INTO notes (note_id, vault_path, title, content_hash, frontmatter_json, ai_access_level, "
+            "source_id, source_path, acl_json, acl_public, created_at, updated_at) VALUES "
+            "('legacy-note', 'legacy/a.md', 'Legacy', 'hash', '{}', 'local_only', "
+            "'legacy-source', 'legacy/a.md', '{\"allow\":[\"workspace:legacy\"]}', 0, 't', 't')"
+        )
+        with database.connect() as connection:
+            for table in V16_ONLY_TABLES:
+                connection.execute(f"DROP TABLE IF EXISTS {table}")
+            connection.execute("UPDATE schema_meta SET version=15")
+
+        database.initialize()
+
+        assert _stored_version(database) == 16
+        assert set(V16_ONLY_TABLES) <= _table_names(database)
+        row = database.fetch_one("SELECT source_id, acl_json FROM notes WHERE note_id='legacy-note'")
+        assert row is not None
+        assert row["source_id"] == "legacy-source"
+        assert row["acl_json"] == '{"allow":["workspace:legacy"]}'
+    finally:
+        database.close()
