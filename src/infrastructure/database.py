@@ -15,7 +15,7 @@ from infrastructure.sqlite_runtime import require_safe_sqlite_runtime
 
 logger = logging.getLogger("mindgraph.database")
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 
 class ProductDatabase:
@@ -468,6 +468,45 @@ class ProductDatabase:
                     ON clarification_requests(principal_id, created_at);
                 CREATE INDEX IF NOT EXISTS idx_clarification_requests_consume
                     ON clarification_requests(clarification_id, consumed_at);
+            """)
+            connection.executescript("""
+                -- ── schema v16（UG-008：来源归属与 dry-run 审计台账） ──
+                -- 仅新增来源注册与审计表；不得改写 notes 的既有来源或 ACL 快照。
+                CREATE TABLE IF NOT EXISTS knowledge_sources (
+                    source_id TEXT PRIMARY KEY,
+                    connector_id TEXT NOT NULL UNIQUE,
+                    connector_type TEXT NOT NULL,
+                    root_locator TEXT NOT NULL UNIQUE,
+                    status TEXT NOT NULL CHECK (status IN ('active', 'disabled')),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    last_audited_at TEXT
+                );
+                CREATE TABLE IF NOT EXISTS source_ownership_audit_runs (
+                    audit_run_id TEXT PRIMARY KEY,
+                    source_id TEXT,
+                    mode TEXT NOT NULL CHECK (mode = 'dry_run'),
+                    status TEXT NOT NULL CHECK (status IN ('clean', 'needs_review')),
+                    summary_json TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    finished_at TEXT NOT NULL,
+                    FOREIGN KEY(source_id) REFERENCES knowledge_sources(source_id)
+                );
+                CREATE TABLE IF NOT EXISTS source_ownership_findings (
+                    finding_id TEXT PRIMARY KEY,
+                    audit_run_id TEXT NOT NULL,
+                    reason_code TEXT NOT NULL,
+                    note_id TEXT,
+                    source_id TEXT,
+                    source_path TEXT,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(audit_run_id) REFERENCES source_ownership_audit_runs(audit_run_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_source_ownership_runs_source
+                    ON source_ownership_audit_runs(source_id, finished_at);
+                CREATE INDEX IF NOT EXISTS idx_source_ownership_findings_run
+                    ON source_ownership_findings(audit_run_id, reason_code);
             """)
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_notes_policy_lifecycle "
