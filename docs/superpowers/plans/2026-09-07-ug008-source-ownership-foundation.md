@@ -75,7 +75,7 @@ def test_v15_upgrades_to_v16_additively_preserving_notes(tmp_path: Path):
 
 - [ ] **Step 2: Run RED test**
 
-Run: `.\.venv\Scripts\python.exe -m pytest tests\test_schema_compat.py -k "v16 or v15_upgrades" --no-cov -q`  
+Run: `.\.venv\Scripts\python.exe -m pytest tests\test_schema_compat.py -k "v16 or v15_upgrades" --no-cov -q`
 Expected: FAIL because v16 tables and version do not exist.
 
 - [ ] **Step 3: Add domain values and DDL**
@@ -142,7 +142,7 @@ CREATE INDEX IF NOT EXISTS idx_source_ownership_findings_run ON source_ownership
 
 - [ ] **Step 4: Run GREEN test**
 
-Run: `.\.venv\Scripts\python.exe -m pytest tests\test_schema_compat.py --no-cov -q`  
+Run: `.\.venv\Scripts\python.exe -m pytest tests\test_schema_compat.py --no-cov -q`
 Expected: PASS; the v15-shaped database keeps its legacy note and gains only v16 tables.
 
 - [ ] **Step 5: Commit**
@@ -197,7 +197,7 @@ Add separate tests for missing `source_id`, unknown `source_id`, a note path out
 
 - [ ] **Step 2: Run RED test**
 
-Run: `.\.venv\Scripts\python.exe -m pytest tests\test_source_ownership.py --no-cov -q`  
+Run: `.\.venv\Scripts\python.exe -m pytest tests\test_source_ownership.py --no-cov -q`
 Expected: FAIL because `SourceOwnershipService` does not exist.
 
 - [ ] **Step 3: Implement the exact service contract**
@@ -277,7 +277,7 @@ Also assert overlapping sources, an audit with findings, disabled sources, and c
 
 - [ ] **Step 2: Run RED tests**
 
-Run: `.\.venv\Scripts\python.exe -m pytest tests\test_directory_connector.py tests\test_auth_boundaries.py --no-cov -q`  
+Run: `.\.venv\Scripts\python.exe -m pytest tests\test_directory_connector.py tests\test_auth_boundaries.py --no-cov -q`
 Expected: FAIL because constructor injection and the safe `dry_run` contract do not exist.
 
 - [ ] **Step 3: Implement source-first connector flow**
@@ -305,7 +305,7 @@ In `ServiceContainer._init_mindgraph()`, construct `SourceOwnershipService(self.
 
 - [ ] **Step 4: Run GREEN and commit**
 
-Run: `.\.venv\Scripts\python.exe -m pytest tests\test_directory_connector.py tests\test_auth_boundaries.py --no-cov -q`  
+Run: `.\.venv\Scripts\python.exe -m pytest tests\test_directory_connector.py tests\test_auth_boundaries.py --no-cov -q`
 Expected: PASS; default endpoint calls mutate zero notes, and only an explicit second call after a clean audit can sync/prune that source.
 
 ```powershell
@@ -347,7 +347,7 @@ def test_directory_delta_task_refuses_unregistered_directory_write_path(tmp_path
 
 - [ ] **Step 2: Run RED test**
 
-Run: `.\.venv\Scripts\python.exe -m pytest tests\test_agent_tasks.py -k "directory_root" --no-cov -q`  
+Run: `.\.venv\Scripts\python.exe -m pytest tests\test_agent_tasks.py -k "directory_root" --no-cov -q`
 Expected: FAIL because the current worker invokes `VaultSyncService` and writes notes.
 
 - [ ] **Step 3: Fence before scan**
@@ -358,7 +358,7 @@ Do not auto-register a task-specific source: the task principal is not a connect
 
 - [ ] **Step 4: Run GREEN and commit**
 
-Run: `.\.venv\Scripts\python.exe -m pytest tests\test_agent_tasks.py -k "directory_root or delta_sync" --no-cov -q`  
+Run: `.\.venv\Scripts\python.exe -m pytest tests\test_agent_tasks.py -k "directory_root or delta_sync" --no-cov -q`
 Expected: PASS; directory-root tasks fail before creating a note or connector audit record, snapshot tasks retain ACL-filtered behavior.
 
 ```powershell
@@ -391,7 +391,7 @@ def test_operator_docs_state_source_ownership_safety_contract():
 
 - [ ] **Step 2: Run RED test**
 
-Run: `.\.venv\Scripts\python.exe -m pytest tests\test_source_ownership.py -k "operator_docs" --no-cov -q`  
+Run: `.\.venv\Scripts\python.exe -m pytest tests\test_source_ownership.py -k "operator_docs" --no-cov -q`
 Expected: FAIL because documentation does not state the v16 source-ownership contract.
 
 - [ ] **Step 3: Update factual operator documentation**
