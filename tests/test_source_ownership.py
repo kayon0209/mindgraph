@@ -103,3 +103,14 @@ def test_operator_docs_state_source_ownership_safety_contract():
         assert "dry-run" in text
         assert "clean audit" in text
         assert "directory-root task" in text
+
+
+def test_readmes_state_agent_capabilities_and_safety_gates():
+    for relative_path in ("README.md", "README.zh-CN.md"):
+        text = (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
+        assert "AGENT_TASKS_ENABLED" in text
+        assert "ASSIST_MCP_ENABLED" in text
+        assert "AGENT_WRITE_TOOLS_ENABLED" in text
+        assert "mindgraph_save_artifact" in text
+        assert "eight read-only" in text
+        assert "directory-root task" in text

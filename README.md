@@ -76,7 +76,7 @@ The first vertical is policy-heavy knowledge such as expense, finance and compli
 ### Interfaces & evaluation
 
 - **Web and Obsidian clients:** ask, inspect evidence, review relations and compare runs
-- **Agent-ready APIs:** REST, SSE and a read-only MCP server
+- **Agent execution:** REST/SSE, feature-gated background tasks and governed MCP tools
 - **Evaluation ledger:** retrieval, answer trust, routing, graph gate, latency and cost in one history
 
 ## Tech Stack
@@ -125,7 +125,7 @@ docker compose up --build
 
 ## Usage (MCP)
 
-MindGraph exposes a read-only MCP server with five tools:
+MindGraph exposes **eight read-only** MCP evidence tools by default:
 
 | Tool | Purpose |
 |---|---|
@@ -134,6 +134,9 @@ MindGraph exposes a read-only MCP server with five tools:
 | `mindgraph_search` | Search knowledge and return evidence |
 | `mindgraph_list_relations` | List confirmed relations whose endpoints are both visible |
 | `mindgraph_evaluation_overview` | Inspect evaluation-run summaries |
+| `mindgraph_get_policy_history` | Inspect visible versions for one policy key |
+| `mindgraph_concept_gaps` | Inspect aggregated knowledge gaps without question text |
+| `mindgraph_verify_citations` | Validate citation-marker completeness, not claim support |
 
 Start the stdio server:
 
@@ -158,7 +161,21 @@ Claude Desktop–style configuration:
 }
 ```
 
-MCP is intentionally read-only today. Reviewed relation proposals, evidence feedback and evaluation-case write-back are on the roadmap.
+### MCP capability gates
+
+`mindgraph_assist` is a governed answer tool and is disabled by default; enable it only with `ASSIST_MCP_ENABLED=true`. Three controlled write tools are present but hidden unless their independent feature flags are enabled:
+
+- `mindgraph_save_artifact` requires `AGENT_WRITE_TOOLS_ENABLED=true` and saves an answer/evidence snapshot only to the caller's private artifact space. It does not edit knowledge-source content or publish data.
+- `mindgraph_submit_evidence_feedback` requires `AGENT_FEEDBACK_TOOL_ENABLED=true` and uses an explicit preview/submit confirmation sequence.
+- `mindgraph_propose_relation` requires `AGENT_PROPOSE_RELATION_TOOL_ENABLED=true`; it can create only a `proposed` relation, which never enters graph expansion until human confirmation.
+
+Tool discovery and invocation both enforce the flags, authentication, ACL and audit boundary. Knowledge-source content write-back, automatic relation confirmation, and governance-resolution workflows remain deferred.
+
+## Agent Tasks
+
+The REST task API can submit idempotent background evidence checks, retrieve task state, cancel a queued/running task, and fetch private artifacts owned by the submitting principal. It is disabled by default and requires `AGENT_TASKS_ENABLED=true`; execution additionally requires an explicitly enabled worker.
+
+Tasks operate on already governed evidence. A **directory-root task** is not a directory-import mechanism in this release: it fails closed with `source_registration_required`. Administrators must import a directory through the connector's source-registration and clean-audit workflow instead.
 
 ## Architecture
 
