@@ -523,10 +523,8 @@ def _write_source_vault(root: Path) -> Path:
     return source
 
 
-def test_delta_sync_directory_root_scans_real_directory(tmp_path: Path):
-    """目录语义：constraints.directory_root 指向允许根目录下的真实目录时，
-    worker 扫描该目录（只读 upsert，不剪枝、不写 id），分桶结果只含该目录
-    产出的笔记，且 connector_syncs 留下审计行。"""
+def test_delta_sync_directory_root_refuses_unregistered_directory_write_path(tmp_path: Path):
+    """任务 worker 不能绕过来源注册而把目录内容写入 notes。"""
     service, worker, db = _build(tmp_path)
     allowed_root = tmp_path / "roots"
     allowed_root.mkdir()
@@ -539,8 +537,6 @@ def test_delta_sync_directory_root_scans_real_directory(tmp_path: Path):
         directory_scan_authorized=True,
     )
     assert task["status"] == "queued"
-    # 其余目录的笔记不得混入：seed 一批库内旧笔记（私有，corp-finance 主体不可见）
-    _seed_notes_with_timestamps(db, acl_public=False)
     worker_with_roots = TaskWorker(
         db,
         evidence_query_service_factory=lambda: None,
@@ -548,20 +544,14 @@ def test_delta_sync_directory_root_scans_real_directory(tmp_path: Path):
         allowed_roots=(allowed_root.resolve(),),
     )
     result = worker_with_roots.run_once()
-    assert result is not None and result["status"] == "completed"
+    assert result is not None and result["status"] == "failed"
+    assert result["error_code"] == "source_registration_required"
     detail = service.get_task(task_id=task["task_id"], principal_id="u1")
-    artifact = service.get_artifact_content(artifact_id=detail["artifacts"][0]["artifact_id"], principal_id="u1")
-    content = artifact["content"]
-    # 目录扫描产出 2 篇新增笔记（可见性：同步默认 acl_public=1 → scopeless 主体可见）
-    assert content["counts"]["added"] == 2
-    titles = {item["title"] for item in content["added"]}
-    assert titles == {"目录新增甲", "目录新增乙"}
-    # seed 的库内旧笔记不进目录模式分桶（不在该目录内）
-    assert "新增制度甲" not in titles
-    # connector_syncs 审计：任务驱动的目录扫描也留痕
-    sync_rows = db.fetch_all("SELECT * FROM connector_syncs WHERE connector_type='agent_task_delta_sync'")
-    assert len(sync_rows) == 1
-    assert sync_rows[0]["status"] == "completed"
+    assert detail["artifacts"] == []
+    assert db.fetch_one("SELECT COUNT(*) AS count FROM notes")["count"] == 0
+    assert db.fetch_one(
+        "SELECT COUNT(*) AS count FROM connector_syncs WHERE connector_type='agent_task_delta_sync'"
+    )["count"] == 0
 
 
 def test_delta_sync_directory_root_outside_allowed_roots_rejected(tmp_path: Path):
