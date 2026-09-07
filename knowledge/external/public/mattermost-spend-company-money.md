@@ -8,6 +8,7 @@ ingest_date: 2026-08-27
 ingest_tool: scripts/ingest_public_handbooks.py
 original_file: data-sources/handbooks/mattermost/how-to-spend-company-money.md
 status: active
+acl_public: true
 ---
 
 # Mattermost Handbook - How to spend company money

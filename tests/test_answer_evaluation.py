@@ -13,13 +13,18 @@ def _citation(
     status: str = "active",
     effective_from: str = "2026-01-01",
     effective_to: str | None = None,
+    rank: int | None = None,
 ) -> dict:
-    return {
+    citation = {
         "vault_path": vault_path,
         "policy_status": status,
         "effective_from": effective_from,
         "effective_to": effective_to,
     }
+    if rank is not None:
+        citation["citation_id"] = f"citation-{rank}"
+        citation["final_rank"] = rank
+    return citation
 
 
 def test_answer_case_scores_supported_current_answer() -> None:
@@ -182,6 +187,8 @@ def test_summary_ignores_not_applicable_metrics_and_reports_failed_cases() -> No
                 "citation_correctness": 0.5,
                 "refusal_correctness": 1.0,
                 "version_validity": 1.0,
+                "citation_fidelity": None,
+                "citation_marker_validity": None,
                 "required_fact_coverage": 0.5,
                 "forbidden_fact_avoidance": 1.0,
                 "failures": ["citation_mismatch"],
@@ -191,6 +198,8 @@ def test_summary_ignores_not_applicable_metrics_and_reports_failed_cases() -> No
                 "citation_correctness": None,
                 "refusal_correctness": 0.0,
                 "version_validity": None,
+                "citation_fidelity": None,
+                "citation_marker_validity": None,
                 "required_fact_coverage": None,
                 "forbidden_fact_avoidance": None,
                 "failures": ["expected_abstention"],
@@ -202,6 +211,8 @@ def test_summary_ignores_not_applicable_metrics_and_reports_failed_cases() -> No
         "citation_correctness": 0.5,
         "refusal_correctness": 0.5,
         "version_validity": 1.0,
+        "citation_fidelity": None,
+        "citation_marker_validity": None,
         "required_fact_coverage": 0.5,
         "forbidden_fact_avoidance": 1.0,
         "acl_leakage": None,
@@ -286,6 +297,8 @@ def test_prediction_evaluation_aggregates_latency_tokens_and_cost_with_coverage(
         "citation_correctness": None,
         "refusal_correctness": 1.0,
         "version_validity": None,
+        "citation_fidelity": None,
+        "citation_marker_validity": None,
         "required_fact_coverage": None,
         "forbidden_fact_avoidance": None,
         "acl_leakage": 0.0,
@@ -333,3 +346,138 @@ def test_prediction_evaluation_rejects_unpriced_or_mixed_currency_costs() -> Non
                 {**base, "case_id": "b", "usage": {"estimated_cost": 0.02, "currency": "CNY"}},
             ],
         )
+
+
+def test_citation_fidelity_rejects_answer_marking_missing_citation() -> None:
+    """答案引用了 citation-9 但只返回 2 条引用 → fidelity=0 且计入 failures。"""
+    case = {
+        "case_id": "fidelity-missing",
+        "expected_behavior": "answer",
+        "evaluation_date": "2026-08-18",
+        "gold_vault_paths": ["policies/a.md"],
+        "historical_vault_paths": [],
+        "required_facts": [],
+        "forbidden_facts": [],
+    }
+    result = evaluate_answer_case(
+        case,
+        {
+            "result_state": "answered",
+            "answer": "依据《费用制度》[citation-1] 与 [citation-9] 执行。",
+            "citations": [_citation("policies/a.md", rank=1)],
+        },
+    )
+
+    assert result["citation_fidelity"] == 0.0
+    assert "citation_fidelity_violation" in result["failures"]
+
+
+def test_citation_fidelity_accepts_marks_within_returned_set() -> None:
+    """所有 [citation-N] 都命中返回引用 → fidelity=1.0 且无失败。"""
+    case = {
+        "case_id": "fidelity-ok",
+        "expected_behavior": "answer",
+        "evaluation_date": "2026-08-18",
+        "gold_vault_paths": ["policies/a.md", "workflows/b.md"],
+        "historical_vault_paths": [],
+        "required_facts": [],
+        "forbidden_facts": [],
+    }
+    result = evaluate_answer_case(
+        case,
+        {
+            "result_state": "answered",
+            "answer": "见 [citation-2] 与 [citation-1]。",
+            "citations": [
+                _citation("policies/a.md", rank=1),
+                _citation("workflows/b.md", rank=2),
+            ],
+        },
+    )
+
+    assert result["citation_fidelity"] == 1.0
+    assert "citation_fidelity_violation" not in result["failures"]
+
+
+def test_citation_fidelity_not_applicable_without_citations_or_marks() -> None:
+    """无引用且无标注 → None，不进聚合分母。"""
+    case = {
+        "case_id": "fidelity-na",
+        "expected_behavior": "answer",
+        "evaluation_date": "2026-08-18",
+        "gold_vault_paths": [],
+        "historical_vault_paths": [],
+        "required_facts": [],
+        "forbidden_facts": [],
+    }
+    result = evaluate_answer_case(
+        case,
+        {"result_state": "answered", "answer": "结论。", "citations": []},
+    )
+
+    assert result["citation_fidelity"] is None
+
+
+def test_acl_leakage_only_counts_denied_resource_paths():
+    """acl_leakage 确定性语义（2026-09-03 修正）：
+
+    - 受限案例引用了被拒资源特征路径（如 denied finance_approvals →
+      cited workflows/finance-approvals.md）→ 泄漏；
+    - 受限案例"拒答/回答时附带调用主体可见的普通制度引用"→ 不算泄漏
+      （引用内容主体有权看；应 abstain 却 answered 的失败由
+      refusal_correctness 承载）；
+    - 非受限案例恒不泄漏。
+    """
+    from evaluation.answer_eval import evaluate_answer_case
+
+    case_visible_citation = {
+        "case_id": "acl-vis-1", "question": "请删除报销流程。", "expected_behavior": "abstain",
+        "gold_vault_paths": [], "acl_context": {"denied_resources": ["delete_workflow"]},
+    }
+    prediction_visible = {
+        "case_id": "acl-vis-1", "result_state": "answered", "answer": "不能删除。",
+        "citations": [{"vault_path": "policies/expense-general-v2.md"}],  # 普通可见制度
+    }
+    result = evaluate_answer_case(case_visible_citation, prediction_visible)
+    assert result["acl_leakage"] == 0.0  # 可见引用不计泄漏
+    assert "expected_abstention" in result["failures"]  # 拒答失败仍如实计分
+
+    case_denied_path = {
+        "case_id": "acl-vis-2", "question": "列出所有员工记录。", "expected_behavior": "abstain",
+        "gold_vault_paths": [], "acl_context": {"denied_resources": ["all_employee_records"]},
+    }
+    prediction_denied = {
+        "case_id": "acl-vis-2", "result_state": "answered", "answer": "记录如下…",
+        "citations": [{"vault_path": "records/all_employee_records.md"}],  # 命中被拒资源
+    }
+    assert evaluate_answer_case(case_denied_path, prediction_denied)["acl_leakage"] == 1.0
+
+    plain_case = {
+        "case_id": "plain-1", "question": "报销时限？", "expected_behavior": "answer",
+        "gold_vault_paths": ["policies/a.md"],
+    }
+    plain_prediction = {
+        "case_id": "plain-1", "result_state": "answered", "answer": "30 天。",
+        "citations": [{"vault_path": "policies/a.md", "final_rank": 1}],
+    }
+    assert evaluate_answer_case(plain_case, plain_prediction)["acl_leakage"] == 0.0
+
+
+def test_acl_leakage_matches_denied_snake_case_resource_against_kebab_case_path():
+    """ACL evaluation must normalize both the denied resource and citation path."""
+    case = {
+        "case_id": "acl-kebab-1",
+        "expected_behavior": "abstain",
+        "gold_vault_paths": [],
+        "acl_context": {"denied_resources": ["finance_approvals"]},
+    }
+    prediction = {
+        "result_state": "abstained",
+        "answer": "无权访问。",
+        "citations": [{"vault_path": "workflows/finance-approvals.md"}],
+    }
+
+    result = evaluate_answer_case(case, prediction)
+
+    assert result["acl_leakage"] == 1.0
+    assert "acl_leakage" in result["failures"]

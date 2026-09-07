@@ -122,6 +122,57 @@ class Settings(BaseSettings):
     # 覆盖缺口面板只展示出现次数 ≥ 该值的未收录概念
     CONCEPT_MINE_GAP_MIN_SEEN: int = 2
 
+    # ── Assist（M0/M1 受治理的 agent 交付面） ──
+    # 特性开关模式：默认关闭（off 态与既有 REST/SSE/MCP/Chat 行为字节兼容），
+    # 由部署方在 .env 显式开启。开启后：
+    # - ASSIST_ENABLED=True：挂载 /api/v1/assist（REST + SSE），进程内复用
+    #   ChatService 应用服务（无 HTTP/MCP 自调用），ACL + 审计与 /chat 一致；
+    # - ASSIST_MCP_ENABLED=True：额外把 Assist 暴露为只读 MCP 工具
+    #   mindgraph_assist（复用同一应用服务）。
+    ASSIST_ENABLED: bool = False
+    ASSIST_MCP_ENABLED: bool = False
+    # Assist 通道的时限与上限（沿用 chat 检索语义，仅作为通道级护栏）
+    ASSIST_TIMEOUT_SECONDS: float = 60.0
+    ASSIST_MAX_TOP_K: int = 10
+
+    # ── Agentic Evidence Layer 阶段开关（ADR-003；M0 仅登记，不消费） ──
+    # 依据《MindGraph Agent 化实施方案》M0 要求登记、后续里程碑按序消费：
+    # - AGENT_ASSIST_ENABLED：M2 内置确定性 Assist（计划/工具轨迹/澄清协议）；
+    # - AGENT_TASKS_ENABLED：M4 可恢复后台任务与 artifacts（Gate G1 之后）；
+    # - AGENT_WRITE_TOOLS_ENABLED：M5 受控 MCP 写工具（M4 稳定后）；
+    # - CONVERSATION_PERSISTENCE_ENABLED：M3 服务端会话持久化。
+    # 本阶段（M0/M1）打开这些开关不得产生任何运行时行为变化。
+    AGENT_ASSIST_ENABLED: bool = False
+    AGENT_TASKS_ENABLED: bool = False
+    AGENT_WRITE_TOOLS_ENABLED: bool = False
+    CONVERSATION_PERSISTENCE_ENABLED: bool = False
+    # Assist 单请求工具调用预算（M2 AgentExecutionPolicy 消费；M0 仅登记）
+    AGENT_MAX_TOOL_CALLS: int = 3
+    # Assist 请求 deadline（秒；M2 消费；MCP 通道沿用协作式 deadline 机制）
+    AGENT_REQUEST_DEADLINE_SECONDS: float = 45.0
+    # ── M4-A worker 运行参数（方案 §12；TASK_WORKER_ENABLED 由 lifespan 消费） ──
+    # true = API 启动时拉起单实例后台轮询线程执行 agent_tasks；false = 仅
+    # 留在 queued（需外部调用 run_until_drained）。单实例单 worker：启动时
+    # 防重检查（同库不允许两个运行线程），不假称多实例安全（ADR-004）。
+    TASK_WORKER_ENABLED: bool = False
+    TASK_LEASE_SECONDS: float = 120.0
+    TASK_MAX_ATTEMPTS: int = 3
+    # 空轮询间隔（秒）：无任务时线程休眠时长
+    TASK_POLL_INTERVAL_SECONDS: float = 2.0
+    # ── M5-A 工具 B：submit_evidence_feedback（中风险，独立开关） ──
+    # true = tools/list 暴露 mindgraph_submit_evidence_feedback（preview/submit
+    # 两段确认模式）。回滚：置回 false 即隐藏，已提交反馈保留（质量账本不回滚）。
+    AGENT_FEEDBACK_TOOL_ENABLED: bool = False
+    # ── M5-A 工具 C：propose_relation（高风险，独立开关） ──
+    # true = tools/list 暴露 mindgraph_propose_relation（preview/submit 两段
+    # 确认 + 仅 proposed + 三端 ACL + 双向幂等）。回滚：置回 false 即隐藏，
+    # 已创建的 proposed 候选留在审核队列（HITL 流不受影响）。
+    AGENT_PROPOSE_RELATION_TOOL_ENABLED: bool = False
+    # ── M3-E 会话保留策略（方案：可配置 retention；执行=到期归档，不物理删） ──
+    # 0 = 不启用自动保留期（会话永久 active，由用户手动归档）；>0 = 创建会话时
+    # 写入 retention_until = now + N 天，由 conversation runner 到期归档。
+    CONVERSATION_RETENTION_DAYS: int = 0
+
     # ── 数据库 ──
     DATABASE_PATH: str = str(PROJECT_ROOT / "data" / "product" / "product.sqlite3")
     SQLITE_JOURNAL_MODE: str = "WAL"

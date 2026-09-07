@@ -1,4 +1,7 @@
 import type {
+  AgentArtifactContent,
+  AgentArtifactMeta,
+  AgentTask,
   AnswerResult,
   ChatRequest,
   ConceptGapsResponse,
@@ -103,6 +106,51 @@ export async function streamChat(
   tail.events.forEach(onEvent);
 }
 
+/** M2：确定性 Assist Agent 流（AGENT_ASSIST_ENABLED 开启时可用；404 = 服务端未开）。
+ * P0-1：澄清补充作为新的问题提交；AssistRequest 契约没有 resume_from。 */
+export async function streamAssistAgent(
+  payload: ChatRequest,
+  onEvent: (event: StreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch(`${API_BASE}/assist/agent/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    signal,
+  });
+  if (!response.ok || !response.body) {
+    throw new ApiError(response.statusText || "Assist stream unavailable", response.status);
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const parsed = parseSseFrames(buffer);
+    buffer = parsed.remainder;
+    parsed.events.forEach(onEvent);
+  }
+  buffer += decoder.decode();
+  const tail = parseSseFrames(`${buffer}\n\n`);
+  tail.events.forEach(onEvent);
+}
+
+/** Assist 深度核对可用性探测：读 /config/public 的 assist_agent_enabled 布尔。
+ * P0-1 后续：旧探测 POST /assist/agent/stream 有副作用（写 assist_stream 审计、
+ * flag 开启时触发一次真实 agent 执行）——读配置零副作用。
+ * 请求失败也判 false：探测失败宁可提示"服务端未开启"也不让用户踩空。 */
+export async function assistAgentEnabled(): Promise<boolean> {
+  try {
+    const config = await api.publicConfig();
+    return config.assist_agent_enabled === true;
+  } catch {
+    return false;
+  }
+}
+
 export const api = {
   health: () => request<HealthStatus>("/health"),
   publicConfig: () => request<PublicConfig>("/config/public"),
@@ -159,4 +207,41 @@ export const api = {
   /** 覆盖缺口：用户问过但语料未覆盖的概念（指导补传材料） */
   conceptGaps: (limit = 50) =>
     request<ConceptGapsResponse>(`/mindgraph/concept-gaps?limit=${limit}`),
+  /** M3：服务端会话（CONVERSATION_PERSISTENCE_ENABLED 开启时可用） */
+  createConversation: (payload: { title: string; workspace?: string; department?: string }) =>
+    request<{ conversation_id: string; title: string; status: string; created_at: string; updated_at: string }>(
+      "/mindgraph/conversations", { method: "POST", body: JSON.stringify(payload) },
+    ),
+  listConversations: (cursor?: string, limit = 50) =>
+    request<{ items: Array<{ conversation_id: string; title: string; status: string; created_at: string; updated_at: string }>; next_cursor: string | null }>(
+      `/mindgraph/conversations${cursor ? `?cursor=${encodeURIComponent(cursor)}&limit=${limit}` : `?limit=${limit}`}`,
+    ),
+  getConversationMessages: (conversationId: string) =>
+    request<Array<{ message_id: string; sequence_no: number; role: string; content: string; created_at: string; request_id?: string | null }>>(
+      `/mindgraph/conversations/${encodeURIComponent(conversationId)}/messages`,
+    ),
+  importConversationTurns: (conversationId: string, turns: Array<Record<string, unknown>>) =>
+    request<{ imported: number; skipped_existing: number; mapping: unknown[]; total_messages: number }>(
+      `/mindgraph/conversations/${encodeURIComponent(conversationId)}/import-turns`,
+      { method: "POST", body: JSON.stringify({ turns }) },
+    ),
+  /** M4-A：后台任务（AGENT_TASKS_ENABLED 开启时可用；Idempotency-Key 幂等提交） */
+  submitAgentTask: (constraints: Record<string, unknown>, idempotencyKey: string) =>
+    request<AgentTask>("/mindgraph/agent/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
+      body: JSON.stringify({ task_type: "batch_policy_check", constraints }),
+    }),
+  listAgentTasks: (cursor?: string, limit = 50) =>
+    request<{ items: AgentTask[]; next_cursor: string | null }>(
+      `/mindgraph/agent/tasks${cursor ? `?cursor=${encodeURIComponent(cursor)}&limit=${limit}` : `?limit=${limit}`}`,
+    ),
+  getAgentTask: (taskId: string) =>
+    request<AgentTask & { artifacts: AgentArtifactMeta[] }>(`/mindgraph/agent/tasks/${encodeURIComponent(taskId)}`),
+  cancelAgentTask: (taskId: string) =>
+    request<AgentTask>(`/mindgraph/agent/tasks/${encodeURIComponent(taskId)}/cancel`, { method: "POST" }),
+  getAgentArtifact: (taskId: string, artifactId: string) =>
+    request<AgentArtifactContent>(
+      `/mindgraph/agent/tasks/${encodeURIComponent(taskId)}/artifacts/${encodeURIComponent(artifactId)}`,
+    ),
 };

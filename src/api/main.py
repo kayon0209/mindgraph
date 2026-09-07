@@ -18,6 +18,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from api.auth import require_authenticated
 from api.dependencies import get_container
+from application.task_worker_runner import maybe_start_task_worker
 from api.exception_handlers import (
     authentication_error_handler,
     authorization_error_handler,
@@ -34,8 +35,21 @@ from api.middleware import (
     RequestSizeLimitMiddleware,
     SecurityHeadersMiddleware,
     TimingMiddleware,
+    WatchdogMiddleware,
 )
-from api.routes import chat, connectors, evaluation, feedback, governance, health, knowledge, mcp, mindgraph_chat, mindgraph_readonly
+from api.routes import (
+    assist,
+    chat,
+    connectors,
+    evaluation,
+    feedback,
+    governance,
+    health,
+    knowledge,
+    mcp,
+    mindgraph_chat,
+    mindgraph_readonly,
+)
 from domain.errors import (
     AuthenticationError,
     AuthorizationError,
@@ -44,6 +58,7 @@ from domain.errors import (
 )
 from infrastructure.logging_config import configure_logging
 from infrastructure.settings import get_settings
+from infrastructure.sqlite_runtime import require_safe_sqlite_runtime
 
 # ── 日志配置（使用 logging_config 中的结构化日志） ──
 _settings = get_settings()
@@ -60,15 +75,21 @@ logger = logging.getLogger("mindgraph.api")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """启动时初始化 ServiceContainer，关闭时清理资源。"""
+    require_safe_sqlite_runtime()
     logger.info("application_starting", extra={"environment": _settings.ENVIRONMENT})
     container = get_container()
     logger.info("service_container_initialized")
+    # M4-A 缺口修复：TASK_WORKER_ENABLED=true 时拉起单实例任务轮询线程
+    # （flag 关闭零行为变化；runner 在关闭时随进程退出）
+    task_runner = maybe_start_task_worker(container)
     yield
     logger.info("application_shutting_down")
+    if task_runner is not None:
+        task_runner.stop()
     # 清理连接池等资源
     try:
         container.database.close()
-    except Exception:  # 关停期尽力清理，失败不阻断退出
+    except Exception:  # 停机期尽力清理，失败不阻断退出
         logger.debug("database_close_failed", exc_info=True)
     logger.info("application_stopped")
 
@@ -103,6 +124,7 @@ app.add_middleware(
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestSizeLimitMiddleware, max_body_bytes=_settings.MAX_UPLOAD_BYTES)
 app.add_middleware(TimingMiddleware)
+app.add_middleware(WatchdogMiddleware, timeout_seconds=30.0)  # P1-P1：全局软看门狗
 app.add_middleware(LoggingMiddleware)  # 必须在 RateLimit 之后添加（内层），以确保 request_id 已设置
 
 # ── 速率限制 ──
@@ -133,6 +155,24 @@ app.include_router(health.router, prefix=API_PREFIX)
 for route in (chat.router, connectors.router, knowledge.router, evaluation.router, feedback.router, governance.router, mindgraph_chat.router, mindgraph_readonly.router, mcp.router):
     app.include_router(route, prefix=API_PREFIX, dependencies=[Depends(require_authenticated)])
 
+# M1：Assist（受治理的 agent 交付面）——默认关闭，仅在配置显式开启时挂载
+# （特性开关在启动期读取，与 ServiceContainer 一致；off 态完全不暴露路由）。
+if _settings.ASSIST_ENABLED:
+    app.include_router(assist.router, prefix=API_PREFIX, dependencies=[Depends(require_authenticated)])
+
+# M3：服务端会话——CONVERSATION_PERSISTENCE_ENABLED 默认关闭时完全不挂载。
+if _settings.CONVERSATION_PERSISTENCE_ENABLED:
+    from api.routes import conversation_stream as conversation_stream_route
+    from api.routes import conversations as conversations_route
+
+    app.include_router(conversations_route.router, prefix=API_PREFIX, dependencies=[Depends(require_authenticated)])
+    app.include_router(conversation_stream_route.router, prefix=API_PREFIX, dependencies=[Depends(require_authenticated)])
+
+# M4-A：后台任务——AGENT_TASKS_ENABLED 默认关闭时完全不挂载。
+if _settings.AGENT_TASKS_ENABLED:
+    from api.routes import agent_tasks as agent_tasks_route
+
+    app.include_router(agent_tasks_route.router, prefix=API_PREFIX, dependencies=[Depends(require_authenticated)])
 
 # ── 根路径 ──
 

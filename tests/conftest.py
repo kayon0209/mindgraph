@@ -9,6 +9,39 @@ from unittest.mock import MagicMock
 import pytest
 
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_BUSINESS_DATABASE = (_PROJECT_ROOT / "data" / "product" / "product.sqlite3").resolve()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def block_business_database_in_tests():
+    """Fail before any test can construct a handle for the business database.
+
+    TestClient(app) starts the real lifespan unless a test injects a temporary
+    container.  A session-scoped guard runs before module-scoped fixtures, so
+    an accidental default ``ServiceContainer`` cannot silently initialise the
+    repository's business SQLite file.
+    """
+    from infrastructure.database import ProductDatabase
+
+    original_init = ProductDatabase.__init__
+    monkeypatch = pytest.MonkeyPatch()
+
+    def guarded_init(self, path, *args, **kwargs):
+        candidate = Path(path).resolve()
+        if candidate == _BUSINESS_DATABASE:
+            raise AssertionError(
+                "tests must not construct the business database; inject a temporary database instead"
+            )
+        original_init(self, path, *args, **kwargs)
+
+    monkeypatch.setattr(ProductDatabase, "__init__", guarded_init)
+    try:
+        yield
+    finally:
+        monkeypatch.undo()
+
+
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch):
     """每个测试运行前清理环境变量影响。"""
@@ -22,13 +55,25 @@ def clean_env(monkeypatch):
     os.environ["OPENAI_COMPAT_BASE_URL"] = "https://test.example.com"
     os.environ["BGE_LOCAL_FILES_ONLY"] = "true"
     os.environ["RATE_LIMIT_ENABLED"] = "false"
+    # Agentic flags 一律以进程内默认值（False）参与测试：.env 的灰度开启
+    # 不得影响"off 态行为"断言——显式覆盖优先于 .env 文件（pydantic-settings
+    # 优先级：环境变量 > .env）。需要 on 态的测试自行 setenv + cache_clear。
+    for flag in ("ASSIST_ENABLED", "ASSIST_MCP_ENABLED", "AGENT_ASSIST_ENABLED",
+                 "AGENT_TASKS_ENABLED", "TASK_WORKER_ENABLED", "AGENT_WRITE_TOOLS_ENABLED",
+                 "CONVERSATION_PERSISTENCE_ENABLED"):
+        os.environ[flag] = "false"
     # api.auth reads AUTH_MODE at import time; keep the module-level value in
     # sync with the isolated test environment. Tests for enterprise modes can
     # override it explicitly after this autouse fixture runs.
     import api.auth as auth
 
     monkeypatch.setattr(auth, "AUTH_MODE", "off")
+
+    from infrastructure.settings import get_settings
+
+    get_settings.cache_clear()
     yield
+    get_settings.cache_clear()
     os.environ.clear()
     os.environ.update(old_environ)
 

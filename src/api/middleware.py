@@ -1,12 +1,13 @@
 """生产级中间件：安全 Headers、请求日志、速率限制、请求体大小限制、响应计时。"""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
 import uuid
 from collections import defaultdict
-from typing import Callable, cast
+from typing import Awaitable, Callable, cast
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -21,7 +22,8 @@ def _actor_from_request(request: Request) -> str:
     token = api_key or (auth_header[7:] if auth_header.startswith("Bearer ") else "")
     if not token:
         return "anonymous"
-    return f"api_key:{token[:6]}…"
+    # 审计只描述鉴权存在性；任何 token 前缀仍然属于不应落库的凭据材料。
+    return "credential_present"
 
 
 def _record_access_audit(request: Request, response: Response, elapsed_ms: float) -> None:
@@ -42,7 +44,8 @@ def _record_access_audit(request: Request, response: Response, elapsed_ms: float
                 json.dumps({
                     "status_code": response.status_code,
                     "latency_ms": elapsed_ms,
-                    "query": request.url.query,
+                    # URL query 可能含搜索词、业务 ID 或临时凭据；只记录形状。
+                    "query_param_count": len(request.query_params),
                 }, ensure_ascii=False),
                 time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             ),
@@ -56,7 +59,11 @@ def _record_access_audit(request: Request, response: Response, elapsed_ms: float
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """添加生产级安全响应头。"""
 
-    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
         response: Response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
@@ -124,6 +131,54 @@ class TimingMiddleware(BaseHTTPMiddleware):
         elapsed_ms = round((time.perf_counter() - started) * 1000, 3)
         response.headers["X-Response-Time"] = str(elapsed_ms)
         return response
+
+
+# ── Watchdog：全局请求超时（走查 P1-P1）──
+# 背景：实测进程可在 SQLite 锁/线程卡死时"活着但不响应"——无超时时一个
+# 卡死端点会占满连接池拖垮全站。SSE（/stream、text/event-stream）合法地
+# 长连，豁免；其余请求超全局时限即断开，客户端收到明确 504 而非挂起。
+
+
+class WatchdogTimeoutError(TimeoutError):
+    pass
+
+
+class WatchdogMiddleware(BaseHTTPMiddleware):
+    """请求级软看门狗：anyio cancel scope + 全局时限。
+
+    取消不保证杀死卡在线程池里的同步代码（那要靠 http 超时兜底），
+    但保证客户端不再无限等待——504 立即返回，连接回到池里。
+    """
+
+    def __init__(self, app, timeout_seconds: float = 30.0) -> None:
+        super().__init__(app)
+        self.timeout_seconds = float(timeout_seconds)
+
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        if request.url.path.endswith("/stream") or "text/event-stream" in request.headers.get("accept", ""):
+            return await call_next(request)
+        try:
+            async with asyncio.timeout(self.timeout_seconds):
+                return await call_next(request)
+        except TimeoutError as exc:
+            logger.error(
+                "watchdog_request_timeout",
+                extra={
+                    "request_id": getattr(request.state, "request_id", None),
+                    "path": request.url.path,
+                    "timeout_s": self.timeout_seconds,
+                },
+            )
+            from fastapi.responses import JSONResponse
+
+            return JSONResponse(
+                status_code=504,
+                content={"error": {"code": "watchdog_timeout", "message": "请求超时已中断。请稍后重试。"}},
+            )
 
 
 # ── 请求体大小限制中间件 ──

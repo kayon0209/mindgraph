@@ -251,6 +251,59 @@ def _paths(items: Iterable[Any]) -> list[str]:
     return result
 
 
+def _is_graph_candidate(item: Any) -> bool:
+    """候选是否由图扩展追加（mindgraph_pipeline 在 chunk 元数据打 graph_evidence 标记）。"""
+    return bool(getattr(getattr(item, "chunk", None), "metadata", {}).get("graph_evidence"))
+
+
+def _dedupe_by_chunk_id(items: Iterable[Any]) -> list[Any]:
+    """按稳定 chunk_id 去重并保持顺序（图扩展按 chunk_id 判重，防御重复追加）。"""
+    seen: set[str] = set()
+    result: list[Any] = []
+    for item in items:
+        chunk_id = getattr(getattr(item, "chunk", None), "chunk_id", None)
+        if isinstance(chunk_id, str) and chunk_id in seen:
+            continue
+        if isinstance(chunk_id, str):
+            seen.add(chunk_id)
+        result.append(item)
+    return result
+
+
+def _split_base_graph(final_chunks: list[Any]) -> tuple[list[Any], list[Any]]:
+    """把 final_selected_chunks 拆成「基础检索命中」与「图扩展追加」两组。"""
+    base: list[Any] = []
+    graph: list[Any] = []
+    for candidate in final_chunks:
+        (graph if _is_graph_candidate(candidate) else base).append(candidate)
+    return base, graph
+
+
+def _full_set_metrics(gold: set[str], paths: list[str]) -> dict[str, float]:
+    """对「基础 top_k + 图追加」的完整证据集计算指标（不做 top_k 截断）。
+
+    ``evidence_size`` 反映实际进入生成上下文的证据规模（可大于 top_k）；
+    ``recall`` 是完整证据集上命中的 gold 比例，专门用于观察图扩展在 top_k
+    之外追加的召回增益——旧口径只数 final[:top_k]，对追加式图证据天然失明。
+    """
+    hits = len(gold.intersection(paths))
+    first = next((position for position, path in enumerate(paths, 1) if path in gold), None)
+    relevance = [1 if path in gold else 0 for path in paths]
+    dcg = sum(value / math.log2(index + 2) for index, value in enumerate(relevance))
+    ideal = sum(1 / math.log2(index + 2) for index in range(min(len(gold), len(paths))))
+    return {
+        "recall": round(hits / len(gold), 4) if gold else 0.0,
+        "precision": round(hits / len(paths), 4) if paths else 0.0,
+        "mrr": round(1.0 / first, 4) if first else 0.0,
+        "ndcg": round(dcg / ideal, 4) if ideal else 0.0,
+        "evidence_size": len(paths),
+    }
+
+
+def _mean(values: list[float]) -> float | None:
+    return round(sum(values) / len(values), 4) if values else None
+
+
 def _stage_for_path(gold_path: str, stage_paths: dict[str, list[str]]) -> str:
     if gold_path in stage_paths["final_selected_chunks"]:
         return "final"
@@ -386,6 +439,12 @@ def evaluate_retrieval_cases(
         gold = set(gold_paths)
         final_paths = stage_paths["final_selected_chunks"]
         metrics = _metrics(gold, final_paths, top_k)
+        # 图扩展观测：完整证据集指标（不做 top_k 截断，专门反映追加式图证据的
+        # 召回增益）+ 基础/图追加拆分（先按 chunk_id 去重，防御重复追加）。
+        deduped_final = _dedupe_by_chunk_id(trace_value.final_selected_chunks)
+        base_candidates, graph_candidates = _split_base_graph(deduped_final)
+        detail["evidence_graph_split"] = {"base": len(base_candidates), "graph": len(graph_candidates)}
+        detail["evidence_full_set"] = _full_set_metrics(gold, final_paths)
         evidence_stages = {path: _stage_for_path(path, stage_paths) for path in gold_paths}
         detail.update({"gold_vault_paths": gold_paths, "evidence_stages": evidence_stages, "metrics": metrics})
         missing_paths = gold.difference(final_paths[:top_k])
@@ -401,6 +460,10 @@ def evaluate_retrieval_cases(
         name: round(sum(row["metrics"][name] for row in scored) / len(scored), 4) if scored else None
         for name in ("recall_at_k", "precision_at_k", "mrr", "ndcg_at_k")
     }
+    # 完整证据集均值：top_k 截断口径的补充观测（图扩展在 top_k 之外追加的
+    # 证据可以提升 full_set_recall 而不改变 recall_at_k）。
+    summary["full_set_recall"] = _mean([float(row["evidence_full_set"]["recall"]) for row in scored])
+    summary["mean_evidence_size"] = _mean([float(row["evidence_full_set"]["evidence_size"]) for row in scored])
     summary["p50_retrieval_ms"] = _percentile(total_latencies_ms, 0.50)
     summary["p95_retrieval_ms"] = _percentile(total_latencies_ms, 0.95)
     summary["stratified"] = _stratified_metrics(cases, scored)

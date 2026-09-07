@@ -68,7 +68,7 @@ MindGraph 是**本地优先的企业制度与决策依据知识服务**。首个
 
 验收：能够量化检索质量、引用正确性、拒答正确性、延迟和成本。
 
-当前进度：已用公开 `demo-vault/` 建立 12 条人工冻结 V2.2.0 回归集（`mindgraph_golden_v2.jsonl`），并禁止从运行数据库或 confirmed 关系反向生成 Golden 标签。检索消融与答案评测已拆分：答案层可直接运行当前服务或复用冻结预测，确定性量化 citation F1、拒答正确性、版本有效性、必需事实覆盖与禁用事实规避；P95 总延迟、平均 Token、平均估算成本和数据覆盖率进入同一 `evaluation_runs` 账本，缺失用量不会被当作零成本。样本量、权限场景和人工/LLM judge 校准仍未达到本阶段最终验收。
+当前进度：已用公开 `demo-vault/` 建立人工冻结 V2 回归集（`mindgraph_golden_v2.jsonl`，当前 90 条 / 版本 2.4.0 / split 83 dev + 7 regression；早期 12 条 V2.2.0 快照已被替换），并禁止从运行数据库或 confirmed 关系反向生成 Golden 标签。检索消融与答案评测已拆分：答案层可直接运行当前服务或复用冻结预测，确定性量化 citation F1、拒答正确性、版本有效性、必需事实覆盖与禁用事实规避；P95 总延迟、平均 Token、平均估算成本和数据覆盖率进入同一 `evaluation_runs` 账本，缺失用量不会被当作零成本。样本量、权限场景和人工/LLM judge 校准仍未达到本阶段最终验收。
 
 元数据治理第二批已落地：Vault 中的 policy_key、owner、version、effective_from/to、status 会规范化进入 schema v5，缺失或非法值形成显式质量问题；API、Web 制度台账、检索 chunk 和 citation 均保留制度族、版本、稳定 Vault 路径与有效期语境。同一 policy_key 在查询日期存在多个有效版本时，问答服务会在调用模型前返回 `conflicting_evidence`，SSE 与 Web 完整展示待人工裁决版本。该机制解决“检测并安全拒答”，不自动决定哪个冲突版本有效；权限场景评测、人工复核校准，以及回答质量与 token/P95/单问成本的正式发布门槛仍未完成。
 
@@ -99,7 +99,7 @@ MindGraph 是**本地优先的企业制度与决策依据知识服务**。首个
 - [x] SSO/OIDC 最小可行接入（Bearer JWT 校验 + claims → principal 映射）
 - [x] 审计日志（`access_audit` 表：谁问了什么、引用了什么、依据什么版本回答）
 - [x] 本地 stdio MCP（开发者预览，默认只读）
-- [x] 企业 HTTP MCP（`/api/v1/mcp`，走认证 + ACL + 审计）
+- [x] 受认证 HTTP JSON-RPC 工具通道（`/api/v1/mcp`，走认证 + ACL + 审计；不是 MCP Streamable HTTP/OAuth transport）
 - [x] 部署指南（`docs/DEPLOYMENT.md`）
 
 验收：越权检索为零（`tests/test_access_control.py` 全绿），回答可按用户、来源版本和证据完整回放（`access_audit` 可追溯）。
@@ -121,7 +121,7 @@ MindGraph 是**本地优先的企业制度与决策依据知识服务**。首个
 - [x] 更新 `.env.example` 标题与兼容配置说明
 - [x] 更新 Nginx、Docker 镜像名和 CI/CD 标签
 - [x] 提供公开合成 `demo-vault/` 与无需外部模型的全链路验证
-- [x] 将无密钥离线全链路演示加入 Python 3.12 CI smoke test
+- [x] 将无密钥离线全链路演示加入 CPython 3.13.15 锁文件 CI smoke test
 - [x] React Web 前端并入 `web/`，与 API 同仓构建和发布
 - [ ] 更新 GitHub 仓库简介、Topics、Release 和演示素材
 

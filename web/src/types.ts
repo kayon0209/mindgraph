@@ -15,6 +15,8 @@ export type PublicConfig = {
     verified?: boolean;
   }>;
   default_chat_provider?: string;
+  /** P0-1 后续：assist 深度核对可用性探测改读此布尔（零副作用），不再 POST agent stream */
+  assist_agent_enabled?: boolean;
 };
 
 export type ChatRequest = {
@@ -106,6 +108,8 @@ export type RetrievalTrace = {
   degraded: boolean;
   degradation_reason?: string | null;
   index_version?: string | null;
+  /** M0：确定性检查产生的告警条目（如 citation_fidelity:missing_marks=9） */
+  warnings?: string[];
   graph_enabled: boolean;
   graph_hops?: number;
   graph_evidence?: { relation_id?: string; evidence_chunk_id?: string | null; evidence_span?: string | null; evidence_section?: string | null; status?: string | null }[];
@@ -119,6 +123,11 @@ export type AnswerResult = {
   question: string;
   answer: string;
   result_state: string;
+  /** M0 契约基线：机器可判定错误码，取值见后端 ErrorCode（additive） */
+  error_code?: string | null;
+  /** M0 契约基线：回答中的 [citation-N] 全部命中返回引用集为 true；无引用且
+   *  无标注时为 null（warning-first，M2 前不阻断） */
+  citation_fidelity?: boolean | null;
   citations: Citation[];
   retrieval_trace?: RetrievalTrace | null;
   timing: { total_ms: number; ttft_ms?: number | null };
@@ -135,6 +144,50 @@ export type StreamEvent = {
   event: string;
   timestamp?: string;
   data: Record<string, unknown>;
+};
+
+/** M2：确定性 Assist 的执行步骤（plan_created.data.steps 元素；label 为用户语言） */
+export type AssistStep = {
+  name: string;
+  label: string;
+};
+
+/** M2：plan_created 事件数据 */
+export type AssistPlan = {
+  steps: AssistStep[];
+  route: string;
+  reason_codes?: string[];
+  routing_ms?: number;
+};
+
+/** M2：单条工具执行记录（tool_call_started/finished 累积） */
+export type AssistToolCall = {
+  step: string;
+  label: string;
+  status: "running" | "ok" | "failed" | "denied" | "timeout";
+  result_state?: string;
+  latency_ms?: number;
+};
+
+/** M2：clarification_required 事件数据（P0-1：提交补充信息 = 新的补充问题请求，
+ *  当前无服务端恢复，前端不发送 resume_from） */
+export type AssistClarification = {
+  clarification_id: string;
+  questions: string[];
+  context_hash: string;
+  expires_at: string;
+};
+
+/** M2：citation_integrity_checked 事件数据 */
+export type AssistIntegrity = {
+  passed: boolean;
+  applicable: boolean;
+  checks?: {
+    unknown_markers?: string[];
+    duplicate_markers?: string[];
+    malformed_markers?: string[];
+    unused_citations?: string[];
+  };
 };
 
 /** SSE usage 事件（后端 UsageMetrics 的 JSON 形态） */
@@ -280,3 +333,54 @@ export type MineQuestionsResult = {
 };
 
 export type ConceptGapsResponse = { gaps: ConceptGap[]; total: number };
+
+/** M4-A：后台任务（AGENT_TASKS_ENABLED；状态机见 domain.task_models.TaskStatus） */
+export type AgentTask = {
+  task_id: string;
+  task_type: string;
+  status: "queued" | "running" | "completed" | "completed_with_conflicts" | "completed_empty" | "failed" | "cancelled";
+  result_state?: string | null;
+  constraints: Record<string, unknown>;
+  attempt_count: number;
+  cancel_requested: boolean;
+  error_code?: string | null;
+  error_message?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AgentArtifactMeta = {
+  artifact_id: string;
+  kind: string;
+  title: string;
+  visibility: string;
+  checksum: string;
+  created_at: string;
+};
+
+export type AgentArtifactContent = {
+  artifact_id: string;
+  task_id: string;
+  kind: string;
+  title: string;
+  content: {
+    document_query?: string | null;
+    as_of?: string | null;
+    matched_documents?: number;
+    conflict_count?: number;
+    conflicts?: Array<{ policy_key?: string | null; versions: Array<Record<string, unknown>> }>;
+  };
+  evidence_snapshot: Array<{
+    citation_id: string;
+    document_name?: string | null;
+    document_version?: string | null;
+    effective_from?: string | null;
+    effective_to?: string | null;
+    policy_status?: string | null;
+    policy_key?: string | null;
+    excerpt?: string | null;
+  }>;
+  citations: Array<Record<string, unknown>>;
+  checksum: string;
+  created_at: string;
+};

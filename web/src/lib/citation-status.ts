@@ -117,3 +117,22 @@ export function summarizeCitationValidity(
   }
   return { stale, caution };
 }
+
+const FIDELITY_WARNING_PREFIX = "citation_fidelity:missing_marks=";
+
+/**
+ * 从 trace warnings 还原引用保真检查标出的缺失标注（后端格式：
+ * citation_fidelity:missing_marks=9,12），返回用于展示的 [citation-N] 串。
+ * 找不到保真告警时返回空串（事实失真时 UI 才展示警示）。
+ */
+export function fidelityMissingMarks(warnings: string[] | undefined): string {
+  const warning = (warnings ?? []).find((item) => item.startsWith(FIDELITY_WARNING_PREFIX));
+  if (!warning) return "";
+  return warning
+    .slice(FIDELITY_WARNING_PREFIX.length)
+    .split(",")
+    .map((mark) => mark.trim())
+    .filter((mark) => mark !== "")
+    .map((mark) => `[citation-${mark}]`)
+    .join("、");
+}

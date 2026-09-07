@@ -2,22 +2,31 @@ import { useState, type ReactNode } from "react";
 import { AlertTriangle, Inbox, LoaderCircle, X } from "lucide-react";
 
 export function PageHeader({
-  eyebrow,
   title,
   description,
   actions,
+  eyebrow,
+  meta,
 }: {
-  eyebrow: string;
   title: string;
   description: string;
   actions?: ReactNode;
+  eyebrow?: string;
+  meta?: string[];
 }) {
   return (
     <header className="page-header reveal reveal-1">
-      <div>
-        <p className="eyebrow">{eyebrow}</p>
+      <div className="page-heading-copy">
+        {eyebrow ? <span className="page-eyebrow">{eyebrow}</span> : null}
         <h1>{title}</h1>
         <p className="page-description">{description}</p>
+        {meta?.length ? (
+          <div className="page-meta" aria-label="页面要点">
+            {meta.map((item) => (
+              <span key={item}>{item}</span>
+            ))}
+          </div>
+        ) : null}
       </div>
       {actions ? <div className="page-actions">{actions}</div> : null}
     </header>

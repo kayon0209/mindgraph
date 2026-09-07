@@ -13,7 +13,7 @@
 <p>
   <a href="https://github.com/kayon0209/mindgraph/actions/workflows/ci-cd.yml"><img src="https://img.shields.io/github/actions/workflow/status/kayon0209/mindgraph/ci-cd.yml?branch=main&style=flat-square&label=CI" alt="CI"></a>
   <a href="https://github.com/kayon0209/mindgraph/stargazers"><img src="https://img.shields.io/github/stars/kayon0209/mindgraph?style=flat-square&logo=github" alt="GitHub Stars"></a>
-  <img src="https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.11+">
+  <img src="https://img.shields.io/badge/Python-3.13.15-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.13.15">
   <img src="https://img.shields.io/badge/MCP-ready-7C3AED?style=flat-square" alt="MCP Ready">
   <img src="https://img.shields.io/badge/local--first-yes-0F766E?style=flat-square" alt="Local First">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-22C55E?style=flat-square" alt="MIT License"></a>
@@ -83,16 +83,16 @@ MindGraph 把 Markdown 或 Obsidian Vault 变成人与 AI Agent 都能使用的�
 
 | 分层 | 技术 |
 |---|---|
-| 运行环境 | Python 3.11+ |
+| 运行环境 | CPython 3.13.15；SQLite ≥3.51.3 或已批准回补版 3.44.6/3.50.7 |
 | API | FastAPI（REST + SSE）、MCP Server |
 | 检索 | BGE 向量 · FAISS（Dense）· BM25（Sparse）· RRF 融合 |
 | 存储 | SQLite（WAL）、版本化 FAISS 索引 |
-| 客户端 | Web 工作台（Streamlit）、Obsidian 插件 |
+| 客户端 | React/Vite Web 工作台（`web/`）、Obsidian 插件 |
 | 质量 | pytest、Ruff、mypy（见 `docs/DEPLOYMENT.md`） |
 
 ## 快速开始
 
-> **环境要求：** Python 3.11 或更高版本。
+> **环境要求：** CPython 3.13.15 与 [uv](https://docs.astral.sh/uv/)。产品 WAL 路径遇到未批准的 SQLite 运行时会拒绝启动。
 
 ### 路径 A：无需密钥验证完整链路
 
@@ -102,10 +102,9 @@ MindGraph 把 Markdown 或 Obsidian Vault 变成人与 AI Agent 都能使用的�
 git clone https://github.com/kayon0209/mindgraph.git
 cd mindgraph
 
-python -m venv .venv
-source .venv/bin/activate              # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-python scripts/validate_mindgraph_offline.py
+uv python install 3.13.15
+uv sync --frozen --extra dev
+uv run --frozen --no-sync python scripts/validate_mindgraph_offline.py
 ```
 
 离线验收使用确定性的 Fake Embedding / Fake LLM，只证明工程链路可复现，不代表真实模型质量。

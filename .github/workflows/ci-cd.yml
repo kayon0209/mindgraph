@@ -11,7 +11,8 @@ on:
   workflow_dispatch:
 
 env:
-  PYTHON_VERSION: "3.12"
+  PYTHON_VERSION: "3.13.15"
+  UV_VERSION: "0.12.3"
 jobs:
   # 先阻断会导致运行时 NameError/解析失败的错误；全量 Ruff 债务按路线图逐步收紧。
   lint:
@@ -20,49 +21,66 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
 
-      - name: Install lint tools
+      - name: Install pinned Python runtime
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Verify SQLite runtime before dependency install
+        env:
+          PYTHONPATH: src
         run: |
-          pip install ruff mypy==2.3.1
+          PYTHON_BIN="$(uv python find ${{ env.PYTHON_VERSION }})"
+          "$PYTHON_BIN" -c "import sqlite3; from infrastructure.sqlite_runtime import require_safe_sqlite_runtime; print(sqlite3.sqlite_version, require_safe_sqlite_runtime())"
+
+      - name: Install locked development dependencies
+        run: uv sync --frozen --extra dev --python ${{ env.PYTHON_VERSION }}
 
       - name: Ruff critical check
-        run: ruff check src/ scripts/ tests/ --config pyproject.toml --select F821,F822,F823,E902
+        run: uv run --frozen --no-sync ruff check src/ scripts/ tests/ --config pyproject.toml --select F821,F822,F823,E902
 
       - name: Mypy type check
-        run: mypy src/ --ignore-missing-imports --no-strict-optional
+        run: uv run --frozen --no-sync mypy src/ --python-version 3.13 --ignore-missing-imports --no-strict-optional
 
   # ── Unit Tests ──
   test:
-    name: Unit Tests (Python ${{ matrix.python-version }})
+    name: Unit Tests (Python 3.13.15)
     runs-on: ubuntu-latest
     needs: lint
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
         with:
-          python-version: ${{ matrix.python-version }}
-          cache: pip
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
 
-      - name: Install dependencies
+      - name: Install pinned Python runtime
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Verify SQLite runtime before dependency install
+        env:
+          PYTHONPATH: src
         run: |
-          pip install -r requirements.txt
-          pip install pytest pytest-cov pytest-asyncio httpx
+          PYTHON_BIN="$(uv python find ${{ env.PYTHON_VERSION }})"
+          "$PYTHON_BIN" -c "import sqlite3; from infrastructure.sqlite_runtime import require_safe_sqlite_runtime; print(sqlite3.sqlite_version, require_safe_sqlite_runtime())"
+
+      - name: Install locked development dependencies
+        run: uv sync --frozen --extra dev --python ${{ env.PYTHON_VERSION }}
 
       - name: Run unit tests
         env:
           ENVIRONMENT: development
           AUTH_MODE: "off"
         run: |
-          pytest tests/ -m "not slow" \
+          uv run --frozen --no-sync pytest tests/ -m "not slow" \
             --cov=src \
             --cov-report=xml \
             --cov-report=term-missing \
@@ -78,14 +96,12 @@ jobs:
           # 需要把 src/ 加入 PYTHONPATH（pytest 由 conftest 注入，此裸 python 步骤需显式声明）
           PYTHONPATH: ${{ github.workspace }}/src
         run: |
-          python -c "from evaluation.mindgraph_retrieval_eval import load_golden_dataset, load_candidate_dataset; assert len(load_golden_dataset()) >= 30; load_candidate_dataset()"
+          uv run --frozen --no-sync python -c "from evaluation.mindgraph_retrieval_eval import load_golden_dataset, load_candidate_dataset; assert len(load_golden_dataset()) >= 30; load_candidate_dataset()"
 
       - name: Run no-key offline demo smoke test
-        if: matrix.python-version == '3.12'
-        run: python scripts/validate_mindgraph_offline.py
+        run: uv run --frozen --no-sync python scripts/validate_mindgraph_offline.py
 
       - name: Upload coverage to Codecov
-        if: matrix.python-version == '3.12'
         uses: codecov/codecov-action@v4
         with:
           file: ./coverage.xml
@@ -96,7 +112,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results-${{ matrix.python-version }}
+          name: test-results-3.13.15
           path: test-results.xml
 
   # ── Web Client ──
@@ -141,16 +157,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
 
-      - name: Install dependencies
+      - name: Install pinned Python runtime
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Verify SQLite runtime before dependency install
+        env:
+          PYTHONPATH: src
         run: |
-          pip install -r requirements.txt
-          pip install pytest pytest-cov pytest-asyncio httpx
+          PYTHON_BIN="$(uv python find ${{ env.PYTHON_VERSION }})"
+          "$PYTHON_BIN" -c "import sqlite3; from infrastructure.sqlite_runtime import require_safe_sqlite_runtime; print(sqlite3.sqlite_version, require_safe_sqlite_runtime())"
+
+      - name: Install locked development dependencies
+        run: uv sync --frozen --extra dev --python ${{ env.PYTHON_VERSION }}
 
       - name: Run integration tests
         env:
@@ -162,7 +187,7 @@ jobs:
           OPENAI_COMPAT_MODEL: "deepseek-test"
           RETRIEVAL_CANDIDATE_COUNT: "5"
           RETRIEVAL_FINAL_TOP_K: "3"
-        run: pytest tests/ -m "integration" -v --no-cov
+        run: uv run --frozen --no-sync pytest tests/ -m "integration" -v --no-cov
 
   # ── Docker Build ──
   docker-build:
@@ -185,6 +210,9 @@ jobs:
           cache-from: type=gha,scope=api
           cache-to: type=gha,mode=max,scope=api
           tags: mindgraph-api:ci
+
+      - name: Verify API image SQLite runtime
+        run: docker run --rm --network none mindgraph-api:ci python -c "import sqlite3; from infrastructure.sqlite_runtime import require_safe_sqlite_runtime; print(sqlite3.sqlite_version, require_safe_sqlite_runtime())"
 
       - name: Build Web image
         uses: docker/build-push-action@v6
@@ -213,21 +241,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
 
-      - name: Install dependencies
+      - name: Install pinned Python runtime
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Verify SQLite runtime before dependency install
+        env:
+          PYTHONPATH: src
         run: |
-          # 固定版本：bandit 1.9.x 起 B608/B324 检测行为变化，未固定会导致门禁漂移
-          pip install bandit==1.9.4 safety==3.8.1
+          PYTHON_BIN="$(uv python find ${{ env.PYTHON_VERSION }})"
+          "$PYTHON_BIN" -c "import sqlite3; from infrastructure.sqlite_runtime import require_safe_sqlite_runtime; print(sqlite3.sqlite_version, require_safe_sqlite_runtime())"
+
+      - name: Install locked development dependencies
+        run: uv sync --frozen --extra dev --python ${{ env.PYTHON_VERSION }}
 
       - name: Bandit security scan
-        run: bandit -r src/ -c pyproject.toml -f json -o bandit-report.json
+        run: uv run --frozen --no-sync bandit -r src/ -c pyproject.toml -f json -o bandit-report.json
 
       - name: Safety dependency scan
-        run: safety check --ignore=70612
+        run: uv run --frozen --no-sync safety check --ignore=70612
 
       - name: Upload security reports
         if: always()

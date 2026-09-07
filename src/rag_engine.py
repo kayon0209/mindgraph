@@ -6,8 +6,6 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from zhipuai import ZhipuAI
-
 from config import (
     CHAT_MODEL,
     CHROMA_DIR,
@@ -19,6 +17,7 @@ from config import (
     UPLOAD_DIR,
 )
 from embedder import embed_texts, embed_query, get_backend_type
+from infrastructure.zhipu_compatible_client import ZhipuCompatibleClient
 from vector_store import VectorStoreClient
 
 logger = logging.getLogger("mindgraph.rag")
@@ -39,8 +38,8 @@ class RAGAnswer:
     sources: List[SourceChunk]
 
 
-def _client(api_key: str) -> ZhipuAI:
-    return ZhipuAI(api_key=api_key)
+def _client(api_key: str) -> ZhipuCompatibleClient:
+    return ZhipuCompatibleClient(api_key)
 
 
 def _get_collection(create: bool = True):

@@ -9,9 +9,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional
-
-from zhipuai import ZhipuAI
+from typing import Any, Dict, List, Optional
 
 
 # 拒答话术关键词
@@ -54,7 +52,7 @@ def reject_check(answer: str) -> float:
 
 
 def llm_hallucination_check(
-    client: ZhipuAI,
+    client: Any,
     question: str,
     answer: str,
     context: str,
@@ -117,7 +115,7 @@ def score_case(
     answer: str,
     context: str,
     *,
-    client: Optional[ZhipuAI] = None,
+    client: Optional[Any] = None,
     model: str = "glm-4.5-air",
     enable_llm_check: bool = True,
 ) -> ScoreResult:

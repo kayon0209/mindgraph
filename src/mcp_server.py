@@ -2,7 +2,8 @@
 
 分两层：
 - 早期本地 stdio MCP：仅用于开发者本地调试，每个工具默认只读；
-- 企业 HTTP MCP：挂载于 /api/v1/mcp，走 API Key 认证 + ACL + 审计 + 速率限制。
+- 受认证 HTTP JSON-RPC 工具通道：挂载于 /api/v1/mcp，走 API Key 认证 + ACL + 审计 + 速率限制；
+  它不是标准 MCP Streamable HTTP/OAuth transport。
 
 实现原则（对齐 Phase 5）：
 - MCP 是 MindGraph 的交付通道，不是护城河；
@@ -13,14 +14,14 @@
 """
 from __future__ import annotations
 
+from datetime import UTC, datetime
 import json
 import logging
 import os
 import sys
 import time
-import uuid
-from datetime import datetime, timezone
 from typing import Any
+import uuid
 
 from api.dependencies import get_container
 from application.access_control import (
@@ -32,9 +33,15 @@ from application.access_control import (
 logger = logging.getLogger("mindgraph.mcp")
 
 JSONRPC_VERSION = "2.0"
-PROTOCOL_VERSION = "2024-11-05"
+# MCP 协议版本支持集（M6-1，ADR-005）：2024-11-05 起的三个 stdio 稳定修订。
+# 2025-06-18 后的 "modern era" 修订改用 server/discover 握手、不经 initialize，
+# 不在本支持集（TS SDK 明确 initialize 不接受/不回 modern 版本）。
+MCP_SUPPORTED_VERSIONS: tuple[str, ...] = ("2024-11-05", "2025-03-26", "2025-06-18")
+# 服务器回退版本：客户端请求的版本不在支持集时，回我们支持的最新修订
+# （规范允许服务器回自己的版本；客户端不接受则断开）
+PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "mindgraph-mcp"
-SERVER_VERSION = "3.1.0"
+SERVER_VERSION = "3.2.0"
 MAX_TOOL_CALLS_PER_BATCH = 20
 MAX_LIST_LIMIT = 200
 MAX_SEARCH_TOP_K = 20
@@ -49,7 +56,7 @@ class MCPAuthenticationRequired(PermissionError):
 
 
 def _utc_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class MCPToolDeadlineExceeded(TimeoutError):
@@ -67,8 +74,60 @@ def _deadline_remaining(deadline: float | None = None) -> float:
     return deadline - time.monotonic()
 
 
+def _assist_mcp_enabled() -> bool:
+    """Assist MCP 工具开关（默认关；启动期读 .env，运行时经 get_settings 缓存）。"""
+    from infrastructure.settings import get_settings
+
+    return bool(get_settings().ASSIST_MCP_ENABLED)
+
+
+def _evidence_registry():
+    """获取容器内共享的 EvidenceToolRegistry（M1 起三个只读工具的统一执行面）。"""
+    container = get_container()
+    registry = getattr(container, "evidence_tool_registry", None)
+    return registry
+
+
+def _registry_tools() -> list[dict[str, Any]]:
+    """来自共享 registry 的 MCP 工具清单（M1 三个只读治理工具；M5-A 写工具
+    按各自独立开关暴露——tools/list 过滤与 handler 内 fail-closed 校验双保险）：
+    save_artifact ← AGENT_WRITE_TOOLS_ENABLED；
+    submit_evidence_feedback ← AGENT_FEEDBACK_TOOL_ENABLED。"""
+    registry = _evidence_registry()
+    if registry is None:
+        return []
+    from infrastructure.settings import get_settings
+
+    settings = get_settings()
+    write_enabled = bool(settings.AGENT_WRITE_TOOLS_ENABLED)
+    feedback_enabled = bool(settings.AGENT_FEEDBACK_TOOL_ENABLED)
+    propose_enabled = bool(settings.AGENT_PROPOSE_RELATION_TOOL_ENABLED)
+    write_flags = {
+        "mindgraph_save_artifact": write_enabled,
+        "mindgraph_submit_evidence_feedback": feedback_enabled,
+        "mindgraph_propose_relation": propose_enabled,
+    }
+    manifest: list[dict[str, Any]] = []
+    for tool in registry.mcp_tool_manifest(context="external_mcp"):
+        spec = registry.spec_for(tool["name"])
+        if spec is None:
+            continue
+        if spec.mode == "write" and not write_flags.get(tool["name"], False):
+            continue
+        manifest.append(tool)
+    return manifest
+
+
+def _assist_max_top_k() -> int:
+    """Assist 通道的 top_k 上限（单一数据源：settings.ASSIST_MAX_TOP_K）。"""
+    from infrastructure.settings import get_settings
+
+    value = get_settings().ASSIST_MAX_TOP_K
+    return max(1, int(value))
+
+
 def _tools() -> list[dict[str, Any]]:
-    return [
+    tools = [
         {
             "name": "mindgraph_list_notes",
             "description": "列出当前主体有权访问的笔记（台账）。按 workspace/department ACL 裁剪。",
@@ -99,7 +158,7 @@ def _tools() -> list[dict[str, Any]]:
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "minLength": 1},
+                    "query": {"type": "string", "minLength": 1, "maxLength": 2000},
                     "top_k": {"type": "integer", "default": 5, "minimum": 1, "maximum": MAX_SEARCH_TOP_K},
                     "strategy": {"type": "string", "enum": ["dense", "bm25", "hybrid", "hybrid_rerank"]},
                 },
@@ -122,6 +181,33 @@ def _tools() -> list[dict[str, Any]]:
             },
         },
     ]
+    # M1：Assist 只读工具（默认关闭，见 settings.ASSIST_MCP_ENABLED）——
+    # 复用同一应用服务，审计/ACL 与 REST Assist 一致。
+    if _assist_mcp_enabled():
+        tools.append({
+            "name": "mindgraph_assist",
+            "description": "受治理的只读问答（Assist）：复用与 /assist 相同的应用服务，返回机器可判定 verdict。不写回任何数据。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "question": {"type": "string", "minLength": 1, "maxLength": 2000},
+                    "retrieval_strategy": {
+                        "type": "string", "default": "auto",
+                        "enum": ["auto", "dense", "bm25", "hybrid", "hybrid_rerank"],
+                    },
+                    "final_top_k": {"type": "integer", "default": 5, "minimum": 1, "maximum": _assist_max_top_k()},
+                    "query_date": {"type": "string", "description": "YYYY-MM-DD；缺省按今天判定版本时效"},
+                    "include_historical": {"type": "boolean", "default": False},
+                },
+                "required": ["question"],
+                "additionalProperties": False,
+            },
+        })
+    # M1：共享 EvidenceToolRegistry 暴露的只读治理工具（policy 版本族/
+    # 概念缺口/引用完整性）。旧 5 工具保持原样；新工具经 registry 统一
+    # 执行（ACL/审计/deadline/脱敏），mcp_server 只做 envelope 映射。
+    tools.extend(_registry_tools())
+    return tools
 
 
 def _validate_tool_arguments(name: object, arguments: object) -> tuple[str, dict[str, Any]]:
@@ -146,6 +232,8 @@ def _validate_tool_arguments(name: object, arguments: object) -> tuple[str, dict
             if not isinstance(value, str):
                 raise InvalidToolArguments
             if rule.get("minLength") and len(value.strip()) < int(rule["minLength"]):
+                raise InvalidToolArguments
+            if "maxLength" in rule and len(value) > int(rule["maxLength"]):
                 raise InvalidToolArguments
         elif expected_type == "integer":
             if isinstance(value, bool) or not isinstance(value, int):
@@ -280,28 +368,64 @@ def _call_tool(
         top_k = min(max(int(arguments.get("top_k", 5)), 1), MAX_SEARCH_TOP_K)
         if _deadline_remaining(deadline) <= 0:
             raise MCPToolDeadlineExceeded
-        pipeline = container.mindgraph_pipeline(top_k=top_k, graph_enabled=False)
-        trace = pipeline.retrieve(query, strategy, access_scope=scope)
-        citations = []
-        for candidate in trace.final_selected_chunks[:top_k]:
-            citations.append({
-                "citation_id": candidate.chunk.chunk_id,
-                "document_id": candidate.chunk.document_id,
-                "document_name": candidate.chunk.metadata.get("title") or candidate.chunk.document_id,
-                "chunk_id": candidate.chunk.chunk_id,
-                "section_path": candidate.chunk.section_path,
-                "excerpt": candidate.chunk.text[:400],
-                "final_rank": candidate.final_rank,
-                "retrieval_score": candidate.rrf_score,
-                "document_version": candidate.chunk.metadata.get("document_version"),
-                "owner": candidate.chunk.metadata.get("owner"),
-                "effective_from": candidate.chunk.metadata.get("effective_from"),
-                "effective_to": candidate.chunk.metadata.get("effective_to"),
-                "policy_status": candidate.chunk.metadata.get("policy_status"),
-                "policy_key": candidate.chunk.metadata.get("policy_key"),
-                "authority_level": candidate.chunk.metadata.get("ai_access_level"),
-                "vault_path": candidate.chunk.metadata.get("vault_path"),
-            })
+        # 审查收敛（红线 3，方案 §3.1 原始要求）：search 复用共享 EvidenceQueryService
+        # 检索段，不再维护独立检索分支；响应形状经 citations 转换保持与旧契约
+        # 逐字段一致（旧 5 工具兼容测试锁定）。容器缺 mindgraph_chat（mock/极简
+        # 部署）时回退直接检索——行为等价，不作为"未知工具"失败。
+        from application.evidence_query_service import EvidenceQueryService
+        from domain.models import ChatRequest as _ChatRequest
+
+        chat_service = getattr(container, "mindgraph_chat", None)
+        if chat_service is not None:
+            evidence_service = EvidenceQueryService(chat_service)
+            request = _ChatRequest.model_validate(
+                {"question": query, "retrieval_strategy": strategy, "final_top_k": top_k}
+            )
+            result = evidence_service.query(request, access_scope=scope, excerpt_limit=400)
+            citations = [
+                {
+                    "citation_id": item.citation_id,
+                    "document_id": item.document_id,
+                    "document_name": item.document_name,
+                    "chunk_id": item.chunk_id,
+                    "section_path": item.section_path,
+                    "excerpt": item.excerpt,
+                    "final_rank": item.final_rank,
+                    "retrieval_score": item.retrieval_score,
+                    "document_version": item.document_version,
+                    "owner": item.owner,
+                    "effective_from": item.effective_from,
+                    "effective_to": item.effective_to,
+                    "policy_status": item.policy_status,
+                    "policy_key": item.policy_key,
+                    "authority_level": item.authority_level,
+                    "vault_path": item.vault_path,
+                }
+                for item in result.citations[:top_k]
+            ]
+        else:
+            pipeline = container.mindgraph_pipeline(top_k=top_k, graph_enabled=False)
+            trace = pipeline.retrieve(query, strategy, access_scope=scope)
+            citations = []
+            for candidate in trace.final_selected_chunks[:top_k]:
+                citations.append({
+                    "citation_id": candidate.chunk.chunk_id,
+                    "document_id": candidate.chunk.document_id,
+                    "document_name": candidate.chunk.metadata.get("title") or candidate.chunk.document_id,
+                    "chunk_id": candidate.chunk.chunk_id,
+                    "section_path": candidate.chunk.section_path,
+                    "excerpt": candidate.chunk.text[:400],
+                    "final_rank": candidate.final_rank,
+                    "retrieval_score": candidate.rrf_score,
+                    "document_version": candidate.chunk.metadata.get("document_version"),
+                    "owner": candidate.chunk.metadata.get("owner"),
+                    "effective_from": candidate.chunk.metadata.get("effective_from"),
+                    "effective_to": candidate.chunk.metadata.get("effective_to"),
+                    "policy_status": candidate.chunk.metadata.get("policy_status"),
+                    "policy_key": candidate.chunk.metadata.get("policy_key"),
+                    "authority_level": candidate.chunk.metadata.get("ai_access_level"),
+                    "vault_path": candidate.chunk.metadata.get("vault_path"),
+                })
         _audit("mcp_search", "search", "allow", {"query_len": len(query), "top_k": top_k, "strategy": strategy})
         return {"query": query, "strategy": strategy, "citations": citations, "graph_enabled": False}
 
@@ -343,6 +467,82 @@ def _call_tool(
         _audit("mcp_list_relations", "note_relations/confirmed", "allow", {"count": len(items)})
         return {"relations": items}
 
+    if name == "mindgraph_assist":
+        # flag 双重校验：工具列表已按 ASSIST_MCP_ENABLED 过滤，调用侧再校验一次
+        # （fail-closed：即使绕过 tools/list 直呼，未开启也拒绝执行）。
+        if not _assist_mcp_enabled():
+            raise ValueError(f"Unknown tool: {name}")
+        if _deadline_remaining(deadline) <= 0:
+            raise MCPToolDeadlineExceeded
+        from domain.models import ChatRequest
+
+        question = arguments.get("question") or ""
+        if not question.strip():
+            raise InvalidToolArguments
+        request = ChatRequest(
+            question=question,
+            retrieval_strategy=arguments.get("retrieval_strategy") or "auto",
+            final_top_k=min(max(int(arguments.get("final_top_k", 5)), 1), _assist_max_top_k()),
+            query_date=arguments.get("query_date"),
+            include_historical=bool(arguments.get("include_historical", False)),
+        )
+        container = get_container()
+        chat_service = getattr(container, "mindgraph_chat", None)
+        if chat_service is None:
+            raise ValueError(f"Unknown tool: {name}")
+        result = chat_service.answer(request, access_scope=scope)
+        _audit(
+            "mcp_assist",
+            "assist",
+            "allow",
+            {
+                "scope_user": (scope or {}).get("user"),
+                "result_state": result.result_state.value,
+                "verdict": result.error_code.value if result.error_code else result.result_state.value,
+                "citations": len(result.citations),
+            },
+        )
+        return {
+            "request_id": result.request_id,
+            "verdict": result.error_code.value if result.error_code else result.result_state.value,
+            "result_state": result.result_state.value,
+            "question": result.question,
+            "answer": result.answer,
+            "citations": [item.model_dump(mode="json") for item in result.citations],
+            "degraded": result.degraded,
+            "model": result.model,
+            "actual_strategy": result.actual_strategy,
+            "index_version": result.index_version,
+        }
+
+    # M1/M5-A：共享 EvidenceToolRegistry 的治理工具——统一执行面
+    # （principal→ACL→参数校验→deadline→handler→审计→脱敏），本函数
+    # 只做 MCP envelope 映射，不再写业务分支。
+    registry = _evidence_registry()
+    if registry is not None and registry.spec_for(name) is not None:
+        from application.evidence_tools.registry import (
+            ToolDeadlineExceeded,
+            ToolExecutionRejected,
+            ToolValidationFailed,
+        )
+
+        try:
+            tool_result: dict[str, Any] = registry.call(
+                name, arguments,
+                principal=principal,
+                context="external_mcp",
+                deadline=deadline,
+            )
+            return tool_result
+        except ToolValidationFailed as exc:
+            raise InvalidToolArguments(str(exc)) from exc
+        except ToolExecutionRejected:
+            # 业务级 fail-closed（flag 关闭/幂等冲突/审批未过）：以工具级
+            # 错误结果上抛（JSON-RPC -32603 通道），不与参数错误混淆
+            raise
+        except ToolDeadlineExceeded as exc:
+            raise MCPToolDeadlineExceeded(name) from exc
+
     raise ValueError(f"Unknown tool: {name}")
 
 
@@ -360,11 +560,15 @@ def handle_jsonrpc(
     msg_id = message.get("id")
 
     if method == "initialize":
+        # 版本协商（M6-1，ADR-005）：客户端在支持集内 → echo 其请求版本；
+        # 否则回退到我们支持的最新修订。与官方 SDK 协商行为对齐。
+        requested = str(((message.get("params") or {}).get("protocolVersion")) or "")
+        negotiated = requested if requested in MCP_SUPPORTED_VERSIONS else PROTOCOL_VERSION
         return {
             "jsonrpc": JSONRPC_VERSION,
             "id": msg_id,
             "result": {
-                "protocolVersion": PROTOCOL_VERSION,
+                "protocolVersion": negotiated,
                 "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
                 "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
             },
@@ -450,5 +654,20 @@ def run_stdio(principal: dict[str, Any] | None = None) -> None:
 
 if __name__ == "__main__":
     env_principal = os.getenv("MCP_PRINCIPAL")
-    principal = {"name": env_principal, "authenticated": bool(env_principal)} if env_principal else None
+    # 本地调试主体的角色注入（逗号分隔，如 "admin" 或 "read,finance"）：
+    # 无角色主体的 allow/deny 均空 → build_access_scope 视为受限 scope
+    # （私有内容不可见）；smoke/联调用 MCP_PRINCIPAL_ROLES 显式提权。
+    # 加固（审查）：企业模式（AUTH_MODE≠off）下注入提权角色属于运维失误，
+    # 显式告警（不阻断——环境变量可控性即本机信任边界，见 DEPLOYMENT-ops.md）。
+    env_roles = [item.strip() for item in os.getenv("MCP_PRINCIPAL_ROLES", "").split(",") if item.strip()]
+    if env_roles and os.getenv("AUTH_MODE", "demo") != "off":
+        logging.getLogger("mindgraph.mcp").warning(
+            "mcp_principal_roles_injected_under_auth",
+            extra={"roles": env_roles, "hint": "MCP_PRINCIPAL_ROLES 只应用于本地调试；企业部署请移除"},
+        )
+    principal = None
+    if env_principal:
+        principal = {"name": env_principal, "authenticated": bool(env_principal)}
+        if env_roles:
+            principal["roles"] = env_roles
     run_stdio(principal=principal)

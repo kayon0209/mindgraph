@@ -3,6 +3,7 @@ from __future__ import annotations
 
 # 必须在导入 app 前设置环境变量
 import os
+import json
 
 from fastapi.testclient import TestClient
 import pytest
@@ -17,24 +18,29 @@ os.environ["OPENAI_COMPAT_MODEL"] = "deepseek-test"
 os.environ["OPENAI_COMPAT_BASE_URL"] = "https://test.example.com"
 
 
-@pytest.fixture(scope="module")
-def client(tmp_path_factory):
+@pytest.fixture
+def client(tmp_path):
     """FastAPI TestClient。"""
     from unittest.mock import patch
 
     import api.auth as auth
+    from api.dependencies import override_container
     from infrastructure.database import ProductDatabase
 
     previous_auth_mode = auth.AUTH_MODE
     auth.AUTH_MODE = "off"
-    test_database = ProductDatabase(tmp_path_factory.mktemp("api") / "product.sqlite3")
-    with patch("api.dependencies.ProductDatabase", return_value=test_database), \
-         patch("api.dependencies.DocumentLifecycleService.import_existing_markdown"), \
-         patch("api.dependencies.ServiceContainer._register_builtin_datasets"):
-        from api.main import app
-        with TestClient(app) as c:
-            yield c
-    auth.AUTH_MODE = previous_auth_mode
+    test_database = ProductDatabase(tmp_path / "product.sqlite3")
+    override_container(None)
+    try:
+        with patch("api.dependencies.ProductDatabase", return_value=test_database), \
+             patch("api.dependencies.DocumentLifecycleService.import_existing_markdown"), \
+             patch("api.dependencies.ServiceContainer._register_builtin_datasets"):
+            from api.main import app
+            with TestClient(app) as c:
+                yield c
+    finally:
+        override_container(None)
+        auth.AUTH_MODE = previous_auth_mode
 
 
 class TestHealthEndpoints:
@@ -69,6 +75,25 @@ class TestSecurityHeaders:
         assert headers.get("X-Content-Type-Options") == "nosniff"
         assert headers.get("X-Frame-Options") == "DENY"
         assert headers.get("Referrer-Policy") == "strict-origin-when-cross-origin"
+
+    def test_access_audit_never_records_credential_prefix_or_query_values(self, client):
+        """审计只保留请求形状，不能把 bearer 或 URL 中的业务内容落库。"""
+        response = client.get(
+            "/api/v1/health?document_query=employee-private-data&access_token=query-secret",
+            headers={"X-API-Key": "header-secret-value"},
+        )
+        assert response.status_code == 200
+        from api.dependencies import get_container
+
+        audit = get_container().database.fetch_one(
+            "SELECT actor, metadata_json FROM access_audit WHERE resource='/api/v1/health' ORDER BY created_at DESC LIMIT 1"
+        )
+        assert audit["actor"] == "credential_present"
+        metadata = json.loads(audit["metadata_json"])
+        assert metadata["query_param_count"] == 2
+        assert "employee-private-data" not in audit["metadata_json"]
+        assert "query-secret" not in audit["metadata_json"]
+        assert "header-secret-value" not in audit["actor"]
 
 
 class TestErrorHandling:

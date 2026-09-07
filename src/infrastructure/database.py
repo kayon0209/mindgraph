@@ -3,16 +3,19 @@ from __future__ import annotations
 import json
 import logging
 import os
-import sqlite3
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
+import sqlite3
+
+from infrastructure.sqlite_runtime import require_safe_sqlite_runtime
+
 logger = logging.getLogger("mindgraph.database")
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 15
 
 
 class ProductDatabase:
@@ -42,6 +45,7 @@ class ProductDatabase:
             self._SLOW_QUERY_THRESHOLD_MS = 500.0
 
     def connect(self) -> sqlite3.Connection:
+        require_safe_sqlite_runtime()
         connection = sqlite3.connect(
             str(self.path),
             check_same_thread=False,
@@ -106,15 +110,19 @@ class ProductDatabase:
         if connection is not None:
             try:
                 connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                connection.close()
             except Exception as exc:
                 logger.warning("database_close_warning", extra={"error": str(exc)})
             finally:
-                self._local.connection = None
+                try:
+                    connection.close()
+                except Exception as exc:
+                    logger.warning("database_connection_close_warning", extra={"error": str(exc)})
+                finally:
+                    self._local.connection = None
         logger.info("database_closed_with_checkpoint")
 
     def initialize(self) -> None:
-        with self.connect() as connection:
+        with closing(self.connect()) as connection, connection:
             connection.executescript("""
                 CREATE TABLE IF NOT EXISTS schema_meta (version INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS query_logs (
@@ -282,6 +290,9 @@ class ProductDatabase:
                 "index_version": "TEXT", "prompt_version": "TEXT",
                 "requested_provider": "TEXT", "actual_provider": "TEXT",
                 "query_date": "TEXT", "category_filter_json": "TEXT NOT NULL DEFAULT '[]'",
+                # ── schema v13（安全审查 F1）：问答归属列——feedback 工具 preview
+                # 按归属校验，杜绝跨主体枚举 request_id 窥探他人问答。
+                "principal_id": "TEXT",
             })
             self._ensure_columns(connection, "evaluation_runs", {
                 "index_version": "TEXT", "prompt_version": "TEXT", "provider": "TEXT",
@@ -315,6 +326,149 @@ class ProductDatabase:
                 "effective_to": "TEXT",
                 "extraction_method": "TEXT",
             })
+            # ── schema v10（M3 服务端会话，ADR-003/实施方案 §6.1 修订版） ──
+            # 只新增表与索引，不改既有表；owner 校验一律用稳定 principal_id，
+            # 不用展示名。默认不保存完整工具参数/结果（脱敏字段承载）。
+            connection.executescript("""
+                CREATE TABLE IF NOT EXISTS conversations (
+                    conversation_id TEXT PRIMARY KEY,
+                    principal_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    workspace TEXT,
+                    department TEXT,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    retention_until TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS messages (
+                    message_id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL,
+                    sequence_no INTEGER NOT NULL,
+                    request_id TEXT,
+                    role TEXT NOT NULL CHECK (role IN ('user','assistant','system')),
+                    content TEXT NOT NULL,
+                    tool_call_id TEXT,
+                    citations_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL,
+                    UNIQUE(conversation_id, sequence_no),
+                    FOREIGN KEY(conversation_id) REFERENCES conversations(conversation_id)
+                );
+                CREATE TABLE IF NOT EXISTS tool_call_log (
+                    tool_call_id TEXT PRIMARY KEY,
+                    conversation_id TEXT,
+                    request_id TEXT,
+                    principal_id TEXT,
+                    tool_name TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    finished_at TEXT,
+                    arguments_redacted_json TEXT NOT NULL DEFAULT '{}',
+                    arguments_hash TEXT,
+                    result_summary_json TEXT NOT NULL DEFAULT '{}',
+                    error_code TEXT,
+                    FOREIGN KEY(conversation_id) REFERENCES conversations(conversation_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_conversations_owner
+                    ON conversations(principal_id, status, updated_at);
+                CREATE INDEX IF NOT EXISTS idx_messages_conversation
+                    ON messages(conversation_id, sequence_no);
+                CREATE INDEX IF NOT EXISTS idx_tool_call_log_conversation
+                    ON tool_call_log(conversation_id, started_at);
+                CREATE INDEX IF NOT EXISTS idx_tool_call_log_request
+                    ON tool_call_log(request_id);
+                CREATE TABLE IF NOT EXISTS agent_tasks (
+                    task_id TEXT PRIMARY KEY,
+                    principal_id TEXT NOT NULL,
+                    workspace TEXT,
+                    department TEXT,
+                    conversation_id TEXT,
+                    task_type TEXT NOT NULL,
+                    constraints_json TEXT NOT NULL DEFAULT '{}',
+                    status TEXT NOT NULL DEFAULT 'queued',
+                    result_state TEXT,
+                    idempotency_key TEXT NOT NULL,
+                    lease_owner TEXT,
+                    lease_expires_at TEXT,
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    cancel_requested_at TEXT,
+                    error_code TEXT,
+                    error_message TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(principal_id, idempotency_key)
+                );
+                CREATE TABLE IF NOT EXISTS artifacts (
+                    artifact_id TEXT PRIMARY KEY,
+                    owner_principal_id TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    content_json TEXT NOT NULL DEFAULT '{}',
+                    visibility TEXT NOT NULL DEFAULT 'private',
+                    evidence_snapshot_json TEXT NOT NULL DEFAULT '[]',
+                    citations_json TEXT NOT NULL DEFAULT '[]',
+                    checksum TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(task_id) REFERENCES agent_tasks(task_id)
+                );
+                -- schema v15：task_id 唯一 claim 用于 at-least-once worker 的副作用围栏。
+                -- 保留历史 artifacts（即使旧版本曾产生重复），只为每个 task 选定一个 canonical artifact。
+                CREATE TABLE IF NOT EXISTS artifact_task_claims (
+                    task_id TEXT PRIMARY KEY,
+                    artifact_id TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(task_id) REFERENCES agent_tasks(task_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_agent_tasks_owner
+                    ON agent_tasks(principal_id, status, updated_at);
+                CREATE INDEX IF NOT EXISTS idx_agent_tasks_status_lease
+                    ON agent_tasks(status, lease_expires_at);
+                CREATE INDEX IF NOT EXISTS idx_artifacts_owner
+                    ON artifacts(owner_principal_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_artifacts_task
+                    ON artifacts(task_id);
+                -- ── schema v12（M5-A：用户显式保存的私有证据存档，独立于任务 artifact 生命周期） ──
+                CREATE TABLE IF NOT EXISTS saved_artifacts (
+                    artifact_id TEXT PRIMARY KEY,
+                    owner_principal_id TEXT NOT NULL,
+                    kind TEXT NOT NULL DEFAULT 'chat_evidence_snapshot',
+                    title TEXT NOT NULL,
+                    content_json TEXT NOT NULL DEFAULT '{}',
+                    visibility TEXT NOT NULL DEFAULT 'private',
+                    request_id TEXT,
+                    conversation_id TEXT,
+                    evidence_snapshot_json TEXT NOT NULL DEFAULT '[]',
+                    citations_json TEXT NOT NULL DEFAULT '[]',
+                    checksum TEXT NOT NULL,
+                    idempotency_key TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(owner_principal_id, idempotency_key)
+                );
+                CREATE INDEX IF NOT EXISTS idx_saved_artifacts_owner
+                    ON saved_artifacts(owner_principal_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_saved_artifacts_request
+                    ON saved_artifacts(request_id);
+                -- ── schema v14（additive；clarification_requests 表保留，
+                --      当前无业务消费方；不得降低 schema 版本或 DROP 此表） ──
+                CREATE TABLE IF NOT EXISTS clarification_requests (
+                    clarification_id TEXT PRIMARY KEY,
+                    principal_id TEXT NOT NULL,
+                    conversation_id TEXT,
+                    original_request_hash TEXT NOT NULL,
+                    questions_json TEXT NOT NULL DEFAULT '[]',
+                    context_hash TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    consumed_at TEXT,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_clarification_requests_owner
+                    ON clarification_requests(principal_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_clarification_requests_consume
+                    ON clarification_requests(clarification_id, consumed_at);
+            """)
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_notes_policy_lifecycle "
                 "ON notes(policy_key, policy_status, effective_from, effective_to)"
@@ -332,6 +486,10 @@ class ProductDatabase:
                 "CREATE INDEX IF NOT EXISTS idx_notes_acl_public ON notes(acl_public)"
             )
             row = connection.execute("SELECT version FROM schema_meta LIMIT 1").fetchone()
+            connection.execute(
+                "INSERT OR IGNORE INTO artifact_task_claims (task_id, artifact_id, created_at) "
+                "SELECT task_id, MIN(artifact_id), MIN(created_at) FROM artifacts GROUP BY task_id"
+            )
             if row is None:
                 connection.execute("INSERT INTO schema_meta(version) VALUES (?)", (SCHEMA_VERSION,))
             elif row[0] < SCHEMA_VERSION:
@@ -354,16 +512,32 @@ class ProductDatabase:
                 "UPDATE evaluation_runs SET status='interrupted', error='Service restarted before completion' WHERE status IN ('queued','running')"
             )
 
-    def execute(self, sql: str, params: tuple[Any, ...] = ()) -> None:
+    def execute(self, sql: str, params: tuple[Any, ...] = ()) -> int:
+        """执行写语句并返回受影响行数（并发 claim/幂等判定依赖该返回值）。
+
+        写锁竞争通用缓解（运行时缺陷修复）：WAL 单写者模型下，请求线程与
+        worker 线程的写写在 busy_timeout 内可能解不开（database is locked
+        直接打穿到请求 500）。此处对 locked 做短指数退避重试（与既有
+        _cursor_with_retry 的连接级重试互补，这是语句级）。
+        """
         started = time.perf_counter()
         conn = self._cursor_with_retry()
-        try:
-            conn.execute(sql, params)
-            conn.commit()
-        except sqlite3.OperationalError:
-            conn.rollback()
-            raise
-        self._log_slow_query(sql, (time.perf_counter() - started) * 1000)
+        last_error: sqlite3.OperationalError | None = None
+        for attempt in range(self._MAX_RETRIES):
+            try:
+                cursor = conn.execute(sql, params)
+                conn.commit()
+                rowcount = cursor.rowcount if cursor is not None else 0
+                self._log_slow_query(sql, (time.perf_counter() - started) * 1000)
+                return rowcount if rowcount is not None and rowcount >= 0 else 0
+            except sqlite3.OperationalError as exc:
+                conn.rollback()
+                if "locked" in str(exc).lower() and attempt < self._MAX_RETRIES - 1:
+                    last_error = exc
+                    time.sleep(self._RETRY_DELAY * (attempt + 1))
+                    continue
+                raise
+        raise last_error  # type: ignore[misc]  # 理论不可达：循环内必 return 或 raise
 
     def execute_many(self, sql: str, params_list: list[tuple[Any, ...]]) -> None:
         started = time.perf_counter()

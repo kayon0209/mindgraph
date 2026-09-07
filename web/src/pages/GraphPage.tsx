@@ -378,9 +378,10 @@ export function GraphPage() {
     return (
       <div className="page graph-page">
         <PageHeader
-          eyebrow="制度知识图谱"
           title="制度关系图谱"
           description="每个节点是一份制度，连线表示人工确认过的关联。滚轮缩放，拖拽平移，点击节点查看详情。"
+          eyebrow="关系 · 确认与展示"
+          meta={["所有连线均已由人确认", "滚轮缩放 · 拖拽平移"]}
         />
         <EmptyState title="还没有图谱数据" detail="请先在「制度台账」上传或同步制度材料，确认关系后这里才会出现节点与边。" />
       </div>
@@ -395,9 +396,10 @@ export function GraphPage() {
   return (
     <div className="page graph-page">
       <PageHeader
-        eyebrow="制度知识图谱"
         title="制度关系图谱"
         description="每个节点是一份制度，连线表示人工确认过的关联。滚轮缩放，拖拽平移，点击节点查看详情。"
+        eyebrow="关系 · 确认与展示"
+        meta={["所有连线均已由人确认", "滚轮缩放 · 拖拽平移"]}
       />
 
       <ContextHint storageKey="mindgraph.hint.graph">
@@ -559,7 +561,6 @@ export function GraphPage() {
           ) : detail ? (
             <>
               <div className="graph-detail-head">
-                <p className="eyebrow">制度档案</p>
                 <h2>{detail.title}</h2>
                 <p className="drawer-path">{detail.vault_path}</p>
                 <div className="graph-detail-tags">

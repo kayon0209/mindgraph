@@ -5,6 +5,7 @@ import { BarComparison } from "../components/BarComparison";
 import { ContextHint, EmptyState, ErrorState, LoadingState, MetricCard, PageHeader, StatusPill } from "../components/Primitives";
 import { api } from "../lib/api";
 import { evaluationEfficiencyView, latestRunsForMetric, latestRunWithMetric, metricValue, numericMetricValue } from "../lib/metrics";
+import { SPARK_METRICS, sparkNormalize, sparkPath, sparkSeries } from "../lib/quality-spark";
 import type { EvaluationResponse } from "../types";
 
 function percent(value: number | null): string {
@@ -57,6 +58,8 @@ export function EvaluationPage() {
     { label: "引用正确性", note: "最新答案级评测", value: percent(latestAnswerRun ? metricValue(latestAnswerRun, "citation_correctness") : null), enableHint: "运行回答质量评测后显示。" },
     { label: "拒答正确性", note: "最新答案级评测", value: percent(latestAnswerRun ? metricValue(latestAnswerRun, "refusal_correctness") : null), enableHint: "运行回答质量评测后显示。" },
     { label: "版本有效性", note: "状态与生效期一致", value: percent(latestAnswerRun ? metricValue(latestAnswerRun, "version_validity") : null), enableHint: "运行包含版本校验的回答质量评测后显示。" },
+    { label: "引用保真", note: "标注全部命中引用集", value: percent(latestAnswerRun ? metricValue(latestAnswerRun, "citation_fidelity") : null), enableHint: "运行新版答案评测（含 M0 确定性引用检查）后显示。" },
+    { label: "引用标注完整性", note: "无畸形/越界/重复/未用", value: percent(latestAnswerRun ? metricValue(latestAnswerRun, "citation_marker_validity") : null), enableHint: "运行新版答案评测（含引用标注完整性检查）后显示。" },
     { label: "路由准确率", note: "冻结路由矩阵", value: percent(latestRoutingRun ? metricValue(latestRoutingRun, "route_accuracy") : null), enableHint: "运行包含策略记录的检索评测后显示。" },
     { label: "重排路由占比", note: "高成本路径使用率", value: percent(latestRoutingRun ? metricValue(latestRoutingRun, "rerank_route_rate") : null), enableHint: "运行包含策略记录的检索评测后显示。" },
     { label: "关系扩展占比", note: "受控图路径使用率", value: percent(latestRoutingRun ? metricValue(latestRoutingRun, "graph_route_rate") : null), enableHint: "运行包含策略记录的检索评测后显示。" },
@@ -71,9 +74,10 @@ export function EvaluationPage() {
   return (
     <div className="page evaluation-page">
       <PageHeader
-        eyebrow="检索质量追踪"
         title="质量账本"
         description="展示真实评测结果，每个指标都对应一次实际运行记录。"
+        eyebrow="衡量 · 证据质量"
+        meta={["每个指标对应一次真实运行", "参考脚本 run_answer_evaluation.py"]}
         actions={
           <button className="button secondary" onClick={() => void load()} type="button">
             <RefreshCw size={16} className={loading ? "spin" : ""} /> 刷新账本
@@ -99,6 +103,36 @@ export function EvaluationPage() {
               <MetricCard key={metric.label} label={metric.label} note={metric.note} value={metric.value} />
             ))}
           </div>
+
+          {/* P1-A3：跨轮质量趋势（每轮一点 · Mono 折线） */}
+          {data.runs.length >= 2 ? (
+            <section className="quality-trends reveal reveal-3" aria-label="跨轮质量趋势">
+              <h3>跨轮趋势</h3>
+              <div className="spark-grid">
+                {SPARK_METRICS.map((m) => {
+                  const series = sparkSeries(data.runs, m.key);
+                  if (series.length < 2) return null;
+                  const norm = sparkNormalize(series, m.higherIsBetter);
+                  const path = sparkPath(norm);
+                  const latest = series[series.length - 1].value;
+                  return (
+                    <div className="spark-card" key={m.key} title={`${m.label}：最近 ${series.length} 轮，最新 ${latest}`}>
+                      <span className="spark-label">{m.label}</span>
+                      {path ? (
+                        <svg viewBox="0 0 100 28" preserveAspectRatio="none" aria-hidden="true">
+                          <polyline points={path} fill="none" stroke="var(--ink, #1c1c1a)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                      ) : (
+                        <strong className="spark-single">{m.higherIsBetter ? `${(latest * 100).toFixed(0)}%` : `${latest.toFixed(0)}ms`}</strong>
+                      )}
+                      <small>{series.length} 轮 · 最新 {m.higherIsBetter ? `${(latest * 100).toFixed(0)}%` : `${latest.toFixed(0)}ms`}</small>
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="spark-note">每点一次评测运行；延迟类越低越好。数据与上方指标卡同源（最近 20 轮）。</p>
+            </section>
+          ) : null}
 
           {data.runs.length === 0 ? (
             <EmptyState
@@ -130,7 +164,6 @@ export function EvaluationPage() {
             <section className="comparison-section reveal reveal-3">
               <div className="section-heading">
                 <div>
-                  <p className="eyebrow">策略对比</p>
                   <h2>策略对比</h2>
                 </div>
                 <span>{comparisonRuns.length} 个策略</span>
@@ -147,7 +180,6 @@ export function EvaluationPage() {
           <section className="runs-section reveal reveal-4">
             <div className="section-heading">
               <div>
-                <p className="eyebrow">运行历史记录</p>
                 <h2>运行记录</h2>
               </div>
               <div className="runs-heading-actions">
@@ -174,6 +206,8 @@ export function EvaluationPage() {
                       {showAllColumns ? <th>引用正确性</th> : null}
                       {showAllColumns ? <th>拒答正确性</th> : null}
                       {showAllColumns ? <th>版本有效性</th> : null}
+                      {showAllColumns ? <th>引用保真</th> : null}
+                      {showAllColumns ? <th>标注完整性</th> : null}
                       <th>策略准确率</th>
                       <th>扩展门槛</th>
                       <th>检索耗时</th>
@@ -192,6 +226,8 @@ export function EvaluationPage() {
                         {showAllColumns ? <td>{percent(metricValue(run, "citation_correctness"))}</td> : null}
                         {showAllColumns ? <td>{percent(metricValue(run, "refusal_correctness"))}</td> : null}
                         {showAllColumns ? <td>{percent(metricValue(run, "version_validity"))}</td> : null}
+                        {showAllColumns ? <td>{percent(metricValue(run, "citation_fidelity"))}</td> : null}
+                        {showAllColumns ? <td>{percent(metricValue(run, "citation_marker_validity"))}</td> : null}
                         <td>{percent(metricValue(run, "route_accuracy"))}</td>
                         <td>{percent(metricValue(run, "graph_gate_pass_rate"))}</td>
                         <td>{numericMetricValue(run, "p95_total_latency_ms") !== null

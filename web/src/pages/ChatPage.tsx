@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, useEffect, useReducer, useRef, useState } from "react";
 import {
   AlertTriangle,
   ArrowUp,
@@ -22,12 +22,31 @@ import {
 } from "lucide-react";
 
 import { AnswerBody } from "../components/AnswerBody";
-import { api, streamChat } from "../lib/api";
-import { citationValidity, summarizeCitationValidity } from "../lib/citation-status";
+import { api, assistAgentEnabled, streamAssistAgent, streamChat } from "../lib/api";
+import { citationValidity, fidelityMissingMarks as citationFidelityMarks, summarizeCitationValidity } from "../lib/citation-status";
 import { buildEvidenceMarkdown, downloadTextFile, evidenceFilename } from "../lib/export-evidence";
 import { completionGenerationState, completionViewState, policyConflictItems } from "../lib/policy-conflicts";
+import { shouldSuppressAnswer } from "../lib/answer-visibility";
 import { routeDecisionView } from "../lib/route-decision";
-import type { AnswerResult, Citation, ChatRequest, RetrievalTrace, RouteDecision, StreamEvent, UsageInfo } from "../types";
+import { confirmDeleteLocalSession, fetchServerConversationsEnabled, migrateAllSessions, migratedSessionsWithLocalCopy, sessionsPendingMigration } from "../lib/session-migration";
+import { buildGuidedTasks } from "../lib/onboarding-tasks";
+
+/** 5 任务可用性脚本的空态引导（一次构建；内容见 onboarding-tasks.ts） */
+const GUIDED_TASKS = buildGuidedTasks();
+import { INITIAL_RAIL, railReducer } from "../lib/chat-rail-reducer";
+import type {
+  AnswerResult,
+  AssistClarification,
+  AssistIntegrity,
+  AssistPlan,
+  AssistToolCall,
+  Citation,
+  ChatRequest,
+  RetrievalTrace,
+  RouteDecision,
+  StreamEvent,
+  UsageInfo,
+} from "../types";
 import { PageHeader } from "../components/Primitives";
 
 type Turn = {
@@ -46,6 +65,8 @@ type Turn = {
   steps?: Record<string, StepState>;
   usage?: UsageInfo | null;
   degraded?: string | null;
+  /** M0 契约基线：回答中 [citation-N] 是否全部命中本次引用集（true/false/null=不可判定） */
+  citationFidelity?: boolean | null;
   elapsedMs?: number;
   /** 版本时效判定所需的查询日期（缺省按今天）与轮次创建时间 */
   queryDate?: string;
@@ -53,6 +74,14 @@ type Turn = {
   /** 证据导出需要记录实际使用的模型与索引版本 */
   model?: string;
   indexVersion?: string | null;
+  /** M2 Assist：执行计划（步骤名+用户语言标签）、工具记录、澄清卡、引用校验结果 */
+  plan?: AssistPlan | null;
+  toolCalls?: AssistToolCall[];
+  clarification?: AssistClarification | null;
+  clarificationAnswered?: boolean;
+  citationIntegrity?: AssistIntegrity | null;
+  /** M2：loop_fell_back 的可见原因（一句话，见 COPY-DECK §6） */
+  fallbackReason?: string | null;
 };
 
 /** 会话历史（研究项⑥）：本地多会话，工作留痕定位，非审计级留存 */
@@ -86,7 +115,6 @@ function normalizeRestoredTurns(turns: Turn[]): Turn[] {
       : turn,
   );
 }
-
 function randomId(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID();
@@ -178,11 +206,7 @@ const QUICK_QUESTIONS = [
   "无发票的 1500 元费用需要哪些审批？",
 ];
 
-const INITIAL_STEPS: Record<string, StepState> = {
-  scope: "waiting",
-  retrieval: "waiting",
-  generation: "waiting",
-};
+const INITIAL_STEPS: Record<string, StepState> = { ...INITIAL_RAIL.steps };
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
@@ -222,20 +246,77 @@ export function ChatPage() {
   const [strategy, setStrategy] = useState<ChatRequest["retrieval_strategy"]>(() => loadSettings().strategy);
   const [topK, setTopK] = useState(() => loadSettings().topK);
   const [graphEnabled, setGraphEnabled] = useState(() => loadSettings().graphEnabled);
+  /** M2：本地 Assist 开关（后端 AGENT_ASSIST_ENABLED 关闭时端点 404，回落普通流） */
+  const [assistMode, setAssistMode] = useState(false);
+  /** Assist 服务端可用性（null=探测中；false=服务端未开启，开关旁提示） */
+  const [assistAvailable, setAssistAvailable] = useState<boolean | null>(null);
+  /** M3：服务端会话迁移（显式、用户主动触发；服务端未开启时隐藏入口） */
+  const [serverConversationsEnabled, setServerConversationsEnabled] = useState(false);
+  const [migrating, setMigrating] = useState(false);
+  const [migrationDone, setMigrationDone] = useState(0);
+  const [migrationResult, setMigrationResult] = useState<{ migrated: string[]; failed: string[] } | null>(null);
+
+  /** M3：探测服务端会话是否开启（列表端点 404 = 未开启，入口隐藏）；
+   * 同时探测 assist 面——P0-1 后续：改读 /config/public 的
+   * assist_agent_enabled（零副作用），不再 POST agent stream（旧探测会写
+   * 无问题的 assist_stream 审计，flag 开启时甚至触发一次真实 agent 执行）。 */
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const enabled = await fetchServerConversationsEnabled();
+        if (!cancelled) setServerConversationsEnabled(enabled);
+      } catch {
+        if (!cancelled) setServerConversationsEnabled(false);
+      }
+      const assist = await assistAgentEnabled();
+      if (!cancelled) setAssistAvailable(assist);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  /** M3（§8.2 修订）：逐会话迁移——上传-校验-记标记，**本地正文保留**；
+   * 删除本地副本是另一个单独确认动作（confirmDeleteLocalSession）。 */
+  const runMigration = async (pending: Parameters<typeof migrateAllSessions>[0]) => {
+    setMigrating(true);
+    setMigrationDone(0);
+    try {
+      const result = await migrateAllSessions(pending, {
+        onProgress: (done) => setMigrationDone(done),
+      });
+      setMigrationResult(result);
+      // 迁移不清理本地会话列表（本地副本继续作为缓存保留）
+    } finally {
+      setMigrating(false);
+    }
+  };
+
+  /** M3：单独确认动作——用户逐会话删除已迁移的本地副本（幂等） */
+  const deleteLocalCopy = (sessionId: string) => {
+    confirmDeleteLocalSession(sessionId);
+    const kept = sessions.filter((session) => session.id !== sessionId);
+    setSessions(kept);
+    if (kept.length === 0) startNewSession();
+  };
   const [graphHops, setGraphHops] = useState(() => loadSettings().graphHops);
   const [queryDate, setQueryDate] = useState("");
   const [turns, setTurns] = useState<Turn[]>([]);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
-  const [citations, setCitations] = useState<Citation[]>([]);
-  const [trace, setTrace] = useState<RetrievalTrace | null>(null);
-  const [routeDecision, setRouteDecision] = useState<RouteDecision | null>(null);
-  const [resultState, setResultState] = useState<string | null>(null);
-  const [steps, setSteps] = useState(INITIAL_STEPS);
+  // UI-1（结构重构）：实时轨道状态收敛为单一 reducer；轮次快照仍在 Turn
+  const [rail, dispatch] = useReducer(railReducer, INITIAL_RAIL);
+  const citations = rail.citations;
+  const trace = rail.trace;
+  const routeDecision = rail.routeDecision;
+  const resultState = rail.resultState;
+  const citationFidelity = rail.citationFidelity;
+  const steps = rail.steps;
   const [running, setRunning] = useState(false);
   // I5：展示本次生成的 token 用量；I4：降级原因可见
-  const [usage, setUsage] = useState<UsageInfo | null>(null);
-  const [degradedReason, setDegradedReason] = useState<string | null>(null);
+  const usage = rail.usage;
+  const degradedReason = rail.degradedReason;
   // U6：证据链轨道定位到的轮次（null = 跟随最新一轮）
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   // 证据轨默认折叠成一条窄边栏，只在用户主动查看时展开
@@ -351,29 +432,108 @@ export function ChatPage() {
 
   const handleEvent = (turnId: string, event: StreamEvent) => {
     const data = asRecord(event.data);
+    /** 函数式读取该轮当前 assist 状态（setTurns 闭包内拿到的一定是最新值） */
+    const patchTurnWith = (patch: (turn: Turn) => Partial<Turn>) => {
+      setTurns((current) => current.map((turn) => (turn.id === turnId ? { ...turn, ...patch(turn) } : turn)));
+    };
+    // ── M2 assist 事件分支（UI-G 状态矩阵 §2；旧事件逻辑不变） ──
+    if (event.event === "plan_created" && Array.isArray(data.steps)) {
+      updateTurn(turnId, {
+        plan: {
+          steps: data.steps as AssistPlan["steps"],
+          route: typeof data.route === "string" ? data.route : "",
+          reason_codes: Array.isArray(data.reason_codes) ? (data.reason_codes as string[]) : [],
+          routing_ms: typeof data.routing_ms === "number" ? data.routing_ms : undefined,
+        },
+        toolCalls: [],
+      });
+      return;
+    }
+    if (event.event === "tool_call_started" && typeof data.step === "string") {
+      const entry: AssistToolCall = {
+        step: data.step,
+        label: typeof data.label === "string" ? data.label : data.step,
+        status: "running",
+      };
+      patchTurnWith((turn) => ({ toolCalls: [...(turn.toolCalls ?? []), entry] }));
+      return;
+    }
+    if (event.event === "tool_call_finished" && typeof data.step === "string") {
+      const status: AssistToolCall["status"] =
+        data.status === "ok" ? "ok" : data.status === "denied" ? "denied" : data.status === "timeout" ? "timeout" : "failed";
+      patchTurnWith((turn) => ({
+        toolCalls: (turn.toolCalls ?? []).map((item) =>
+          item.step === data.step && item.status === "running"
+            ? {
+                ...item,
+                status,
+                result_state: typeof data.result_state === "string" ? data.result_state : undefined,
+                latency_ms: typeof data.latency_ms === "number" ? data.latency_ms : undefined,
+              }
+            : item,
+        ),
+      }));
+      return;
+    }
+    if (event.event === "clarification_required") {
+      const clarification: AssistClarification = {
+        clarification_id: String(data.clarification_id ?? ""),
+        questions: Array.isArray(data.questions) ? (data.questions as string[]) : [],
+        context_hash: String(data.context_hash ?? ""),
+        expires_at: String(data.expires_at ?? ""),
+      };
+      updateTurn(turnId, { clarification, state: "complete" });
+      return;
+    }
+    if (event.event === "loop_fell_back") {
+      updateTurn(turnId, {
+        fallbackReason:
+          data.reason === "tool_budget_exceeded"
+            ? "查询步骤过多，已回到单次检索；以下回答基于一次直接查找"
+            : data.reason === "citation_integrity_failed"
+              ? "本次回答未通过引用校验，已改为仅显示证据"
+              : "已回到单次检索模式",
+      });
+      return;
+    }
+    if (event.event === "citation_integrity_checked") {
+      const integrity: AssistIntegrity = {
+        passed: data.passed === true,
+        applicable: data.applicable !== false,
+        checks: (data.checks as AssistIntegrity["checks"]) ?? {},
+      };
+      patchTurnWith((turn) => ({
+        citationIntegrity: integrity,
+        answer: integrity.applicable && !integrity.passed ? "" : turn.answer,
+      }));
+      return;
+    }
+    // ── 既有 14 事件（行为不变） ──
     if (event.event === "request_started") {
-      setSteps({ scope: "running", retrieval: "waiting", generation: "waiting" });
+      dispatch({ type: "request_started" });
     }
     if (event.event === "scope_check_completed") {
-      setSteps((current) => ({ ...current, scope: data.out_of_scope ? "warning" : "done" }));
+      dispatch({ type: "scope_check_completed", outOfScope: data.out_of_scope === true });
     }
     if (event.event === "retrieval_started") {
-      setSteps((current) => ({ ...current, retrieval: "running" }));
+      dispatch({ type: "retrieval_started" });
     }
     if (event.event === "retrieval_routed") {
-      setRouteDecision(data as unknown as RouteDecision);
+      dispatch({ type: "retrieval_routed", route: data as unknown as RouteDecision });
     }
     if (event.event === "retrieval_completed" || event.event === "rerank_completed") {
-      setSteps((current) => ({ ...current, retrieval: "done" }));
+      dispatch({ type: "retrieval_completed" });
     }
     if (event.event === "generation_started") {
-      setSteps((current) => ({ ...current, generation: "running" }));
+      dispatch({ type: "generation_started" });
     }
     if (event.event === "answer_delta" && typeof data.text === "string") {
-      appendAnswer(turnId, data.text);
+      patchTurnWith((turn) => (
+        shouldSuppressAnswer(turn) ? {} : { answer: `${turn.answer}${data.text}` }
+      ));
     }
     if (event.event === "citations" && Array.isArray(data.citations)) {
-      setCitations(data.citations as Citation[]);
+      dispatch({ type: "citations", citations: data.citations as Citation[] });
     }
     // I5：usage 事件在 completed 之前到达，先落 ref，completed 时随轮次快照保存
     if (event.event === "usage") {
@@ -384,14 +544,16 @@ export function ChatPage() {
         usage_source: typeof data.usage_source === "string" ? data.usage_source : undefined,
       };
       usageRef.current = parsed;
-      setUsage(parsed);
+      dispatch({ type: "usage", usage: parsed });
     }
     if (event.event === "degraded" || event.event === "policy_conflict_detected") {
       // I4：降级不再只是一个隐藏的步骤状态，原因要对用户可见
       const reason = typeof data.reason === "string" && data.reason ? data.reason : null;
       degradedRef.current = reason;
-      setDegradedReason(reason);
-      setSteps((current) => ({ ...current, generation: "warning" }));
+      if (event.event === "policy_conflict_detected") {
+        patchTurnWith(() => ({ answer: "", resultState: "conflicting_evidence" }));
+      }
+      dispatch({ type: "degraded", reason });
     }
     if (event.event === "completed") {
       const result = data as unknown as AnswerResult;
@@ -400,26 +562,30 @@ export function ChatPage() {
         retrieval: result.retrieval_trace ? "done" : stepsRef.current.retrieval,
         generation: completionGenerationState(result),
       };
-      updateTurn(turnId, {
-        answer: result.answer,
+      patchTurnWith((turn) => ({
+        answer: shouldSuppressAnswer({ ...turn, resultState: completionViewState(result) }) ? "" : result.answer,
         state: "complete",
         requestId: result.request_id,
         citations: result.citations || [],
         trace: result.retrieval_trace || null,
         route: result.retrieval_trace?.route_decision || null,
         resultState: completionViewState(result),
+        citationFidelity: typeof result.citation_fidelity === "boolean" ? result.citation_fidelity : null,
         steps: finalSteps,
         usage: usageRef.current,
         degraded: degradedRef.current ?? (result.degraded ? result.degradation_reason || "已降级" : null),
         elapsedMs: startedAtRef.current ? Date.now() - startedAtRef.current : undefined,
         model: result.model,
         indexVersion: result.index_version ?? null,
-      });
-      setCitations(result.citations || []);
-      setTrace(result.retrieval_trace || null);
-      setRouteDecision(result.retrieval_trace?.route_decision || null);
-      setResultState(completionViewState(result));
-      setSteps(finalSteps);
+      }));
+      dispatch({ type: "completed", result: {
+        citations: (result.citations || []) as Citation[],
+        trace: (result.retrieval_trace || null) as RetrievalTrace | null,
+        resultState: completionViewState(result),
+        citationFidelity: typeof result.citation_fidelity === "boolean" ? result.citation_fidelity : null,
+        usage: usageRef.current,
+        degraded: degradedRef.current,
+      } });
     }
     if (event.event === "error") {
       const code = typeof data.code === "string" ? data.code : "stream_error";
@@ -435,8 +601,7 @@ export function ChatPage() {
         usage: usageRef.current,
         degraded: degradedRef.current,
       });
-      setResultState(code);
-      setSteps((current) => ({ ...current, retrieval: "warning" }));
+      dispatch({ type: "error", code });
     }
   };
 
@@ -449,6 +614,11 @@ export function ChatPage() {
   const railResultState = selectedTurn ? selectedTurn.resultState ?? null : resultState;
   const railUsage = selectedTurn ? selectedTurn.usage ?? null : usage;
   const railDegraded = selectedTurn ? selectedTurn.degraded ?? null : degradedReason;
+  const railFidelity = selectedTurn ? selectedTurn.citationFidelity ?? null : citationFidelity;
+  // M2：实时轮次的 assist 轨道数据（selectedTurn 覆盖历史轮次快照）
+  const latestAssistPlan = turns.find((turn) => turn.state === "streaming")?.plan ?? [...turns].reverse().find((turn) => turn.plan)?.plan ?? null;
+  const latestAssistToolCalls =
+    turns.find((turn) => turn.state === "streaming")?.toolCalls ?? [...turns].reverse().find((turn) => turn.toolCalls?.length)?.toolCalls ?? [];
   const conflictItems = policyConflictItems(railTrace);
   const routeView = railRoute ? routeDecisionView(railRoute) : null;
   // 研究项②：版本时效判定基准日——所选轮次的查询日期，未选时跟随当前设置
@@ -457,25 +627,15 @@ export function ChatPage() {
   // 研究项⑥：切换/恢复会话时，把证据链轨道恢复到该会话最后一轮的状态
   const restoreRailFromTurns = (list: Turn[]) => {
     const last = [...list].reverse().find((item) => item.state === "complete" || item.state === "error");
-    setCitations(last?.citations ?? []);
-    setTrace(last?.trace ?? null);
-    setRouteDecision(last?.route ?? null);
-    setResultState(last?.resultState ?? null);
-    setSteps(last?.steps ?? INITIAL_STEPS);
-    setUsage(last?.usage ?? null);
-    setDegradedReason(last?.degraded ?? null);
+    dispatch({ type: "reset" });
+    // 恢复语义：轨道显示该会话最后一轮的快照（selectedTurn=null 时用 rail 数据）
+    // 快照本体在 Turn 内；这里把实时轨道重置，避免上一会话残留
     setActiveTurnId(null);
     setCitationFocus(null);
   };
 
   const resetRail = () => {
-    setCitations([]);
-    setTrace(null);
-    setRouteDecision(null);
-    setResultState(null);
-    setSteps(INITIAL_STEPS);
-    setUsage(null);
-    setDegradedReason(null);
+    dispatch({ type: "reset" });
     setActiveTurnId(null);
     setCitationFocus(null);
   };
@@ -568,13 +728,7 @@ export function ChatPage() {
       ? current.map((turn) => turn.id === retryId ? { ...turn, answer: "", errorDetail: undefined, state: "streaming" } : turn)
       : [...current, { id, question: finalQuestion, answer: "", state: "streaming", queryDate: queryDate || undefined, createdAt }]);
     setQuestion("");
-    setCitations([]);
-    setTrace(null);
-    setRouteDecision(null);
-    setResultState(null);
-    setSteps(INITIAL_STEPS);
-    setUsage(null);
-    setDegradedReason(null);
+    dispatch({ type: "reset" });
     setActiveTurnId(null);
     setElapsed(0);
     usageRef.current = null;
@@ -584,7 +738,11 @@ export function ChatPage() {
     controller.current = new AbortController();
 
     try {
-      await streamChat(
+      // M2：Assist 开关（本地状态；后端 AGENT_ASSIST_ENABLED 关闭时端点 404，
+      // 前端捕获后回落到普通流并提示一次）。P0-1：澄清补充 = 新的补充问题请求
+      // （question 拼接补充信息），不发送 resume_from——后端无该字段与服务端恢复。
+      const streamer = assistMode ? streamAssistAgent : streamChat;
+      await streamer(
         {
           question: finalQuestion,
           retrieval_strategy: strategy,
@@ -620,7 +778,7 @@ export function ChatPage() {
               : turn,
           ),
         );
-        setResultState("aborted");
+        dispatch({ type: "error", code: "aborted" });
       } else {
         updateTurn(id, {
           answer: "回答连接中断，请重试。",
@@ -628,7 +786,7 @@ export function ChatPage() {
           state: "error",
           resultState: "stream_error",
         });
-        setResultState("stream_error");
+        dispatch({ type: "error", code: "stream_error" });
       }
     } finally {
       setRunning(false);
@@ -665,9 +823,10 @@ export function ChatPage() {
   return (
     <div className="page chat-page">
       <PageHeader
-        eyebrow="基于制度证据的问答"
         title="可信问答"
         description="基于制度内容回答问题，每个回答都会标注来源，方便追溯。"
+        eyebrow="提问 · 治理式问答"
+        meta={["可直接开始提问，或按 / 快速聚焦", "回答带来源与版本，可一键导出证据"]}
       />
 
       <div className={railOpen ? "chat-layout rail-open reveal reveal-2" : "chat-layout reveal reveal-2"}>
@@ -690,6 +849,58 @@ export function ChatPage() {
                 <button className="button secondary small" disabled={running} onClick={startNewSession} type="button">
                   <Plus size={14} /> 新建对话
                 </button>
+                {/* M3：显式迁移到服务端（检测到待迁移会话且服务端开启时显示；
+                    用户确认后逐会话上传，成功即清理本地正文，保留迁移标记） */}
+                {serverConversationsEnabled && sessionsPendingMigration(sessions).length ? (
+                  <div className="session-migration-block">
+                    <p className="session-menu-note">
+                      检测到 {sessionsPendingMigration(sessions).length} 个本机会话可迁移到服务端留存。
+                      迁移是主动操作：逐个上传并校验；本机副本会保留，删除需要你单独确认。
+                    </p>
+                    {migrating ? (
+                      <p className="session-menu-note" role="status">迁移中… 已完成 {migrationDone}/{sessionsPendingMigration(sessions).length}</p>
+                    ) : (
+                      <button
+                        className="button secondary small"
+                        onClick={() => void runMigration(sessionsPendingMigration(sessions))}
+                        type="button"
+                      >
+                        <History size={14} /> 迁移到服务端
+                      </button>
+                    )}
+                    {migrationResult ? (
+                      <p className="session-menu-note" role="status">
+                        {migrationResult.failed.length
+                          ? `迁移完成：成功 ${migrationResult.migrated.length} 个，失败 ${migrationResult.failed.length} 个（可重试，已迁移的不会重复）`
+                          : `迁移完成：${migrationResult.migrated.length} 个会话已留存服务端；本机副本保留，可在下方会话列表中选择删除。`}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
+                {/* 已迁移会话的“删除本地副本”单独确认入口（§8.2 修订：不随迁移自动清理） */}
+                {serverConversationsEnabled && migratedSessionsWithLocalCopy(sessions).length ? (
+                  <div className="session-migration-block">
+                    <p className="session-menu-note">
+                      {migratedSessionsWithLocalCopy(sessions).length} 个会话已留存服务端，本机副本仍在（作为缓存）。
+                      需要清理本机时逐个确认删除；服务端会话不受影响。
+                    </p>
+                    <ul className="session-list">
+                      {migratedSessionsWithLocalCopy(sessions).map((session) => (
+                        <li key={`del-${session.id}`} className="session-item">
+                          <span className="session-item-open">{session.title}</span>
+                          <button
+                            className="session-item-action"
+                            onClick={() => deleteLocalCopy(session.id)}
+                            title="删除本机会话副本（服务端留存不变）"
+                            type="button"
+                          >
+                            删除本机副本
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
                 {sessions.length ? (
                   <ul className="session-list">
                     {sessions.map((session) => (
@@ -743,6 +954,12 @@ export function ChatPage() {
               >
                 <Trash2 size={14} /> {confirmClear ? "再点一次确认清空" : "清空对话"}
               </button>
+            ) : null}
+            {/* P1-P3（走查）：长对话内存引导——50 轮后提示导出并清空 */}
+            {turns.length >= 50 ? (
+              <p className="long-conversation-hint" role="status">
+                本会话已有 {turns.length} 轮。长时间使用会变慢——建议先导出证据存档，再清空对话。
+              </p>
             ) : null}
           </div>
           <div className="query-controls">
@@ -837,6 +1054,30 @@ export function ChatPage() {
                     </button>
                   ))}
                 </div>
+                {/* 5 任务可用性脚本 → 能力演示（引导面板：每个脚本任务一条
+                    一键路径；docs/ui/AGENT-UI-DESIGN-SPEC.md §7） */}
+                <section className="guided-capabilities" aria-label="这个工作台能做什么">
+                  <h3>上手路径</h3>
+                  <ol>
+                    {GUIDED_TASKS.map((task) => (
+                      <li key={task.scriptId}>
+                        <strong>{task.title}</strong>
+                        <span>{task.description}</span>
+                        {task.starterQuestion ? (
+                          <button
+                            className="button secondary small"
+                            onClick={() => void submit(undefined, task.starterQuestion)}
+                            type="button"
+                          >
+                            试一下
+                          </button>
+                        ) : (
+                          <small>{task.actionHint}</small>
+                        )}
+                      </li>
+                    ))}
+                  </ol>
+                </section>
               </div>
             ) : (
               turns.map((turn) => (
@@ -872,24 +1113,80 @@ export function ChatPage() {
                         </button>
                       )}
                     </div>
+                    {/* ── M2 Assist 增量渲染（UI-G 设计规格 §3；flag off 时不出现） ── */}
+                    {turn.plan ? (
+                      <p className="agent-execution-summary">
+                        {turn.toolCalls?.length
+                          ? turn.toolCalls.every((call) => call.status !== "running")
+                            ? `✓ 已完成 ${turn.toolCalls.length} 步核对 · 结论经逐步取证`
+                            : `正在执行 ${turn.toolCalls.length} 步核对…`
+                          : `已制定 ${turn.plan.steps.length} 个核对步骤`}
+                      </p>
+                    ) : null}
+                    {turn.fallbackReason ? (
+                      <div className="rail-degraded loop-fallback" role="status">
+                        <AlertTriangle size={14} />
+                        <span>{turn.fallbackReason}</span>
+                      </div>
+                    ) : null}
+                    {turn.clarification && !turn.clarificationAnswered ? (
+                      <ClarificationCard
+                        clarification={turn.clarification}
+                        onResolved={(answers) => {
+                          updateTurn(turn.id, { clarificationAnswered: true });
+                          const joined = Object.values(answers).filter(Boolean).join("；");
+                          void submit(undefined, `${turn.question}（补充：${joined}）`);
+                        }}
+                      />
+                    ) : null}
+                    {turn.citationIntegrity && !turn.citationIntegrity.passed && turn.citationIntegrity.applicable ? (
+                      <div className="citation-integrity-notice" role="alert">
+                        <AlertTriangle size={14} />
+                        <span>回答未通过引用校验：本次只提供证据原文，避免误导。</span>
+                        {(turn.citations?.length ?? 0) > 0 ? (
+                          <button
+                            className="button secondary"
+                            onClick={() => focusCitation(turn.id, turn.citations?.[0]?.final_rank ?? 1)}
+                            type="button"
+                          >
+                            查看证据原文
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : null}
                     {/* 研究项①⑤：Markdown 渲染 + [citation-N] 内联锚点（点击定位证据链） */}
-                    {turn.answer ? (
+                    {turn.answer && !shouldSuppressAnswer(turn) ? (
                       <AnswerBody
                         citations={turn.citations ?? []}
                         onCitationClick={(rank) => focusCitation(turn.id, rank)}
                         streaming={turn.state === "streaming"}
                         text={turn.answer}
                       />
-                    ) : (
+                    ) : !shouldSuppressAnswer(turn) ? (
                       <p>正在核对制度与证据……</p>
-                    )}
+                    ) : null}
                     {/* 研究项②：引用了非现行有效版本时，结论旁必须给出显式警示 */}
                     {turn.state === "complete" && (turn.citations?.length ?? 0) > 0 ? (
                       <VersionWarning asOf={turn.queryDate} citations={turn.citations ?? []} />
                     ) : null}
+                    {/* P1-X5（走查修复）：版本冲突轮的答案卡内联冲突版本族——
+                        治理的核心展示位从折叠证据轨前置到结论旁，可见即卖点 */}
+                    {turn.state === "complete" && turn.resultState === "conflicting_evidence" ? (
+                      <InlineConflictCard turn={turn} />
+                    ) : null}
+                    {/* M0：确定性引用保真核验——回答标注全部命中本次引用集才通过；
+                        warning-first：不阻断，只在失真时给出可行动警示 */}
+                    {turn.state === "complete" && turn.citationFidelity === false ? (
+                      <FidelityWarning turn={turn} />
+                    ) : null}
                     {turn.state === "complete" ? (
                       <div className="answer-meta-line">
                         {turn.elapsedMs != null ? <span>耗时 {(turn.elapsedMs / 1000).toFixed(1)}s</span> : null}
+                        {turn.citationFidelity === true ? (
+                          <span className="fidelity-ok" title="回答中的引用标注全部命中本次返回的证据">
+                            <Check size={13} /> 引用标注已核验
+                          </span>
+                        ) : null}
                         {turn.usage && (turn.usage.input_tokens != null || turn.usage.output_tokens != null) ? (
                           <details className="answer-usage-fold">
                             <summary>本次用量</summary>
@@ -984,6 +1281,19 @@ export function ChatPage() {
             />
             <div className="composer-foot">
               <span>{question.length}/2000</span>
+              {/* M2：Assist 本地开关（服务端未开启时 404 探测已提示，不再让用户踩空） */}
+              <label className="assist-toggle" title="开启后系统会先核对版本与关联制度，再综合回答：更慢一些，但每一步的依据都能追溯">
+                <input
+                  checked={assistMode}
+                  disabled={assistAvailable === false}
+                  onChange={(event) => setAssistMode(event.target.checked)}
+                  type="checkbox"
+                />
+                深度核对
+                {assistAvailable === false ? (
+                  <span className="assist-unavailable" role="note">服务端未开启</span>
+                ) : null}
+              </label>
               {running ? (
                 /* U9：中止血用停止图标（Square），RotateCcw 保留给"重试" */
                 <button className="button secondary" onClick={() => controller.current?.abort()} type="button">
@@ -1002,7 +1312,6 @@ export function ChatPage() {
           {railOpen ? (
             <>
           <div className="rail-heading">
-            <p className="eyebrow">证据链</p>
             <h2>回答依据</h2>
             {selectedTurn ? <p className="rail-pinned">已定位到所选轮次 · 再次点击该轮「查看本回答的证据」可返回最新</p> : null}
             <button className="rail-collapse" onClick={() => setRailOpen(false)} type="button" aria-label="收起回答依据面板">
@@ -1015,6 +1324,44 @@ export function ChatPage() {
             <TraceStep label="查找相关制度" state={railSteps.retrieval} />
             <TraceStep label="生成回答" state={railSteps.generation} last />
           </div>
+
+          {/* M2：执行步骤/执行记录（默认折叠，flag 或轮次无数据时不渲染） */}
+          {selectedTurn?.plan ?? (!activeTurnId && latestAssistPlan) ? (
+            <section className="rail-section assist-section">
+              <details className="technical-details assist-fold">
+                <summary>
+                  执行步骤（{((selectedTurn?.plan ?? latestAssistPlan)?.steps.length ?? 0)}）
+                </summary>
+                <ol className="assist-plan-list">
+                  {(selectedTurn?.plan ?? latestAssistPlan)?.steps.map((step) => {
+                    const call = (selectedTurn?.toolCalls ?? []).find((item) => item.step === step.name);
+                    return (
+                      <li data-status={call?.status ?? "pending"} key={step.name}>
+                        <span>{call?.status === "ok" ? "✓" : call?.status === "running" ? "…" : call ? "×" : "·"}</span>
+                        {step.label}
+                      </li>
+                    );
+                  })}
+                </ol>
+              </details>
+              {(selectedTurn?.toolCalls ?? latestAssistToolCalls)?.length ? (
+                <details className="technical-details assist-fold">
+                  <summary>执行记录（{(selectedTurn?.toolCalls ?? latestAssistToolCalls)?.length}）</summary>
+                  <ul className="assist-tool-list">
+                    {(selectedTurn?.toolCalls ?? latestAssistToolCalls)?.map((call) => (
+                      <li key={`${call.step}-${call.label}`}>
+                        <span className={`assist-tool-status ${call.status}`}>
+                          {call.status === "running" ? "进行中" : call.status === "ok" ? "完成" : call.status === "timeout" ? "超时" : call.status === "denied" ? "需权限" : "失败"}
+                        </span>
+                        <span className="assist-tool-label">{call.label}</span>
+                        {call.latency_ms != null ? <small>{(call.latency_ms / 1000).toFixed(1)}s</small> : null}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              ) : null}
+            </section>
+          ) : null}
 
           {/* I4：降级时给出显式横幅，说明降级原因，而不是静默改变行为 */}
           {railDegraded ? (
@@ -1061,35 +1408,42 @@ export function ChatPage() {
               <span>{railCitations.length}</span>
             </div>
             {railCitations.length ? (
-              <ol className="citation-list">
-                {railCitations.map((citation) => {
-                  const validity = citationValidity(citation, railAsOf);
-                  return (
-                    <li data-citation-rank={citation.final_rank} key={citation.citation_id}>
-                      <span className="citation-rank">{citation.final_rank}</span>
-                      <div>
-                        <div className="citation-heading-row">
-                          <strong>{citation.document_name}</strong>
-                          {/* Research item ②: validity badge on the evidence card (current / draft / expired / unregistered) */}
-                          <span className={`citation-validity-pill ${validity.level}`} title={validity.detail}>
-                            {validity.label}
-                          </span>
-                        </div>
-                        <small>{citation.section_path || "正文"}</small>
-                        {citation.policy_key || citation.document_version || citation.effective_from ? (
-                          <span className="citation-policy-meta">
-                            {citation.policy_key ? `${citation.policy_key} · ` : ""}
-                            {citation.document_version ? `V${citation.document_version}` : "版本未登记"}
-                            {citation.effective_from ? ` · 生效日期：${citation.effective_from}` : ""}
-                          </span>
-                        ) : null}
-                        <p>{citation.excerpt}</p>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ol>
-            ) : railResultState === "out_of_scope" ? (
+                <>
+                  <ol className="citation-list">
+                    {railCitations.map((citation) => {
+                      const validity = citationValidity(citation, railAsOf);
+                      return (
+                        <li data-citation-rank={citation.final_rank} key={citation.citation_id}>
+                          <span className="citation-rank">{citation.final_rank}</span>
+                          <div>
+                            <div className="citation-heading-row">
+                              <strong>{citation.document_name}</strong>
+                              {/* Research item ②: validity badge on the evidence card (current / draft / expired / unregistered) */}
+                              <span className={`citation-validity-pill ${validity.level}`} title={validity.detail}>
+                                {validity.label}
+                              </span>
+                            </div>
+                            <small>{citation.section_path || "正文"}</small>
+                            {citation.policy_key || citation.document_version || citation.effective_from ? (
+                              <span className="citation-policy-meta">
+                                {citation.policy_key ? `${citation.policy_key} · ` : ""}
+                                {citation.document_version ? `V${citation.document_version}` : "版本未登记"}
+                                {citation.effective_from ? ` · 生效日期：${citation.effective_from}` : ""}
+                              </span>
+                            ) : null}
+                            <p>{citation.excerpt}</p>
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ol>
+                  {railFidelity === false ? (
+                    <p className="rail-fidelity-warning">
+                      <AlertTriangle size={13} /> 本回答存在未命中引用集的标注，请以引文原文为准。
+                    </p>
+                  ) : null}
+                </>
+              ) : railResultState === "out_of_scope" ? (
               <p className="rail-placeholder">这个问题不在制度范围内，已停止回答。</p>
             ) : railResultState === "permission_denied" ? (
               <p className="rail-placeholder"><ShieldQuestion size={14} /> 你当前的账号权限看不到相关制度，因此没有任何引用。请联系管理员开通对应工作区/部门。</p>
@@ -1267,6 +1621,20 @@ function VersionWarning({ citations, asOf }: { citations: Citation[]; asOf?: str
   return null;
 }
 
+/** M0：引用保真核验警示。后端已完成确定性检查（warning-first），
+ *  失真时这里把缺失标注还原成用户可行动的提示，不阻断回答。 */
+function FidelityWarning({ turn }: { turn: Turn }) {
+  const marks = citationFidelityMarks(turn.trace?.warnings);
+  return (
+    <div className="fidelity-warning" role="status">
+      <AlertTriangle size={14} />
+      <span>
+        引用保真警示：回答中有{marks ? `引用标注 ${marks}` : "引用标注"}未命中本次返回的证据，请核对后使用。
+      </span>
+    </div>
+  );
+}
+
 /**
  * 研究项⑧：回答后推荐追问。基于本轮命中的制度证据生成（文档名/版本/时效），
  * 而不是与问题无关的通用模板；没有引用时不显示。
@@ -1299,6 +1667,82 @@ function FollowUpSuggestions({ turn, onSubmit }: { turn: Turn; onSubmit: (questi
           {item}
         </button>
       ))}
+    </div>
+  );
+}
+
+/** M2：澄清卡——提交时将补充信息拼进原问题，作为新的问题处理。 */
+function ClarificationCard({
+  clarification,
+  onResolved,
+}: {
+  clarification: AssistClarification;
+  onResolved: (answers: Record<string, string>) => void;
+}) {
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const expired = clarification.expires_at ? new Date(clarification.expires_at).getTime() < Date.now() : false;
+  const allFilled = clarification.questions.every((item) => (answers[item] ?? "").trim().length > 0);
+
+  if (expired) {
+    return (
+      <div className="clarification-card expired" role="status">
+        <strong>补充信息已过期</strong>
+        <span>补充有时效（30 分钟内有效），请重新提问。</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="clarification-card" aria-live="polite">
+      <strong>为了准确回答，请补充 {clarification.questions.length} 个信息</strong>
+      <span className="clarification-context">
+        提交后将基于补充信息重新核对制度依据，作为新的问题处理。
+      </span>
+      <ol>
+        {clarification.questions.map((item) => (
+          <li key={item}>
+            <label htmlFor={`clarify-${clarification.clarification_id}-${item}`}>{item}</label>
+            <input
+              id={`clarify-${clarification.clarification_id}-${item}`}
+              onChange={(event) => setAnswers((current) => ({ ...current, [item]: event.target.value }))}
+              type="text"
+              value={answers[item] ?? ""}
+            />
+          </li>
+        ))}
+      </ol>
+      <button className="button primary" disabled={!allFilled} onClick={() => onResolved(answers)} type="button">
+        补充并继续
+      </button>
+    </div>
+  );
+}
+
+/** P1-X5（走查修复）：冲突轮的答案卡内联冲突版本族。
+ * 数据与右侧证据轨的 conflict-section 同源（turn.trace.policy_conflicts），
+ * 治理卖点前置：系统为何停止回答、冲突在哪、找谁裁决——一眼可见。 */
+function InlineConflictCard({ turn }: { turn: Turn }) {
+  const items = policyConflictItems(turn.trace ?? null);
+  if (!items.length) return null;
+  return (
+    <div className="inline-conflict-card" role="alert">
+      <div className="inline-conflict-head">
+        <AlertTriangle size={15} />
+        <strong>系统已停止回答：同一制度在查询日期存在多个有效版本</strong>
+      </div>
+      <ul>
+        {items.map((item) => (
+          <li key={item.key}>
+            <span className="conflict-doc">{item.title}</span>
+            <span className="conflict-meta">
+              {item.version} · 生效 {item.period} · {item.owner}
+            </span>
+          </li>
+        ))}
+      </ul>
+      <p className="conflict-next">
+        请确认按哪个版本判断；确认后可带日期重新提问（例如「按 {turn.queryDate || "2026-09-01"} 的有效版本，……」）。
+      </p>
     </div>
   );
 }

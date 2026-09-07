@@ -123,9 +123,10 @@ export function RelationsPage() {
   return (
     <div className="page relations-page">
       <PageHeader
-        eyebrow="制度关系审核"
         title="关系审核"
         description="系统发现可能相关的制度对，经你确认后才成为正式关联。"
+        eyebrow="裁决 · 人机共治"
+        meta={["候选不自动进检索", "确认/拒绝都需填写原因"]}
         actions={
           <button className="button secondary" onClick={() => void load()} type="button">
             <RefreshCw size={16} className={loading ? "spin" : ""} /> 刷新队列

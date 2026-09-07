@@ -79,8 +79,49 @@ class ServiceContainer:
         self.feedback = FeedbackService(self.database)
         self.evaluation = EvaluationService(self.database)
         self.governance = EvaluationGovernanceService(self.database)
+        # M1：共享证据工具注册表（三个只读治理工具的统一执行面；
+        # MCP tools/list 与 _call_tool 经它执行，后续 Assist/Task 通道复用）。
+        from application.evidence_tools.handlers import build_default_registry, set_handler_database
+
+        self.evidence_tool_registry = build_default_registry(self.database, question_miner=self.question_concept_miner)
+        set_handler_database(self.database)
         self._register_builtin_datasets()
         self._init_mindgraph()
+        # M2：确定性 Assist 编排服务（AGENT_ASSIST_ENABLED 门控消费；默认关闭）。
+        # 必须在 _init_mindgraph 之后：编排的是 mindgraph_chat 服务。
+        from application.agent_service import AgentService
+
+        self.agent_service = AgentService(
+            self.mindgraph_chat,
+            max_tool_calls=settings.AGENT_MAX_TOOL_CALLS,
+        )
+        # M3：服务端会话（CONVERSATION_PERSISTENCE_ENABLED 在路由层门控挂载；
+        # 服务装配本身无副作用，schema v10 已就位）。
+        from application.conversation_service import ConversationService
+
+        self.conversation_service = ConversationService(self.database)
+        # M4-A：后台任务（AGENT_TASKS_ENABLED 路由层门控；worker 由
+        # TASK_WORKER_ENABLED 决定是否随进程启动，默认不启动）。
+        from application.policy_conflict_service import PolicyConflictService
+        from application.task_service import TaskService
+        from application.task_worker import TaskWorker
+
+        self.task_service = TaskService(self.database)
+        self.task_worker = TaskWorker(
+            self.database,
+            evidence_query_service_factory=lambda: __import__(
+                "application.evidence_query_service", fromlist=["EvidenceQueryService"]
+            ).EvidenceQueryService(self.mindgraph_chat),
+            policy_conflict_service=PolicyConflictService(self.database),
+            # 任务 C 目录语义：与 DirectoryConnectorService 共用同一 allowed_roots
+            # 语义（knowledge/ + CONNECTOR_ALLOWED_ROOTS）——目录扫描不越出受控根。
+            allowed_roots=(self.root / "knowledge", *settings.connector_allowed_root_list),
+        )
+        # M5-A：用户显式保存的私有证据存档（SavedArtifactService；MCP 写工具
+        # mindgraph_save_artifact 经 registry 双门控复用同一服务）。
+        from application.saved_artifact_service import SavedArtifactService
+
+        self.saved_artifact_service = SavedArtifactService(self.database)
 
     def _init_mindgraph(self) -> None:
         """装配 MindGraph Graph RAG 管线（复用 ChatService + MindGraph 检索包装）。"""

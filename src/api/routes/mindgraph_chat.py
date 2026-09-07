@@ -18,6 +18,7 @@ from api.dependencies import get_container
 from api.schemas.chat import AnswerResult, ChatRequest
 from api.sse import iter_sync_events
 from application.access_control import record_access_audit
+from domain.contracts import error_event_data
 
 logger = logging.getLogger("mindgraph.api.chat")
 _executor = ThreadPoolExecutor(max_workers=4)
@@ -65,7 +66,9 @@ async def mindgraph_chat_stream(payload: ChatRequest, request: Request):
                 "request_id": request_id,
                 "event": "error",
                 "timestamp": datetime.now(UTC).isoformat(),
-                "data": {"code": "stream_error", "message": "Stream failed — check server logs for details."},
+                # M0 契约基线：与 Assist/chat_service 共用 error_event_data 双写
+                # code + error_code，agent 侧只读 error_code 即可机器判定。
+                "data": error_event_data("stream_error", "Stream failed — check server logs for details."),
             }
             yield f"event: error\ndata: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
     return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

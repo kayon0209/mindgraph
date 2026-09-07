@@ -77,3 +77,6 @@ scripts/cleanup_external_html.py
 
 # One-off audit/debug outputs (logs, repro scripts, port dumps) — local only
 _audit_outputs/
+.env.backup*
+*.env.backup*
+.mcp.json
