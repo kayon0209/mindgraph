@@ -4069,6 +4069,11 @@ h2,
 
 .task-empty, .task-poll-error { font-size: 13px; color: var(--muted, #6b7280); }
 .task-poll-error { margin-bottom: 8px; }
+.task-action-error {
+  display: flex; align-items: center; gap: 8px; margin: 0 0 10px;
+  border: 1px solid var(--danger, #b91c1c); border-radius: 8px; padding: 8px 12px;
+  color: var(--danger, #b91c1c); font-size: 13px;
+}
 
 .task-detail-head { display: flex; align-items: center; gap: 8px; margin: 14px 0 8px; }
 .task-detail-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin: 8px 0; }

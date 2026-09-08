@@ -11,6 +11,7 @@ import { CheckCircle2, FileDown, ListChecks, LoaderCircle, OctagonX, TriangleAle
 
 import { api, ApiError } from "../lib/api";
 import { downloadTextFile } from "../lib/export-evidence";
+import { executeTaskAction } from "../lib/task-action-errors";
 import type { AgentArtifactContent, AgentArtifactMeta, AgentTask } from "../types";
 import { PageHeader } from "../components/Primitives";
 
@@ -49,6 +50,7 @@ export function TasksPage() {
   const [selectedArtifacts, setSelectedArtifacts] = useState<AgentArtifactMeta[]>([]);
   const [artifactPreview, setArtifactPreview] = useState<AgentArtifactContent | null>(null);
   const [pollError, setPollError] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [confirmingCancel, setConfirmingCancel] = useState<string | null>(null);
@@ -93,7 +95,13 @@ export function TasksPage() {
   }, [refreshList]);
 
   const openDetail = async (task: AgentTask) => {
-    const detail = await api.getAgentTask(task.task_id);
+    setActionError(null);
+    const outcome = await executeTaskAction("detail", () => api.getAgentTask(task.task_id));
+    if (!outcome.ok) {
+      setActionError(outcome.message);
+      return;
+    }
+    const detail = outcome.value;
     setSelected(detail);
     setSelectedArtifacts(detail.artifacts ?? []);
     setArtifactPreview(null);
@@ -103,11 +111,16 @@ export function TasksPage() {
   const submitTask = async () => {
     if (!query.trim() || submitting) return;
     setSubmitting(true);
+    setActionError(null);
     try {
-      await api.submitAgentTask(
+      const outcome = await executeTaskAction("submit", () => api.submitAgentTask(
         { document_query: query.trim(), top_k: 10 },
         `web-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
-      );
+      ));
+      if (!outcome.ok) {
+        setActionError(outcome.message);
+        return;
+      }
       setQuery("");
       await refreshList();
     } finally {
@@ -121,13 +134,24 @@ export function TasksPage() {
 
   const confirmCancel = async (task: AgentTask) => {
     setConfirmingCancel(null);
-    await api.cancelAgentTask(task.task_id);
+    setActionError(null);
+    const outcome = await executeTaskAction("cancel", () => api.cancelAgentTask(task.task_id));
+    if (!outcome.ok) {
+      setActionError(outcome.message);
+      return;
+    }
     await refreshList();
   };
 
   const loadArtifact = async (meta: AgentArtifactMeta) => {
     if (!selected) return;
-    setArtifactPreview(await api.getAgentArtifact(selected.task_id, meta.artifact_id));
+    setActionError(null);
+    const outcome = await executeTaskAction("artifact", () => api.getAgentArtifact(selected.task_id, meta.artifact_id));
+    if (!outcome.ok) {
+      setActionError(outcome.message);
+      return;
+    }
+    setArtifactPreview(outcome.value);
   };
 
   const exportArtifact = () => {
@@ -159,6 +183,9 @@ export function TasksPage() {
       <PageHeader eyebrow="后台核对任务" title="任务" description="提交核对任务后在后台运行；完成后可导出仅你可见的证据包。" meta={["不影响当前对话", "证据包为私有存档"]} />
       {pollError ? (
         <p className="task-poll-error" role="status">连接中断，正在重试获取最新状态…</p>
+      ) : null}
+      {actionError ? (
+        <p className="task-action-error" role="alert"><TriangleAlert size={14} /> {actionError}</p>
       ) : null}
 
       {view === "list" ? (
