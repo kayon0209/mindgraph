@@ -218,6 +218,14 @@ class Settings(BaseSettings):
     # 跳过原因进 trace。验收门禁：质量降 ≤1pp 且 P95/成本相对全量降 ≥20%。
     CONDITIONAL_RERANK_ENABLED: bool = False
 
+    # ── 服务端会话上下文（PR-12，默认关）──
+    # 打开后：conversation 流式续问经 FollowupResolver 确定性解析（指代/槽位/
+    # 纠错），resolved_query 进检索，原文仍落库；SSE context_resolution 事件
+    # 携带替换证据与额外 token。关闭时恢复单轮语义（回滚即关 flag）。
+    CONVERSATION_SERVER_CONTEXT_ENABLED: bool = False
+    CONVERSATION_CONTEXT_MAX_TURNS: int = 5
+    CONVERSATION_CONTEXT_MAX_CHARS: int = 4000
+
     # ── 索引激活一致性门禁（PR-04）──
     # 激活前比对候选索引与活跃索引的切分口径/文档覆盖，不一致则拒绝改写 CURRENT。
     # 2026-09-11 实测：69 chunks（扁平）与 98 chunks（StructuredChunker）两个版本

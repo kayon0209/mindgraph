@@ -79,8 +79,11 @@ class ChatService:
     def _route(self, request: ChatRequest) -> tuple[RetrievalRouteDecision, float]:
         started = time.perf_counter()
         graph_allowed = bool(getattr(request, "graph_enabled", False)) or self.graph_default_enabled
+        # PR-12：续问经服务端解析后，路由/检索吃 resolved_query（指代已展开）；
+        # question 原文继续承载 out-of-scope 判断与审计（改写不得绕过范围拦截）。
+        effective_question = getattr(request, "resolved_query", None) or request.question
         decision = self.retrieval_router.decide(
-            request.question,
+            effective_question,
             requested_strategy=request.retrieval_strategy,
             graph_allowed=graph_allowed,
             top_k=request.final_top_k,
@@ -94,7 +97,8 @@ class ChatService:
         return decision, round((time.perf_counter() - started) * 1000, 3)
 
     def _merge_query_variants(self, decision: RetrievalRouteDecision, request: ChatRequest) -> tuple[str, tuple[str, ...], str]:
-        plan = self.query_understanding.plan(request.question, decision)
+        effective_question = getattr(request, "resolved_query", None) or request.question
+        plan = self.query_understanding.plan(effective_question, decision)
         planned = plan.variants or (decision.search_query,)
         variants = tuple(dict.fromkeys(item for item in planned if item and item.strip()))
         return plan.mode, variants, plan.reasons[0] if plan.reasons else "no_query_understanding_required"
@@ -444,7 +448,8 @@ class ChatService:
         else:
             generation_start = time.perf_counter()
             try:
-                answer, raw_usage = provider.complete(self._messages(request.question, citations, trace.graph_links if trace else None))
+                effective_for_generation = getattr(request, "resolved_query", None) or request.question
+                answer, raw_usage = provider.complete(self._messages(effective_for_generation, citations, trace.graph_links if trace else None))
                 usage, state, degradation = UsageMetrics(**raw_usage), ResultState.answered, trace.degradation_reason
             except Exception as exc:
                 answer = "生成模型暂时不可用。已返回检索到的制度证据，请以引用原文为准。"

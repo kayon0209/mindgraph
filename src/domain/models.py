@@ -199,6 +199,9 @@ class ChatRequest(BaseModel):
     query_type: str | None = Field(default=None, max_length=40)
     # 计划 4.4：版本继承/条件/例外/冲突问题可配置最多 2 跳图扩展。
     graph_hops: int = Field(default=1, ge=1, le=2)
+    # PR-12：服务端续问解析的结果（指代/槽位/纠错已展开的完整问句）。
+    # 路由与检索用它；``question`` 保持原文用于落库与审计。None = 单轮语义。
+    resolved_query: str | None = Field(default=None, max_length=4000)
 
     @field_validator("query_date")
     @classmethod
