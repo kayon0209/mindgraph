@@ -92,13 +92,17 @@ def test_archived_conversation_context_blocked(service: ConversationService):
 
 
 def test_reference_resolution_to_recent_topic():
-    """指代：「那个标准」→ 绑定最近讨论的主题，输出解析证据。"""
+    """指代：「这个标准」→ 绑定最近讨论的主题，输出解析证据。
+
+    用「这个」而非「那个」：slot_inheritance 只匹配"那/那么/继续"等开头，
+    「这个标准…」只能走 reference 分支——突变（清空指代词表）时此测试必红。
+    """
     resolver = FollowupResolver()
     history = [
         {"role": "user", "content": "差旅费住宿标准是多少"},
         {"role": "assistant", "content": "住宿标准为每天 500 元（见《差旅费管理办法》）"},
     ]
-    result = resolver.resolve("那个标准的报销时限是多久", history)
+    result = resolver.resolve("这个标准的报销时限是多久", history)
     assert result.resolved_query is not None
     assert "住宿" in result.resolved_query or "差旅费" in result.resolved_query
     assert result.substitutions, "解析必须留下证据：替换了哪个指代"
