@@ -322,7 +322,9 @@ h2,
   border-radius: 4px;
   font-size: 10.5px;
   font-weight: 700;
-  letter-spacing: 0.12em;
+  /* 中文标签不做字距展开：0.12em 的宽字距是英文 kicker 的排版习惯，
+     套在「提问 · 治理式问答」这类中文眉题上就会显出模板感。 */
+  letter-spacing: 0.02em;
 }
 
 /* 页面要点行：引导新用户进入各视图的核心动作（键盘效率 + 行动召唤） */
