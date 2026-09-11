@@ -24,6 +24,7 @@ import uuid
 import faiss
 import numpy as np
 
+from application.chunking_policy import ChunkingPolicy
 from application.index_metadata import document_key
 from document_loader import _chunk_text, _split_by_markdown_headers
 from infrastructure.database import ProductDatabase, dumps, loads
@@ -53,6 +54,7 @@ class MindGraphIndexService:
         index_root: Path,
         provider: Any | None = None,
         on_activated: Callable[[], None] | None = None,
+        policy: ChunkingPolicy | None = None,
     ) -> None:
         self.db = db
         self.vault_root = Path(vault_root)
@@ -60,6 +62,9 @@ class MindGraphIndexService:
         self.index_root.mkdir(parents=True, exist_ok=True)
         self.provider = provider or BGEEmbeddingProvider()  # 尊重 BGE_LOCAL_FILES_ONLY 环境变量（默认 true=离线安全；设 false 即首次自动下载）
         self.on_activated = on_activated
+        # PR-03：切分参数单一来源。此处曾有内联字面量 _chunk_text(sec_body, 500, 50)
+        # ——不读任何常量，是线上索引最隐蔽的漂移点；现在一律经 policy 取值。
+        self.policy = policy or ChunkingPolicy.from_settings()
 
     # ------------------------------------------------------------------ #
     # 查询待索引笔记
@@ -126,7 +131,7 @@ class MindGraphIndexService:
         chunks: list[Chunk] = []
         idx = 0
         for section_path, sec_body in _split_by_markdown_headers(body):
-            for sub in _chunk_text(sec_body, 500, 50):
+            for sub in _chunk_text(sec_body, self.policy.child_size, self.policy.overlap):
                 chunks.append(Chunk(
                     chunk_id=f"{note['note_id']}::{idx}",
                     text=sub,
@@ -316,6 +321,8 @@ class MindGraphIndexService:
                 "build_status": "validated",
                 "previous_index_version": previous,
                 "strategy": "mindgraph_incremental",
+                # PR-03：切分参数进 manifest——评测与追溯据此绑定结果与参数
+                "chunking_policy": self.policy.manifest_payload(),
             }
             (directory / "metadata.json").write_text(
                 json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"

@@ -198,6 +198,13 @@ class Settings(BaseSettings):
     # 失效，必须重跑消融并重新公布。
     INDEX_INCLUDED_SUBTREES: str = ""
 
+    # ── 切分策略（PR-03 单一来源）──
+    # 预设名（见 application.chunking_policy）；空 = legacy_v1（历史参数
+    # 500/1200/50 的精确快照）。未知名在运行时 fail-closed 拒绝。
+    # ⚠️ 换策略 = 改切分输出与 chunk ID 分母：必须重建索引并重跑检索回归，
+    # 已公布指标（R@5 等）随即失效。
+    CHUNKING_POLICY: str = ""
+
     # ── 缓存 ──
     CACHE_ENABLED: bool = True
     ANSWER_CACHE_TTL_SECONDS: int = 3600
@@ -214,7 +221,7 @@ class Settings(BaseSettings):
     HEALTH_CHECK_INTERVAL_SECONDS: int = 30
 
     @model_validator(mode="after")
-    def _remap_deprecated_chat_provider(self) -> "Settings":
+    def _remap_deprecated_chat_provider(self) -> Settings:
         """防止「provider 名字与真实后端不符」再次隐身。
 
         历史问题：OpenAI 兼容槽的 provider 名长期写作 ``deepseek``，但端点早已改指

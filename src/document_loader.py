@@ -4,25 +4,30 @@ metadata：doc_name、section_path、chunk_index。
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 import logging
-import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+import re
+from typing import Any
 
 from config import ROOT
 
 logger = logging.getLogger("mindgraph.document_loader")
 
-# PRD：chunk_size ≈ 500 中文字符，overlap = 50
-DEFAULT_CHUNK_SIZE = 500
-DEFAULT_CHUNK_OVERLAP = 50
+# PRD：chunk_size ≈ 500 中文字符，overlap = 50。
+# PR-03 起数值来自 ChunkingPolicy 单一来源（legacy_v1 快照）；导出名与数值
+# 保持不变——retrieval/indexing.py 等既有消费方按名字导入这两个常量。
+from application.chunking_policy import LEGACY_V1  # noqa: E402
+
+DEFAULT_CHUNK_SIZE = LEGACY_V1.child_size
+DEFAULT_CHUNK_OVERLAP = LEGACY_V1.overlap
 
 
-def _chunk_text(text: str, chunk_size: int, overlap: int) -> List[str]:
+def _chunk_text(text: str, chunk_size: int, overlap: int) -> list[str]:
     text = text.strip()
     if not text:
         return []
-    chunks: List[str] = []
+    chunks: list[str] = []
     start = 0
     n = len(text)
     while start < n:
@@ -34,15 +39,15 @@ def _chunk_text(text: str, chunk_size: int, overlap: int) -> List[str]:
     return chunks
 
 
-def _split_by_markdown_headers(content: str) -> List[Tuple[str, str]]:
+def _split_by_markdown_headers(content: str) -> list[tuple[str, str]]:
     """
     按行首 ## / ### 切分为多个区块，返回 (section_path, 区块正文)。
     文首无标题内容归入「(文首)」。
     """
     lines = content.splitlines(keepends=True)
-    sections: List[Tuple[str, str]] = []
+    sections: list[tuple[str, str]] = []
     current_title = "(文首)"
-    current_buf: List[str] = []
+    current_buf: list[str] = []
 
     for line in lines:
         stripped = line.rstrip("\n\r")
@@ -68,7 +73,7 @@ def _warn_about_unscanned_subtrees(
     docs_dir: Path,
     glob_pattern: str,
     scanned: int,
-    included_subtrees: Optional[Sequence[str]] = None,
+    included_subtrees: Sequence[str] | None = None,
 ) -> None:
     """glob 是**非递归**的：子目录里的 Markdown 会被静默跳过。
 
@@ -90,7 +95,7 @@ def _warn_about_unscanned_subtrees(
     suffix = glob_pattern.lstrip("*")
     if not suffix.startswith("."):
         return  # 形如 **/*.md 的自定义模式语义不定，不猜
-    unscanned: Dict[str, int] = {}
+    unscanned: dict[str, int] = {}
     try:
         candidates = sorted(docs_dir.glob(f"**/*{suffix}"))
     except OSError:
@@ -158,8 +163,8 @@ def load_markdown_chunks(
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
     glob_pattern: str = "*.md",
-    included_subtrees: Optional[Sequence[str]] = None,
-) -> List[Dict[str, Any]]:
+    included_subtrees: Sequence[str] | None = None,
+) -> list[dict[str, Any]]:
     """
     扫描目录下 Markdown，按 PRD 规则切分。
 
@@ -173,7 +178,7 @@ def load_markdown_chunks(
     if not docs_dir.is_dir():
         return []
 
-    records: List[Dict[str, Any]] = []
+    records: list[dict[str, Any]] = []
     paths = sorted(docs_dir.glob(glob_pattern))
     _warn_about_unscanned_subtrees(docs_dir, glob_pattern, len(paths), included_subtrees)
     for path in paths:
@@ -217,14 +222,14 @@ def load_markdown_chunks(
 
 
 def load_all_kb_chunks(
-    doc_dirs: List[Tuple[Path, str]],
+    doc_dirs: list[tuple[Path, str]],
     *,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
-    included_subtrees: Optional[Sequence[str]] = None,
-) -> List[Dict[str, Any]]:
+    included_subtrees: Sequence[str] | None = None,
+) -> list[dict[str, Any]]:
     """合并多个根目录（如内置 docs + 上传 uploads），各自带 origin。"""
-    merged: List[Dict[str, Any]] = []
+    merged: list[dict[str, Any]] = []
     for base, origin in doc_dirs:
         merged.extend(
             load_markdown_chunks(

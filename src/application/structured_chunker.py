@@ -2,13 +2,33 @@ from __future__ import annotations
 
 import hashlib
 
+from application.chunking_policy import ChunkingPolicy
 from domain.models import ParsedDocument, ParsedElement, StructuredChunk
 
 
 class StructuredChunker:
-    def __init__(self, child_size: int = 500, parent_size: int = 1200, overlap: int = 50) -> None:
-        if overlap >= child_size: raise ValueError("overlap must be smaller than child size")
-        self.child_size, self.parent_size, self.overlap = child_size, parent_size, overlap
+    """上传文档的结构化 parent-child 切分。
+
+    切分参数自 PR-03 起经 ``ChunkingPolicy`` 单一来源提供：默认 legacy_v1
+    （500/1200/50，历史行为的精确快照）；显式传参仍受同样校验约束。
+    """
+
+    def __init__(
+        self,
+        child_size: int | None = None,
+        parent_size: int | None = None,
+        overlap: int | None = None,
+        policy: ChunkingPolicy | None = None,
+    ) -> None:
+        base = policy or ChunkingPolicy.from_settings()
+        self.child_size = base.child_size if child_size is None else child_size
+        self.parent_size = base.parent_size if parent_size is None else parent_size
+        self.overlap = base.overlap if overlap is None else overlap
+        self.policy = base
+        ChunkingPolicy(
+            name=base.name, version=base.version,
+            child_size=self.child_size, parent_size=self.parent_size, overlap=self.overlap,
+        )  # 复用同一套校验：显式覆盖值也必须合法（overlap < child_size 等）
 
     def chunk(self, document: ParsedDocument) -> list[StructuredChunk]:
         groups: list[list[ParsedElement]] = []
