@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable
+import copy
 from datetime import UTC, datetime
 import json
 from pathlib import Path
@@ -44,6 +45,10 @@ if str(SRC_ROOT) not in sys.path:
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from application.index_metadata import (  # noqa: E402
+    INDEX_ROOT_REGISTRY,
+    index_root_spec,
+)
 from evaluation.answer_eval import ANSWER_METRICS, evaluate_answer_case, evaluate_answer_predictions  # noqa: E402
 from evaluation.mindgraph_retrieval_eval import (  # noqa: E402
     dataset_sha256,
@@ -52,17 +57,93 @@ from evaluation.mindgraph_retrieval_eval import (  # noqa: E402
 )
 
 BASELINE_VERSION = "mindgraph-baseline-v1"
+# 数据集摘要口径：evaluation.mindgraph_retrieval_eval.dataset_sha256() 的规范化 ——
+# _jsonl_records() 先给每条记录注入 `_source_line`，再 sort_keys + 紧凑分隔符
+# `(",", ":")`、`\n` 连接、补尾换行、UTF-8。注意「裸 canonical JSONL」（不注入
+# `_source_line`）会算出另一个值，evaluation/manifest.py 的裸字节 sha256_file()
+# 在 core.autocrlf=true 的 Windows 上又是第三个值（CRLF）。口径不写进基线，
+# 跨平台/跨实现比对必然错位。
+DATASET_DIGEST_METHOD = "canonical-jsonl-source-line-v1"
 DEFAULT_GOLDEN = PROJECT_ROOT / "evaluation" / "datasets" / "mindgraph_golden_v2.jsonl"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "evaluation" / "results" / "baseline"
-MINDGRAPH_INDEX_ROOT = PROJECT_ROOT / "data" / "mindgraph_indexes"
+
+# MindGraph 检索管线实际读取的索引根（api/dependencies.py 的 mindgraph_index_root）。
+# 路径与归属不再硬编码在这里：`application/index_metadata.py` 的 INDEX_ROOT_REGISTRY
+# 是「哪个根服务哪套数据集」的单一事实源，且由 tests/test_index_root_registry.py
+# 锁住绑定关系（根标签与数据集 gold 标签必须有交集）。
+_AUTHORITATIVE_SPEC = index_root_spec("mindgraph_indexes")
+AUTHORITATIVE_INDEX_ROOT = PROJECT_ROOT / _AUTHORITATIVE_SPEC.root
+# 历史 M1/M2 评测栈（/api/v1/evaluations）用的根。它与 golden v2 **无标签交集**
+# （实测 0/13）—— 它服务的是 expense_qa_v1（34 题，中文 chunk_id）。因此它不是
+# 本基线的对照物，写进 known_roots 只为让「两个同名 CURRENT」这件事可见。
+LEGACY_INDEX_ROOT = PROJECT_ROOT / index_root_spec("retrieval_indexes").root
+
+# live 检索实际传入生产管线的姿势；硬编码在调用里，因此必须一并写进基线。
+LIVE_STRATEGY = "hybrid"
+LIVE_GRAPH_ENABLED = False
+
 # 质量指标（ANSWER_METRICS）与运营指标（延迟/token/成本/覆盖率）分桶展示；
 # 运营指标缺失用量记 None，绝不记 0。
 QUALITY_METRIC_KEYS = frozenset(ANSWER_METRICS)
 
+# guardrail §4「所有指标必须绑定 dataset、corpus、index、chunking、embedding、
+# reranker、prompt、provider 和 model 版本」：这些键缺失即不可复现 → fail-closed。
+REQUIRED_CONFIG_KEYS = (
+    "strategy", "graph_enabled", "top_k", "dense_model", "sparse",
+    "bm25_k1", "bm25_b", "fusion", "rrf_constant",
+    "reranker_enabled", "chunk_size", "chunk_overlap",
+)
+
 RetrieveFn = Callable[[dict[str, Any]], Any]
 
-# 重复运行时允许变化的字段（时间戳类）；摘要稳定性测试会剔除它们。
-_VOLATILE_KEYS = ("run_id", "captured_at")
+# 重复运行时**允许**变化的字段。除这些路径外，两次运行的摘要必须逐字节相等 ——
+# 这就是 PR-01 验收标准「同一输入重复运行摘要稳定」的可验证形式。
+#
+# 为什么要显式声明延迟：延迟是**运行环境**的函数（CPU 负载、模型预热、磁盘缓存），
+# 不是被测系统的属性。live 路径实测两次 p50 相差 22%（20.01ms → 24.49ms），
+# 所以「摘要稳定」若不排除延迟，这条标准在 live 上永远不成立；而用注入 trace 的
+# 测试会**掩盖**它（注入的延迟是常量，看起来完全稳定）。声明出来，稳定才可验证。
+VOLATILE_PATHS: tuple[tuple[str, ...], ...] = (
+    ("run_id",),
+    ("captured_at",),
+    ("retrieval_layer", "summary", "p50_retrieval_ms"),
+    ("retrieval_layer", "summary", "p95_retrieval_ms"),
+    ("answer_layer", "operational", "mean_total_latency_ms"),
+    ("answer_layer", "operational", "p50_total_latency_ms"),
+    ("answer_layer", "operational", "p95_total_latency_ms"),
+)
+# 逐案延迟藏在列表元素里，单独声明：(列表路径, 元素内键名)
+VOLATILE_LIST_ITEM_KEYS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("retrieval_layer", "details"), "total_retrieval_ms"),
+)
+
+
+def strip_volatile(payload: dict[str, Any]) -> dict[str, Any]:
+    """剔除已声明的 volatile 字段，得到「两次运行应逐字节相等」的那部分。
+
+    质量指标、索引版本、数据集摘要、配置快照**都不在** volatile 名单里，
+    因此它们一旦漂移就会立刻显现——这正是基线要守的东西。
+    """
+    stripped = copy.deepcopy(payload)
+    for path in VOLATILE_PATHS:
+        node: Any = stripped
+        for key in path[:-1]:
+            node = node.get(key) if isinstance(node, dict) else None
+            if node is None:
+                break
+        if isinstance(node, dict):
+            node.pop(path[-1], None)
+    for path, item_key in VOLATILE_LIST_ITEM_KEYS:
+        node = stripped
+        for key in path:
+            node = node.get(key) if isinstance(node, dict) else None
+            if node is None:
+                break
+        if isinstance(node, list):
+            for item in node:
+                if isinstance(item, dict):
+                    item.pop(item_key, None)
+    return stripped
 
 
 def _utc_stamp() -> str:
@@ -99,7 +180,7 @@ def _git_state(root: Path) -> dict[str, Any]:
 
 def _index_state(index_root: Path | None = None) -> dict[str, Any]:
     """活跃 MindGraph 索引的版本与构成（语料摘要的一部分）。"""
-    root = index_root or MINDGRAPH_INDEX_ROOT
+    root = index_root or AUTHORITATIVE_INDEX_ROOT
     try:
         version = (root / "CURRENT").read_text(encoding="utf-8").strip() or None
     except OSError:
@@ -119,6 +200,76 @@ def _index_state(index_root: Path | None = None) -> dict[str, Any]:
         "created_at": metadata.get("created_at"),
         "build_strategy": metadata.get("strategy"),
     }
+
+
+def _display_path(path: Path) -> str:
+    """仓库内路径转相对形式，便于跨机器比对；仓库外的原样返回。"""
+    resolved = path.resolve()
+    try:
+        return resolved.relative_to(PROJECT_ROOT).as_posix()
+    except ValueError:
+        return str(resolved)
+
+
+def _index_roots_survey() -> list[dict[str, Any]]:
+    """列出全部**已登记**的索引根，并标出本基线用的是哪个。
+
+    仓库里 `data/mindgraph_indexes` 与 `data/retrieval_indexes` 都叫 CURRENT，
+    但服务的是两套**数据粒度不同**的评测栈（vault_path vs 中文 chunk_id），
+    实测标签交集为 0。不显式暴露这一点，任何「baseline 的 index.version」与
+    「evaluation_runs.index_version」的比对都会错位。
+
+    遍历登记表而不是硬编码两个路径：以后新增索引根如果没登记，
+    tests/test_index_root_registry.py 会先失败，不会静默地从基线里消失。
+    """
+    survey: list[dict[str, Any]] = []
+    for spec in INDEX_ROOT_REGISTRY:
+        root = PROJECT_ROOT / spec.root
+        state = _index_state(root)
+        state["label"] = (
+            "authoritative_for_this_baseline"
+            if spec.name == _AUTHORITATIVE_SPEC.name
+            else f"serves_other_dataset:{spec.dataset}"
+        )
+        state["root"] = _display_path(root)
+        state["purpose"] = spec.purpose
+        state["bound_dataset"] = spec.dataset
+        survey.append(state)
+    return survey
+
+
+def _retrieval_config(top_k: int) -> dict[str, Any]:
+    """检索配置快照（guardrail §4：指标必须绑定 chunking/embedding/reranker 版本）。
+
+    取值来自运行时真值（infrastructure.settings + document_loader 常量）与 live
+    路径实际传入生产管线的参数。读不到的键记 None 并计入 ``missing_required_keys``，
+    由调用方 fail-closed —— 不产出「看起来完整」的配置块。
+    """
+    from document_loader import DEFAULT_CHUNK_OVERLAP, DEFAULT_CHUNK_SIZE
+    from infrastructure.settings import get_settings
+
+    settings = get_settings()
+    config: dict[str, Any] = {
+        "strategy": LIVE_STRATEGY,
+        "graph_enabled": LIVE_GRAPH_ENABLED,
+        "top_k": top_k,
+        "dense_model": settings.BGE_MODEL_NAME,
+        "sparse": "bm25",
+        "bm25_k1": settings.BM25_K1,
+        "bm25_b": settings.BM25_B,
+        "fusion": "rrf",
+        "rrf_constant": settings.RRF_CONSTANT,
+        "candidate_count": settings.RETRIEVAL_CANDIDATE_COUNT,
+        "reranker_enabled": settings.RERANKER_ENABLED,
+        "reranker_model": settings.RERANKER_MODEL_NAME,
+        "rerank_top_n": settings.RERANK_TOP_N,
+        "chunk_size": DEFAULT_CHUNK_SIZE,
+        "chunk_overlap": DEFAULT_CHUNK_OVERLAP,
+    }
+    config["missing_required_keys"] = [
+        key for key in REQUIRED_CONFIG_KEYS if config.get(key) is None
+    ]
+    return config
 
 
 def _python_state() -> dict[str, Any]:
@@ -156,6 +307,7 @@ def _corpus_digest(golden: list[dict[str, Any]]) -> dict[str, Any]:
 def _write_markdown_summary(payload: dict[str, Any], path: Path, golden_name: str) -> None:
     git = payload["environment"]["git"]
     index = payload["index"]
+    config = payload["retrieval_config"]
     retrieval = payload["retrieval_layer"]["summary"]
     metrics = payload["answer_layer"]["metrics"]
     operational = payload["answer_layer"]["operational"]
@@ -166,12 +318,21 @@ def _write_markdown_summary(payload: dict[str, Any], path: Path, golden_name: st
         f"- Captured at: {payload['captured_at']}",
         f"- Git: `{git['commit']}` (branch `{git['branch']}`, dirty={git['dirty']})",
         f"- Dataset: `{golden_name}` v{payload['dataset']['version']} "
-        f"(sha256 `{payload['dataset']['sha256'][:12]}…`, {payload['dataset']['case_count']} cases)",
+        f"(sha256 `{payload['dataset']['sha256'][:12]}…` via `{payload['dataset']['sha256_method']}`, "
+        f"{payload['dataset']['case_count']} cases)",
         f"- Index: `{index.get('version')}` "
         f"({index.get('note_count')} notes / {index.get('chunk_count')} chunks, "
         f"embedding {index.get('embedding_model')})",
+        f"- Index root: `{index.get('root')}` (policy `{index.get('index_root_policy')}`)",
         f"- Answer layer source: `{payload['answer_layer']['prediction_source']}` "
         f"(provider `{payload['answer_layer']['chat_provider']}`, model `{payload['answer_layer']['chat_model']}`)",
+        "",
+        "## 检索配置（guardrail §4：指标必须绑定下列版本）",
+        "",
+    ]
+    for name, value in config.items():
+        lines.append(f"- {name}: {value}")
+    lines += [
         "",
         "## 检索层（evidence-path 口径，answer 案例参与计分）",
         "",
@@ -201,6 +362,8 @@ def _write_markdown_summary(payload: dict[str, Any], path: Path, golden_name: st
         "",
         "- 检索层与答案层来自不同运行（检索=当前索引 live，答案=冻结预测文件）；",
         "  对比两层指标时必须同时核对 environment 与 prediction_source。",
+        "- 索引根不止一个（见 index.known_roots）：本基线来自 "
+        f"`{index.get('root')}`，与该根之外的 index_version 不可直接比对。",
         "- 本基线仅证明可追溯性，不代表任何发布门禁结论。",
         "",
         f"完整逐案归档见 `{path.stem}.json`。",
@@ -231,25 +394,31 @@ def collect_baseline(
     if git_root is None and git["commit"] is None:
         raise RuntimeError("git state unavailable: baseline must trace to a commit")
 
+    # guardrail §4：配置不全的基线不可复现，直接拒绝产出。
+    retrieval_config = _retrieval_config(top_k)
+    if retrieval_config["missing_required_keys"]:
+        raise RuntimeError(
+            "retrieval config incomplete (guardrail §4 requires metrics to bind "
+            f"chunking/embedding/reranker versions): {retrieval_config['missing_required_keys']}"
+        )
+
     if retrieve is None:
         from api.dependencies import get_container
-        import evaluation.mindgraph_retrieval_eval as _eval
 
-        if not ((index_root or MINDGRAPH_INDEX_ROOT) / "CURRENT").exists():
+        active_root = index_root or AUTHORITATIVE_INDEX_ROOT
+        if not (active_root / "CURRENT").exists():
             raise FileNotFoundError(
-                f"no active MindGraph index under {index_root or MINDGRAPH_INDEX_ROOT}; "
+                f"no active MindGraph index under {active_root}; "
                 "build one first (scripts/sync_vault.py) or inject traces"
             )
-        # src/ 与仓库根同时在 sys.path 时，evaluator 的 `from src.retrieval.types`
-        # 会与管线的裸 `retrieval.types` 形成两套模块对象，isinstance 必然失配；
-        # 与 scripts/run_external_eval2.py 相同手法：把 evaluator 的绑定统一到
-        # 管线实际返回的类。
-        import retrieval.types as _live_types
-
-        setattr(_eval, "RetrievalTrace", _live_types.RetrievalTrace)
-        pipeline = get_container().mindgraph_pipeline(top_k=top_k, graph_enabled=False)
+        # 导入侧不必再打补丁：evaluation.mindgraph_retrieval_eval 已把
+        # RetrievalTrace 的权威侧固定为生产代码使用的 `retrieval.types`，
+        # 与 pipeline 返回的类恒为同一对象。
+        pipeline = get_container().mindgraph_pipeline(
+            top_k=top_k, graph_enabled=LIVE_GRAPH_ENABLED
+        )
         live_retrieve: RetrieveFn = lambda case: pipeline.retrieve(  # noqa: E731
-            case["question"], "hybrid", graph_enabled=False
+            case["question"], LIVE_STRATEGY, graph_enabled=LIVE_GRAPH_ENABLED
         )
         retrieve = live_retrieve
         retrieval_mode = "live_pipeline"
@@ -279,13 +448,20 @@ def collect_baseline(
             "runtime": _python_state(),
         },
         "dataset": {
-            "path": str(golden), "name": golden.name,
+            "path": _display_path(golden), "name": golden.name,
             "version": cases[0].get("dataset_version") if cases else None,
             "sha256": dataset_sha256(golden),
+            "sha256_method": DATASET_DIGEST_METHOD,
             "case_count": len(cases),
             "corpus": _corpus_digest(cases),
         },
-        "index": _index_state(index_root),
+        "index": {
+            **_index_state(index_root or AUTHORITATIVE_INDEX_ROOT),
+            "root": _display_path(index_root or AUTHORITATIVE_INDEX_ROOT),
+            "index_root_policy": "mindgraph_pipeline_root_v1",
+            "known_roots": _index_roots_survey(),
+        },
+        "retrieval_config": retrieval_config,
         "retrieval_layer": {
             "mode": retrieval_mode,
             "evaluator_version": retrieval_report["evaluator_version"],
@@ -312,6 +488,10 @@ def collect_baseline(
                 {
                     "case_id": row["case_id"],
                     "conflict_accuracy": row.get("conflict_accuracy"),
+                    # 不计分的案例必须能看出"为什么不计分"，否则归档里一个 None
+                    # 无法区分"指标不适用"与"系统没跑"
+                    "conflict_kind": row.get("conflict_kind"),
+                    "conflict_applicable": row.get("conflict_applicable"),
                     "acl_leakage": row.get("acl_leakage"),
                     "refusal_correctness": row.get("refusal_correctness"),
                     "failures": row.get("failures", []),
@@ -334,7 +514,10 @@ def collect_baseline(
         "summary_path": str(summary_path),
         "git": git["commit"], "dirty": git["dirty"],
         "dataset": payload["dataset"]["sha256"][:12],
+        "dataset_sha256_method": DATASET_DIGEST_METHOD,
         "index": payload["index"].get("version"),
+        "index_root": payload["index"].get("root"),
+        "retrieval_config": payload["retrieval_config"],
     }, ensure_ascii=False, indent=2))
     return {"baseline_path": str(baseline_path), "summary_path": str(summary_path)}
 

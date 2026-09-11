@@ -27,7 +27,105 @@
 """
 from __future__ import annotations
 
+from collections import Counter
+from pathlib import PurePosixPath
+import re
 from typing import Any
+
+# ── 冲突类别（拍板 A：把混装的 conflict 拆成可分别判分的语义类） ──────────
+#
+# 现数据集里 category="conflict" 混装了三种语义，而 answer_eval 对它们一律要求
+# ``result_state == "conflicting_evidence"`` —— 这是 conflict_accuracy 恒为 0 的
+# 根因之一：判据只对应其中一种语义。拆开后每类各按自己的契约判分。
+#
+# 类别**从 Gold 路径推断**，不从数据库推断：离线评测没有数据库，
+# 且推断规则必须确定、可复现（同一份数据集永远得到同一分类）。
+VERSION_CONFLICT = "version_conflict"          # 同一制度的多版本并存（新旧时限）
+CROSS_POLICY_CONFLICT = "cross_policy_conflict"  # 不同制度之间的条款冲突（餐补 vs 招待费）
+NOT_A_CONFLICT = "not_a_conflict"                # 被标成 conflict 但实际不涉及冲突
+
+# 注册表：新增冲突类别只需在此加一行，判分逻辑自动跟随。
+# ``expected_state=None`` 表示该类**不参与** conflict_accuracy（记 None 而非 0）。
+EXPECTED_STATE_BY_KIND: dict[str, str | None] = {
+    VERSION_CONFLICT: "conflicting_evidence",
+    # 跨制度冲突期望的是"识别并解释冲突"，不是拒答/报警 → 由事实覆盖率承载
+    CROSS_POLICY_CONFLICT: None,
+    NOT_A_CONFLICT: None,
+}
+
+CONFLICT_KIND_LABELS = {
+    VERSION_CONFLICT: "同一制度多版本并存，期望系统报出版本冲突",
+    CROSS_POLICY_CONFLICT: "跨制度条款冲突，期望系统识别并解释，不要求拒答",
+    NOT_A_CONFLICT: "Gold 不含版本并存或跨制度冲突，conflict 标签存疑",
+}
+
+_VERSION_SUFFIX = re.compile(r"[-_]v\d+(?:\.\d+)*$", re.IGNORECASE)
+
+
+def _policy_stem(path: str) -> str:
+    """去掉版本后缀与扩展名，得到制度标识：`policies/expense-general-v2.md` → `expense-general`。"""
+    stem = PurePosixPath(str(path).replace("\\", "/")).stem
+    return _VERSION_SUFFIX.sub("", stem).strip().lower()
+
+
+def classify_conflict_kind(case: dict[str, Any]) -> str:
+    """从 Gold 路径推断冲突类别（确定性、不依赖数据库、不修改任何标签）。
+
+    - 同一制度标识出现 ≥2 条 Gold 路径（如 v1 与 v2 并存）→ 版本冲突；
+    - Gold 覆盖 ≥2 个不同制度 → 跨制度冲突；
+    - 其余（单条 Gold 或无 Gold）→ 不构成冲突。
+    """
+    paths = [str(item) for item in (case.get("gold_vault_paths") or []) if item]
+    if not paths:
+        return NOT_A_CONFLICT
+    stems = Counter(_policy_stem(path) for path in paths)
+    if any(count >= 2 for count in stems.values()):
+        return VERSION_CONFLICT
+    if len(stems) >= 2:
+        return CROSS_POLICY_CONFLICT
+    return NOT_A_CONFLICT
+
+
+def conflict_expectation(
+    case: dict[str, Any],
+    *,
+    policy_versions: dict[str, list[dict[str, Any]]] | None = None,
+) -> dict[str, Any]:
+    """给出该案例的冲突判分契约：类别、是否适用、期望状态与理由。
+
+    ``applicable=False`` 时 ``conflict_accuracy`` 应记 ``None``（不可判定），
+    而不是记 0 —— 把"这个指标在此类案例上没有意义"写成 0 分，
+    等于宣称系统答错了，这是 conflict_accuracy 恒为 0 的第二个根因。
+
+    ``policy_versions`` 可选：仅用于在版本冲突类上补一条诊断
+    （系统侧判据是"同 key ≥2 个 active 版本"，若语料里旧版本已归档，
+    则系统按现行版本作答是**正确行为**，缺口在"历史版本对比检索"这一新能力）。
+    """
+    kind = classify_conflict_kind(case)
+    expected_state = EXPECTED_STATE_BY_KIND.get(kind)
+    notes: list[str] = []
+    if kind == VERSION_CONFLICT and policy_versions is not None:
+        keys = {_policy_stem(str(item)) for item in (case.get("gold_vault_paths") or []) if item}
+        multi_active = any(
+            len([v for v in (versions or []) if _is_active(v)]) > 1
+            for key in keys
+            for k, versions in policy_versions.items()
+            if _policy_stem(str(k)) == key
+        )
+        if not multi_active:
+            notes.append(
+                "语料中不存在同 key 的多个 active 版本：系统按生命周期排除旧版属正确行为，"
+                "缺口是「历史版本对比检索」能力，不是冲突检测漏报"
+            )
+    return {
+        "kind": kind,
+        "kind_label": CONFLICT_KIND_LABELS[kind],
+        "applicable": expected_state is not None,
+        "expected_state": expected_state,
+        "rationale": CONFLICT_KIND_LABELS[kind],
+        "notes": notes,
+    }
+
 
 # ── 归因码 ────────────────────────────────────────────────────────────────
 CONFLICT_CORRECT = "conflict_correct"                       # 正确报冲突（非失败）
@@ -136,8 +234,13 @@ def attribute_conflict_case(
         if len(cited_keys) > 1:
             secondary.append(CROSS_POLICY_CONFLICT_UNSUPPORTED)
 
+    expectation = conflict_expectation(case, policy_versions=policy_versions)
     return {
         "case_id": case.get("case_id"),
+        # 拍板 A：类别决定是否参与 conflict_accuracy 计分（B：不适用记 None 而非 0）
+        "conflict_kind": expectation["kind"],
+        "conflict_applicable": expectation["applicable"],
+        "conflict_expectation_notes": expectation["notes"],
         "primary_reason": primary,
         "primary_reason_label": REASON_LABELS[primary],
         "secondary_reasons": secondary,
@@ -171,11 +274,17 @@ def attribute_all(cases, predictions, *, policy_versions) -> dict[str, Any]:
         if (case.get("category") or case.get("query_type")) == "conflict"
     ]
     tally: dict[str, int] = {}
+    kinds: dict[str, int] = {}
     for item in results:
         tally[item["primary_reason"]] = tally.get(item["primary_reason"], 0) + 1
+        kinds[item["conflict_kind"]] = kinds.get(item["conflict_kind"], 0) + 1
     return {
         "case_count": len(results),
         "by_primary_reason": tally,
+        # 分母可见：不适用案例不计入 conflict_accuracy，必须报出来，
+        # 否则"指标不适用"与"没有冲突案例"在报表上长得一样。
+        "by_conflict_kind": kinds,
+        "scoring_denominator": sum(1 for r in results if r["conflict_applicable"]),
         "system_defect_count": sum(1 for r in results if r["is_system_defect"]),
         "results": results,
     }

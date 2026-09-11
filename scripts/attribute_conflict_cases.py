@@ -96,10 +96,15 @@ def main() -> int:
     print("\n主因分布：")
     for reason, count in sorted(report["by_primary_reason"].items(), key=lambda kv: -kv[1]):
         print(f"  {reason:<32} {count}")
+    print(f"\n冲突类别分布（scoring 分母 = {report['scoring_denominator']} / {report['case_count']}，"
+          f"其余不适用、不计入 conflict_accuracy）：")
+    for kind, count in sorted(report["by_conflict_kind"].items(), key=lambda kv: -kv[1]):
+        print(f"  {kind:<32} {count}")
     print("\n逐案：")
     for item in report["results"]:
         flag = "缺陷" if item["is_system_defect"] else "口径"
-        print(f"  [{flag}] {item['case_id']} -> {item['primary_reason']}"
+        mark = "计分" if item["conflict_applicable"] else "不计分"
+        print(f"  [{flag}/{mark}] {item['case_id']} -> {item['primary_reason']} ({item['conflict_kind']})"
               f"{' + ' + ','.join(item['secondary_reasons']) if item['secondary_reasons'] else ''}")
         if item["evidence"]["suppressed_versions"]:
             for version in item["evidence"]["suppressed_versions"]:
