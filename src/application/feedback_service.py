@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import csv
+from datetime import UTC, datetime
 import io
 import logging
 import uuid
-from datetime import datetime, timezone
 
 from domain.errors import ConflictError, NotFoundError
 from domain.models import BadCase, BadCaseUpdate, FeedbackCreate, FeedbackRecord
@@ -17,8 +17,18 @@ class FeedbackService:
     def __init__(self, database: ProductDatabase) -> None:
         self.database = database
 
-    def create_feedback(self, payload: FeedbackCreate) -> FeedbackRecord:
-        query = self.database.fetch_one("SELECT * FROM query_logs WHERE request_id=?", (payload.request_id,))
+    def create_feedback(self, payload: FeedbackCreate, *, principal_id: str | None = None) -> FeedbackRecord:
+        """按归属写反馈：只允许问答所属 principal 提交（安全审查 F1）。
+
+        principal_id 缺省（None）时 fail-closed——历史调用方必须显式迁移。
+        不存在与不属于返回同一 NotFoundError，不暴露 request_id 存在性；
+        NULL 归属的存量记录同理拒绝（无法证明归属就不放行）。
+        """
+        if not principal_id:
+            raise NotFoundError("Request ID does not exist")
+        query = self.database.fetch_one(
+            "SELECT * FROM query_logs WHERE request_id=? AND principal_id=?", (payload.request_id, principal_id)
+        )
         if not query:
             raise NotFoundError("Request ID does not exist")
         if self.database.fetch_one("SELECT feedback_id FROM feedback WHERE request_id=?", (payload.request_id,)):
@@ -27,7 +37,7 @@ class FeedbackService:
         self.database.execute("INSERT INTO feedback VALUES (?,?,?,?,?,?)", (
             record.feedback_id, record.request_id, record.rating, dumps(record.reason_codes), record.comment, record.created_at.isoformat()))
         if record.rating == "not_helpful":
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             trace = loads(query["trace_json"], {})
             self.database.execute("INSERT OR IGNORE INTO bad_cases VALUES (?,?,?,?,?,?,?,?,?,?,?)", (
                 str(uuid.uuid4()), record.request_id, query["question"], query["answer"], dumps(trace.get("final_chunks", [])),
@@ -55,7 +65,7 @@ class FeedbackService:
         values = update.model_dump(exclude_none=True)
         if values:
             assignments = ",".join(f"{name}=?" for name in values)  # name 来自 Pydantic 模型字段名（固定 schema）
-            params = tuple(values.values()) + (datetime.now(timezone.utc).isoformat(), bad_case_id)
+            params = tuple(values.values()) + (datetime.now(UTC).isoformat(), bad_case_id)
             self.database.execute(f"UPDATE bad_cases SET {assignments},updated_at=? WHERE bad_case_id=?", params)  # nosec B608 -- assignments 由 Pydantic 字段名 + '?' 构成，非用户输入
             logger.info("bad_case_updated", extra={"bad_case_id": bad_case_id, "fields": sorted(values)})
         return self.get_bad_case(bad_case_id)

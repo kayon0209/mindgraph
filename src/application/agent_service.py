@@ -171,6 +171,7 @@ class AgentService:
         executed = 0
         gate_reached = False
         used_names: list[str] = []
+        principal = (access_scope or {}).get("user") if access_scope else None
         for index, step in enumerate(plan.steps):
             if not step.counts_toward_budget:
                 break  # finalize 由生成段处理
@@ -203,7 +204,7 @@ class AgentService:
             )
             if policy.should_halt(state, gate_reached=gate_reached):
                 # fail-closed：不扩图、不生成，走现有终态呈现
-                for event in self._terminal_without_generation(request_id, request, result, started, tool_calls_executed=executed):
+                for event in self._terminal_without_generation(request_id, request, result, started, tool_calls_executed=executed, principal=principal):
                     yield event
                 return
 
@@ -217,7 +218,7 @@ class AgentService:
             text = "已找到相关制度证据，但生成模型未配置。请直接查看引用。"
             yield self._event(request_id, "answer_delta", {"text": text, "stream_mode": "deterministic"})
             for event in self._finalize_completed(request_id, request, result, text, ResultState.model_unavailable, started,
-                                                  tool_calls_executed=executed, fallback_reason=fallback_reason):
+                                                  tool_calls_executed=executed, fallback_reason=fallback_reason, principal=principal):
                 yield event
             return
 
@@ -245,14 +246,14 @@ class AgentService:
             yield self._event(request_id, "loop_fell_back", {"reason": fallback_reason})
             for event in self._finalize_completed(
                 request_id, request, result, "本次回答未通过引用校验，已改为仅显示证据。", ResultState.system_error, started,
-                integrity_failed=True, tool_calls_executed=executed, fallback_reason=fallback_reason,
+                integrity_failed=True, tool_calls_executed=executed, fallback_reason=fallback_reason, principal=principal,
             ):
                 yield event
             return
         # 校验通过后才发正文
         yield self._event(request_id, "answer_delta", {"text": answer, "stream_mode": "provider_native"})
         for event in self._finalize_completed(request_id, request, result, answer, ResultState.answered, started,
-                                              usage=usage, tool_calls_executed=executed, fallback_reason=fallback_reason):
+                                              usage=usage, tool_calls_executed=executed, fallback_reason=fallback_reason, principal=principal):
             yield event
 
     # ── 步骤执行器 ──
@@ -308,7 +309,7 @@ class AgentService:
 
     # ── 终态组装 ──
 
-    def _terminal_without_generation(self, request_id: str, request: ChatRequest, result: EvidenceQueryResult, started: float, *, tool_calls_executed: int = 0) -> Iterable[dict[str, Any]]:
+    def _terminal_without_generation(self, request_id: str, request: ChatRequest, result: EvidenceQueryResult, started: float, *, tool_calls_executed: int = 0, principal: str | None = None) -> Iterable[dict[str, Any]]:
         state = result.bundle.result_state
         if state is EvidenceResultState.conflicting_evidence:
             text = "检测到同一制度在查询日期存在多个有效版本，已停止生成答案。请由制度责任人确认有效版本。"
@@ -320,12 +321,13 @@ class AgentService:
             text = "未在制度文件中找到足够依据。建议联系 HR/财务确认。"
             final_state = ResultState.insufficient_evidence
         yield self._event(request_id, "answer_delta", {"text": text, "stream_mode": "deterministic"})
-        yield from self._finalize_completed(request_id, request, result, text, final_state, started, tool_calls_executed=tool_calls_executed)
+        yield from self._finalize_completed(request_id, request, result, text, final_state, started, tool_calls_executed=tool_calls_executed, principal=principal)
 
     def _finalize_completed(
         self, request_id: str, request: ChatRequest, result: EvidenceQueryResult, answer: str, state: ResultState, started: float,
         *, usage: dict[str, Any] | None = None, integrity_failed: bool = False,
         tool_calls_executed: int = 0, fallback_reason: str | None = None,
+        principal: str | None = None,
     ) -> Iterable[dict[str, Any]]:
         payload: dict[str, Any] = {
             "request_id": request_id,
@@ -343,14 +345,16 @@ class AgentService:
         }
         if usage:
             payload["usage"] = usage
-        self._persist_assist(request_id, request, payload)
+        self._persist_assist(request_id, request, payload, principal)
         yield self._event(request_id, "citations", {"citations": payload["citations"]})
         yield self._event(request_id, "completed", payload)
 
-    def _persist_assist(self, request_id: str, request: ChatRequest, payload: dict[str, Any]) -> None:
+    def _persist_assist(self, request_id: str, request: ChatRequest, payload: dict[str, Any], principal: str | None = None) -> None:
         """assist 轮落 query_logs（prompt_version=assist-agent-v1 标记渠道）：
         M2 验收要求 fallback 触发率与工具调用数可回溯统计，仅靠 SSE 事件无法
-        事后查询。落库失败绝不阻断应答（与 ChatService._persist 同策略）。"""
+        事后查询。落库失败绝不阻断应答（与 ChatService._persist 同策略）。
+        principal_id 与 ChatService._persist_or_raise 同口径（PR-02：assist 渠道
+        归属此前恒 NULL，导致反馈面 fail-closed 全拒）。"""
         import hashlib
 
         from infrastructure.database import dumps
@@ -367,8 +371,8 @@ class AgentService:
                 """INSERT INTO query_logs (
                     request_id, question, question_hash, answer, result_state, requested_strategy, actual_strategy,
                     trace_json, citations_json, timing_json, usage_json, created_at, index_version, prompt_version,
-                    requested_provider, actual_provider, query_date, category_filter_json
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    requested_provider, actual_provider, query_date, category_filter_json, principal_id
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     request_id, question,
                     hashlib.sha256((request.question + "mindgraph-question-salt").encode()).hexdigest(),
@@ -379,6 +383,7 @@ class AgentService:
                     datetime.now(UTC).isoformat(), payload.get("index_version"), "assist-agent-v1",
                     request.chat_provider or "", "assist",
                     request.query_date, dumps([]),
+                    principal or "anonymous",
                 ),
             )
         except Exception:
