@@ -48,6 +48,23 @@ def _auth_mode() -> str:
     return mode
 
 
+def _off_mode_grants_write() -> bool:
+    """``AUTH_MODE=off`` 时是否授予写/admin 角色——必须显式开启。
+
+    缺陷背景：off 模式原先无条件给匿名主体 ``["read","write","admin"]``，
+    只要该值被遗留在任何对外可达的部署里，任何人都能重建索引、改连接器、
+    导出 bad-case。现改为 **默认只读**，本地单人开发用
+    ``AUTH_OFF_ALLOW_WRITES=true`` 显式打开，并在启动日志中告警。
+    """
+    value = os.getenv("AUTH_OFF_ALLOW_WRITES", "")
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _off_mode_roles() -> list[str]:
+    """off 模式下的主体角色：默认只读，显式开关后才含写与 admin。"""
+    return ["read", "write", "admin"] if _off_mode_grants_write() else ["read"]
+
+
 API_KEYS_FILE = Path(__file__).resolve().parent.parent.parent / "data" / "api_keys.json"
 API_KEY_HEADER = "X-API-Key"
 
@@ -126,7 +143,7 @@ def _extract_api_key(request: Request, x_api_key: str | None = None) -> str | No
 async def get_api_key(request: Request, x_api_key: str | None = Header(None, alias="X-API-Key")) -> dict:
     """从请求头提取 API Key 并验证。"""
     if _auth_mode() == "off":
-        return {"name": "anonymous", "roles": ["read", "write"]}
+        return {"name": "anonymous", "roles": _off_mode_roles()}
 
     api_key = _extract_api_key(request, x_api_key)
     if not api_key:
@@ -150,7 +167,7 @@ def get_required_principal(request: Request) -> dict:
     if _auth_mode() == "off":
         return {
             "name": "local-development",
-            "roles": ["read", "write", "admin"],
+            "roles": _off_mode_roles(),
             "authenticated": True,
             "auth_mode": "off",
             "allow": ["*"],
@@ -208,7 +225,7 @@ def get_optional_principal(request: Request) -> dict:
     if _auth_mode() == "off":
         return {
             "name": "anonymous",
-            "roles": ["read", "write"],
+            "roles": _off_mode_roles(),
             "authenticated": False,
             "auth_mode": "off",
             "allow": [],

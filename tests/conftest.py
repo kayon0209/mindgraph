@@ -49,6 +49,9 @@ def clean_env(monkeypatch):
     # 确保测试时不会读取真实 .env
     os.environ["ENVIRONMENT"] = "development"
     os.environ["AUTH_MODE"] = "off"
+    # off 模式默认只读（写权限需显式开关）；测试需要覆盖写端点的既有行为，
+    # 因此显式打开，与本地 .env 的配置保持一致。
+    os.environ["AUTH_OFF_ALLOW_WRITES"] = "true"
     os.environ["CHAT_PROVIDER"] = "deepseek"
     os.environ["OPENAI_COMPAT_API_KEY"] = "test-key"
     os.environ["OPENAI_COMPAT_MODEL"] = "deepseek-test"

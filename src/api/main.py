@@ -72,11 +72,75 @@ logger = logging.getLogger("mindgraph.api")
 # ── 应用生命周期 ──
 
 
+def _warn_if_auth_disabled() -> None:
+    """``AUTH_MODE=off`` 启动时必须告警：说明当前生效的授权范围。
+
+    off 模式默认只读（写权限需 ``AUTH_OFF_ALLOW_WRITES=true`` 显式开启），
+    但"完全关闭鉴权"本身就不该出现在对外可达的部署里，所以在启动日志中
+    明确写出当前角色与风险，避免又一次"静默全权"。
+    """
+    from api.auth import _auth_mode, _off_mode_roles
+
+    if _auth_mode() != "off":
+        return
+    roles = _off_mode_roles()
+    write_enabled = "write" in roles
+    logger.warning(
+        "auth_disabled_at_startup",
+        extra={
+            "auth_mode": "off",
+            "roles": roles,
+            "write_enabled": write_enabled,
+            "hint": (
+                "AUTH_MODE=off 授予写权限，仅限本机单人开发，切勿对外暴露端口"
+                if write_enabled
+                else "AUTH_MODE=off 为只读；需要写操作请设 AUTH_OFF_ALLOW_WRITES=true（仅本机开发）"
+            ),
+        },
+    )
+
+
+def _warn_if_index_diverges() -> None:
+    """启动时比对「``notes`` 声明可检索的文档」与「活跃索引实际覆盖的文档」。
+
+    2026-09-09 的真实分叉：``notes`` 表 25 篇全部 ``index_status='ready'``，而
+    ``CURRENT`` 指向的索引只有 4 篇 / 69 chunks——索引规模、按源过滤、ACL 过滤
+    同时失真，而整条链路上没有任何提示。这里把它变成启动日志里的一行结论。
+
+    但"语料只收 vault 根目录"是**已拍板的口径**（见 ``INDEX_INCLUDED_SUBTREES``），
+    子目录缺的那批属"已接受的范围外缺失"。因此分三档记录：
+
+    - 完全一致 → INFO ``index_corpus_consistent``；
+    - 只剩范围外缺失 → INFO ``index_corpus_scope_declared``（可见但不报警）；
+    - 范围内缺失 / 索引里有 notes 不认识的东西 → **ERROR** ``index_corpus_divergence``。
+
+    这样告警长期为真的情况不会出现——否则它会变成没人看的背景噪音，
+    09-09 那类真事故反而更容易藏在里面。
+    """
+    from application.index_metadata import audit_index_consistency, parse_included_subtrees
+    from infrastructure.retrieval_factory import INDEX_ROOT
+
+    included = parse_included_subtrees(getattr(_settings, "INDEX_INCLUDED_SUBTREES", ""))
+    report = audit_index_consistency(
+        index_root=INDEX_ROOT,
+        db_path=_settings.DATABASE_PATH,
+        included_subtrees=included,
+    )
+    if report["consistent"]:
+        logger.info("index_corpus_consistent", extra=report)
+    elif report["scope_consistent"]:
+        logger.info("index_corpus_scope_declared", extra=report)
+    else:
+        logger.error("index_corpus_divergence", extra=report)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """启动时初始化 ServiceContainer，关闭时清理资源。"""
     require_safe_sqlite_runtime()
     logger.info("application_starting", extra={"environment": _settings.ENVIRONMENT})
+    _warn_if_auth_disabled()
+    _warn_if_index_diverges()
     container = get_container()
     logger.info("service_container_initialized")
     # M4-A 缺口修复：TASK_WORKER_ENABLED=true 时拉起单实例任务轮询线程

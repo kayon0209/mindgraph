@@ -69,10 +69,13 @@ class BM25Retriever:
         from application.access_control import chunk_acl_matches
 
         target_date = parse_date_safe(query_date) or date.today()
+        acl_dropped = 0
 
         def visible(index: int) -> bool:
+            nonlocal acl_dropped
             metadata = self.chunks[index].metadata
             if access_scope is not None and not chunk_acl_matches(metadata, access_scope):
+                acl_dropped += 1
                 return False
             status = metadata.get("document_status") or metadata.get("policy_status")
             if not include_historical and status and status != "active":
@@ -95,4 +98,8 @@ class BM25Retriever:
             for rank, (score, index) in enumerate(ranked, 1)
             if score > 0
         ]
-        return results, {"bm25_retrieval_ms": round(elapsed, 3)}
+        return results, {
+            "bm25_retrieval_ms": round(elapsed, 3),
+            # 同 dense：ACL 裁掉的候选数要能被上层看见，否则「无证据」无从归因
+            "acl_dropped_sparse": float(acl_dropped),
+        }

@@ -108,12 +108,14 @@ class FAISSDenseRetriever:
 
         target_date = parse_date_safe(query_date) or date.today()
         results: list[RetrievalCandidate] = []
+        acl_dropped = 0
         for score, position in zip(scores[0], positions[0]):
             if position < 0:
                 continue
             chunk = self._chunks[int(position)]
             metadata = chunk.metadata
             if access_scope is not None and not chunk_acl_matches(metadata, access_scope):
+                acl_dropped += 1
                 continue
             status = metadata.get("document_status") or metadata.get("policy_status")
             if not include_historical and status and status != "active":
@@ -129,4 +131,10 @@ class FAISSDenseRetriever:
             results.append(RetrievalCandidate(chunk=chunk, dense_score=float(score), dense_rank=len(results) + 1))
             if len(results) >= top_k:
                 break
-        return results, {"query_embedding_ms": round(embedding_ms, 3), "dense_retrieval_ms": round(retrieval_ms, 3)}
+        return results, {
+            "query_embedding_ms": round(embedding_ms, 3),
+            "dense_retrieval_ms": round(retrieval_ms, 3),
+            # 被 ACL 裁掉的候选数：文件式索引没有 acl_json/workspace 元数据时
+            # 这个值会等于扫描窗口大小 —— 上层据此把「静默 0 结果」变成可见告警。
+            "acl_dropped_dense": float(acl_dropped),
+        }
