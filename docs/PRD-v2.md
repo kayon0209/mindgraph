@@ -16,7 +16,7 @@
 |------|------------|----------------|
 | 向量库 | ChromaDB 本地 | FAISS 密集向量 + BM25 稀疏 + RRF 融合 + 可选 Cross-Encoder 重排 |
 | 检索策略 | Top-K=3 单一 | 4 种策略：dense / sparse / hybrid / **hybrid_rerank** |
-| 答案生成 | 智谱 GLM-4 单模型 | 多 Provider 解耦（DeepSeek / 智谱 / Anthropic），运行时热切换 + 主备降级 |
+| 答案生成 | 智谱 GLM-4 单模型 | 多 Provider 解耦（OpenAI 兼容槽 / 智谱 / Anthropic），运行时热切换 + 主备降级 |
 | 输出方式 | 同步整段返回 | **SSE 流式输出**（首字 < 1s） |
 | 知识库管理 | 上传即覆盖 | 版本化索引：文档状态机 + Embedding 复用 + 原子切换 `CURRENT` 指针 + 回滚 |
 | 检索过滤 | 无 | 新增**查询日期过滤**、**知识分类过滤**、**权限等级（authority_level）** |

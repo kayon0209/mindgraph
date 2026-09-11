@@ -95,11 +95,17 @@ npm run dev
 
 | Provider | 关键变量 | 申请地址 |
 |----------|----------|----------|
-| DeepSeek（默认） | `OPENAI_COMPAT_API_KEY` | https://platform.deepseek.com/ |
+| Gitee AI（默认，`qwen3.8-flash`） | `OPENAI_COMPAT_API_KEY` | https://ai.gitee.com/ |
 | 智谱 | `ZHIPU_API_KEY` | https://open.bigmodel.cn/ |
 | Anthropic | `ANTHROPIC_API_KEY` | https://console.anthropic.com/ |
 
-通过 `CHAT_PROVIDER=deepseek|zhipu|anthropic` 切换。启动时会自动校验必填项，缺失会在日志中告警。
+通过 `CHAT_PROVIDER=gitee|zhipu|anthropic` 切换。启动时会自动校验必填项，缺失会在日志中告警。
+
+> **`OPENAI_COMPAT_PROVIDER_NAME` 必须与 `CHAT_PROVIDER` 一致**：注册表按名称路由。
+> 名字应与**真实后端**一致——评测记录里 `actual_provider` 与 `model` 会一并落库，名字写错
+> 会把模型来源标错。`deepseek` 保留为已弃用别名：当它与槽名不一致时会被自动改写并打
+> `chat_provider_alias_deprecated` 告警；当槽名含 `deepseek` 而 `OPENAI_COMPAT_BASE_URL`
+> 的 host 并不含它时，会打 `chat_provider_label_mismatch` 告警。
 
 ### 2.6 检索
 

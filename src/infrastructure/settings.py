@@ -6,13 +6,16 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import logging
 from pathlib import Path
 from typing import Literal
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -72,13 +75,19 @@ class Settings(BaseSettings):
     ZHIPU_MODEL: str = "glm-4.7"
     ZHIPU_VERIFIED: bool = False
 
-    # ── LLM Provider — OpenAI Compatible (DeepSeek) ──
-    CHAT_PROVIDER: Literal["zhipu", "deepseek", "anthropic"] = "deepseek"
-    OPENAI_COMPAT_PROVIDER_NAME: str = "deepseek"
-    OPENAI_COMPAT_BASE_URL: str = "https://api.deepseek.com"
+    # ── LLM Provider — OpenAI 兼容槽 ──
+    # 命名必须与**真实后端**一致。历史遗留：该槽的 provider 名写作 "deepseek"，
+    # 但端点早在 2026-08-27 就已改指 Gitee AI（见
+    # FULL-AUDIT-OPTIMIZATION-2026-08-27.md §329），结果评测记录把
+    # qwen3.8-flash 标成了 deepseek，一被追问就会穿。现按真实后端起名 gitee。
+    # "deepseek" 保留为**已弃用别名**：见 _remap_deprecated_chat_provider，
+    # 会自动改写并打告警，不静默失效。
+    CHAT_PROVIDER: Literal["zhipu", "gitee", "anthropic", "deepseek"] = "gitee"
+    OPENAI_COMPAT_PROVIDER_NAME: str = "gitee"
+    OPENAI_COMPAT_BASE_URL: str = "https://ai.gitee.com/v1"
     OPENAI_COMPAT_API_KEY: str = ""
-    OPENAI_COMPAT_MODEL: str = "deepseek-v4-flash"
-    OPENAI_COMPAT_MODELS: str = "deepseek-v4-flash"
+    OPENAI_COMPAT_MODEL: str = "qwen3.8-flash"
+    OPENAI_COMPAT_MODELS: str = "qwen3.8-flash"
     OPENAI_COMPAT_VERIFIED: bool = False
     CHAT_TIMEOUT_SECONDS: int = 60
     CHAT_MAX_RETRIES: int = 1
@@ -204,6 +213,38 @@ class Settings(BaseSettings):
     SLOW_REQUEST_THRESHOLD_MS: int = 1000
     HEALTH_CHECK_INTERVAL_SECONDS: int = 30
 
+    @model_validator(mode="after")
+    def _remap_deprecated_chat_provider(self) -> "Settings":
+        """防止「provider 名字与真实后端不符」再次隐身。
+
+        历史问题：OpenAI 兼容槽的 provider 名长期写作 ``deepseek``，但端点早已改指
+        Gitee AI（qwen3.8-flash），评测记录因此把模型标成 deepseek。这里做两件事：
+
+        1. 若槽名仍是 ``deepseek`` 而 ``OPENAI_COMPAT_BASE_URL`` 的 host 里并不含
+           ``deepseek``，直接告警——名字可证伪，不能沉默；
+        2. 若 ``CHAT_PROVIDER`` 是已弃用别名且与槽名不一致，改写为槽名（避免旧
+           ``.env`` 因注册表按名路由而突然起不来），同时告警。
+        """
+        slot_name = self.OPENAI_COMPAT_PROVIDER_NAME
+        base_host = self.OPENAI_COMPAT_BASE_URL.split("//")[-1].split("/")[0].lower()
+        if "deepseek" in slot_name.lower() and "deepseek" not in base_host:
+            logger.warning(
+                "chat_provider_label_mismatch",
+                extra={
+                    "provider_name": slot_name,
+                    "base_url_host": base_host,
+                    "model": self.OPENAI_COMPAT_MODEL,
+                    "hint": "provider 名应与真实后端一致，否则评测记录会标错来源",
+                },
+            )
+        if self.CHAT_PROVIDER == "deepseek" and slot_name != "deepseek":
+            logger.warning(
+                "chat_provider_alias_deprecated",
+                extra={"configured": self.CHAT_PROVIDER, "effective": slot_name},
+            )
+            self.CHAT_PROVIDER = slot_name  # type: ignore[assignment]
+        return self
+
     @field_validator("ZHIPU_API_KEY", "OPENAI_COMPAT_API_KEY", "ANTHROPIC_API_KEY", mode="before")
     @classmethod
     def strip_api_keys(cls, v: str | None) -> str:
@@ -249,10 +290,11 @@ class Settings(BaseSettings):
         missing = []
         if self.CHAT_PROVIDER == "zhipu" and not self.ZHIPU_API_KEY:
             missing.append("ZHIPU_API_KEY")
-        if self.CHAT_PROVIDER == "deepseek" and not self.OPENAI_COMPAT_API_KEY:
-            missing.append("OPENAI_COMPAT_API_KEY")
         if self.CHAT_PROVIDER == "anthropic" and not self.ANTHROPIC_API_KEY:
             missing.append("ANTHROPIC_API_KEY")
+        # 其余取值都落在 OpenAI 兼容槽（gitee 等），按槽校验而不是写死名字。
+        if self.CHAT_PROVIDER not in {"zhipu", "anthropic"} and not self.OPENAI_COMPAT_API_KEY:
+            missing.append("OPENAI_COMPAT_API_KEY")
         return missing
 
 
