@@ -63,6 +63,9 @@ class RetrievalTrace:
     # PR-09：parent 上下文扩展的决策账本（expanded/duplicates/reason codes）。
     # 扩展开关关闭时恒为空 dict。
     context_expansion: dict[str, Any] = field(default_factory=dict)
+    # PR-11：条件式 rerank 的决策与排名变化账本；开关关闭或降级时为空。
+    rerank_decision: dict[str, Any] = field(default_factory=dict)
+    rerank_rank_changes: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -89,6 +92,8 @@ class RetrievalTrace:
             "original_query": self.original_query,
             "query_analysis": self.query_analysis,
             "context_expansion": self.context_expansion,
+            "rerank_decision": self.rerank_decision,
+            "rerank_rank_changes": self.rerank_rank_changes,
         }
 
 

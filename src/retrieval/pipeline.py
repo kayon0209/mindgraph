@@ -5,6 +5,7 @@ import inspect
 import logging
 import time
 
+from application.conditional_rerank import record_rank_changes  # noqa: E402  # PR-11：排名变化记录（纯函数，无循环依赖）
 from infrastructure.date_utils import parse_date_safe
 
 from .types import DenseRetriever, FusionStrategy, Reranker, RetrievalTrace, SparseRetriever
@@ -110,16 +111,30 @@ class RetrievalPipeline:
         *,
         context_expansion: bool = False,
         context_expansion_max_chars: int = 1200,
+        conditional_rerank: bool = False,
+        rerank_route: str = "",
     ) -> None:
         self.dense, self.sparse, self.fusion, self.reranker = dense, sparse, fusion, reranker
         self.candidate_count = candidate_count
         self.rerank_top_n = rerank_top_n
         self.final_top_k = final_top_k
         # PR-09：parent 上下文扩展（默认关——命中带 lineage 的 child 后按预算
-        # 用 parent_text 补上下文）。开关在检索工厂按 CONTEXT_EXPANSION_ENABLED
+        # 用 parent_text 补 context）。开关在检索工厂按 CONTEXT_EXPANSION_ENABLED
         # 注入；关闭时检索输出与历史完全一致。
         self.context_expansion_enabled = context_expansion
         self.context_expansion_max_chars = context_expansion_max_chars
+        # PR-11：条件式 rerank（默认关）。``rerank_route`` 由 chat 侧路由注入
+        # （auto 策略才知道 route；显式 hybrid_rerank 请求视为全量跑）。
+        self.conditional_rerank_enabled = conditional_rerank
+        self._rerank_route = rerank_route
+
+    @property
+    def rerank_route(self) -> str:
+        return self._rerank_route
+
+    @rerank_route.setter
+    def rerank_route(self, route: str) -> None:
+        self._rerank_route = route
 
     @staticmethod
     def _search(
@@ -290,12 +305,43 @@ class RetrievalPipeline:
                     trace.degraded = True
                     trace.actual_strategy = "hybrid"
                     trace.degradation_reason = "reranker_disabled"
+                elif self.conditional_rerank_enabled:
+                    # PR-11：条件式 rerank——按路由/候选规模决策。跳过是
+                    # 省延迟的**决策**（不降级、不冒充跑过），只有模型故障
+                    # 才走下面的降级路径。
+                    from application.conditional_rerank import ConditionalRerankPolicy
+
+                    decision = ConditionalRerankPolicy().should_rerank(
+                        route=self._rerank_route, candidate_count=len(filtered),
+                    )
+                    trace.rerank_decision = decision.to_dict()
+                    if decision.should_rerank:
+                        start = time.perf_counter()
+                        try:
+                            reranked = self.reranker.rerank(query, filtered[:self.rerank_top_n], self.final_top_k)
+                            reranked = self._filter_by_access(reranked, access_scope, trace)
+                            trace.reranked_results = reranked
+                            trace.rerank_rank_changes = record_rank_changes(
+                                filtered[:self.rerank_top_n], reranked,
+                            )
+                            final = self._filter_and_adjust(reranked, query_date, categories or [], include_historical, trace)[:self.final_top_k]
+                        except Exception as exc:
+                            trace.degraded = True
+                            trace.actual_strategy = "hybrid"
+                            trace.degradation_reason = f"reranker_error: {type(exc).__name__}: {exc}"
+                        trace.latency_ms["reranker_ms"] = round((time.perf_counter() - start) * 1000, 3)
+                    else:
+                        # 保持 fusion 排序为最终结果；决策原因已进 trace。
+                        trace.warnings.append(f"rerank_skipped:{decision.reason}")
                 else:
                     start = time.perf_counter()
                     try:
                         reranked = self.reranker.rerank(query, filtered[:self.rerank_top_n], self.final_top_k)
                         reranked = self._filter_by_access(reranked, access_scope, trace)
                         trace.reranked_results = reranked
+                        trace.rerank_rank_changes = record_rank_changes(
+                            filtered[:self.rerank_top_n], reranked,
+                        )
                         final = self._filter_and_adjust(reranked, query_date, categories or [], include_historical, trace)[:self.final_top_k]
                     except Exception as exc:
                         trace.degraded = True

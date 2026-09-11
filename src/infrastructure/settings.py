@@ -212,6 +212,12 @@ class Settings(BaseSettings):
     CONTEXT_EXPANSION_ENABLED: bool = False
     CONTEXT_EXPANSION_MAX_CHARS: int = 1200
 
+    # ── 条件式 Rerank（PR-11，默认关）──
+    # 打开后：hybrid_rerank 策略按路由条件执行——exception_or_conflict /
+    # cross_policy 高收益路由跑 rerank，低收益路由跳过（省延迟非降级），
+    # 跳过原因进 trace。验收门禁：质量降 ≤1pp 且 P95/成本相对全量降 ≥20%。
+    CONDITIONAL_RERANK_ENABLED: bool = False
+
     # ── 索引激活一致性门禁（PR-04）──
     # 激活前比对候选索引与活跃索引的切分口径/文档覆盖，不一致则拒绝改写 CURRENT。
     # 2026-09-11 实测：69 chunks（扁平）与 98 chunks（StructuredChunker）两个版本

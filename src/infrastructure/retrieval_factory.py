@@ -32,6 +32,7 @@ def _context_expansion_kwargs() -> dict[str, Any]:
     return {
         "context_expansion": bool(settings.CONTEXT_EXPANSION_ENABLED),
         "context_expansion_max_chars": int(settings.CONTEXT_EXPANSION_MAX_CHARS),
+        "conditional_rerank": bool(settings.CONDITIONAL_RERANK_ENABLED),
     }
 
 

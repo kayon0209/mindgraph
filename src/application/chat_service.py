@@ -155,6 +155,13 @@ class ChatService:
             kwargs["access_scope"] = access_scope
         effective_query_date = (decision.filters or {}).get("effective_at") or request.query_date
         mode, variants, reason = self._merge_query_variants(decision, request)
+        # PR-11：把路由结果交给管线的条件式 rerank 判断（无该属性的管线静默跳过，
+        # 测试替身/旧实现不受影响）。
+        if hasattr(pipeline, "rerank_route"):
+            try:
+                pipeline.rerank_route = decision.route
+            except Exception:
+                logger.debug("rerank_route_injection_skipped", exc_info=True)
 
         def retrieve_variant(query_text: str):
             if "graph_enabled" not in parameters:
