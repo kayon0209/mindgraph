@@ -438,6 +438,47 @@ R1 否 · R2 否（已修且验证）· **R3 部分解除**（已有 1 个 PR-02
 **未做的事（有意为之）**：不跨根比较；不改 `chunker` 硬编码（归 PR-09）；
 不统一两个根（红线，见 `index_metadata.INDEX_ROOT_REGISTRY`）。
 
+---
+
+### 2026-09-11T03:0x（**PR-10 QueryAnalyzer Shadow 实施 + 验收**）✅ **通过**
+
+交付物：**`0390983`** `feat(query): add QueryAnalyzer as a shadow observation layer (PR-10)`
+（7 文件 / +703 −1）
+
+**设计红线（任务书修正 2 已明示，本 PR 严格遵守）**
+不改造 `QueryUnderstandingService`（它已在生产路径 `chat_service.py:91`），
+新增的分析器是**独立观测层**，输出只写 `RetrievalTrace.query_analysis`。
+
+**验收证据**
+
+| 项 | 结果 |
+|---|---|
+| 定向测试 | **19 passed** |
+| 全量回归 | **746 passed / 3 skipped / 0 failed**（覆盖 76.46%） |
+| 覆盖度 | 90 条 golden + **32 条新增** query-understanding 集，**全部有完整输出** |
+| 分歧报告 | **真实分歧 17 / 32**，每条带 `reasons`（可解释） |
+| CI ruff 门禁 | All checks passed（新文件排除噪声后 **0**） |
+| mypy | Success, 0 错 |
+| 突变 | 把 confidence 塌成常量 → **1 failed** ✅ |
+
+**⚠️ 我自己踩的两个坑（都差点得出错误结论）**
+
+1. **「分歧 0 / 32」是假象。** 第一版脚本调用 `router.decide(question)` 缺两个
+   keyword-only 参数（`requested_strategy` / `graph_allowed`）→ 异常被我吞掉 →
+   `actual_route` 全为 `None`；而我的判定把 `None` 归进了 agreements → 分歧假性归零。
+   **修正**：`None` 单独计 `incomparable`，绝不冒充"一致"。修正后真实分歧 17/32。
+   *教训：报告"零分歧/零差异"前，先确认比较双方真的都有值。*
+2. **第一次突变没击中。** 我把 `_BASE_CONFIDENCE` 改成 `0.85`，测试**仍然通过**——
+   因为信号增减逻辑还在（weak 0.75 / strong 0.95 仍有区分）。
+   **正确突变**是把「基准 + 全部增减」整体换成单一常量，此时 `0.85 < 0.85` 才失败。
+   *教训：突变要精确打到"被保护的那个性质"，改个基数常常打不中。*
+
+**顺带暴露的真实缺口**：越界词表只有 13 个 HR 类词，**不含「今天天气怎么样」这类
+完全无关的问题** → 生产不会拦截。分析器不假装它是 factual，单独标 `risk.off_domain`。
+
+**依赖解耦**：`OUT_OF_SCOPE` 从 `chat_service.py:28` 下沉到 `application/scope_terms.py`
+（生产拦截与 shadow 判断必须同源；直接互相 import 会成环）。`chat_service` 仅改 2 行。
+
 
 
 
