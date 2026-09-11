@@ -293,7 +293,49 @@ def test_v15_upgrades_to_v16_additively_preserving_notes(tmp_path: Path):
 
         database.initialize()
 
-        assert _stored_version(database) == 16
+        # 断言「不倒退、v16 结构仍在」，不断言精确等于 16：
+        # 后续版本（如 v17）同样必须保留 v16 的表，钉死 16 会让每个新版本都改一次历史测试。
+        assert _stored_version(database) >= 16
+        assert set(V16_ONLY_TABLES) <= _table_names(database)
+        row = database.fetch_one("SELECT source_id, acl_json FROM notes WHERE note_id='legacy-note'")
+        assert row is not None
+        assert row["source_id"] == "legacy-source"
+        assert row["acl_json"] == '{"allow":["workspace:legacy"]}'
+    finally:
+        database.close()
+
+
+# PR-06：页级摄取状态机与检查点（纯新增表）
+V17_ONLY_TABLES = (
+    "ingestion_jobs",
+    "page_artifacts",
+)
+
+
+def test_v16_upgrades_to_v17_additively_preserving_notes(tmp_path: Path):
+    """v16 → v17 必须是**纯新增**：既有笔记与 v16 表都要原样保留。
+
+    PR-06 显式承诺「仅新增表，未改既有表结构/列」，这条测试就是该承诺的守卫。
+    """
+    database = ProductDatabase(tmp_path / "v16-to-v17.sqlite3")
+    database.initialize()
+    try:
+        database.execute(
+            "INSERT INTO notes (note_id, vault_path, title, content_hash, frontmatter_json, ai_access_level, "
+            "source_id, source_path, acl_json, acl_public, created_at, updated_at) VALUES "
+            "('legacy-note', 'legacy/a.md', 'Legacy', 'hash', '{}', 'local_only', "
+            "'legacy-source', 'legacy/a.md', '{\"allow\":[\"workspace:legacy\"]}', 0, 't', 't')"
+        )
+        with database.connect() as connection:
+            for table in V17_ONLY_TABLES:
+                connection.execute(f"DROP TABLE IF EXISTS {table}")
+            connection.execute("UPDATE schema_meta SET version=16")
+
+        database.initialize()
+
+        assert _stored_version(database) == 17
+        assert set(V17_ONLY_TABLES) <= _table_names(database)
+        # 纯新增：v16 的表与既有数据都不能动
         assert set(V16_ONLY_TABLES) <= _table_names(database)
         row = database.fetch_one("SELECT source_id, acl_json FROM notes WHERE note_id='legacy-note'")
         assert row is not None

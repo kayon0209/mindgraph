@@ -15,7 +15,7 @@ from infrastructure.sqlite_runtime import require_safe_sqlite_runtime
 
 logger = logging.getLogger("mindgraph.database")
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 
 class ProductDatabase:
@@ -507,6 +507,45 @@ class ProductDatabase:
                     ON source_ownership_audit_runs(source_id, finished_at);
                 CREATE INDEX IF NOT EXISTS idx_source_ownership_findings_run
                     ON source_ownership_findings(audit_run_id, reason_code);
+
+                -- PR-06：页级摄取状态机与检查点（纯新增表，未改任何既有表结构/列）。
+                -- 页级解析结果此前只存在于内存里，"失败在哪一页""重试跳过成功页"无从查证。
+                CREATE TABLE IF NOT EXISTS ingestion_jobs (
+                    job_id TEXT PRIMARY KEY,
+                    document_id TEXT NOT NULL,
+                    logical_document_id TEXT NOT NULL,
+                    version TEXT NOT NULL,
+                    filename TEXT NOT NULL,
+                    source_checksum TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK (status IN
+                        ('registered', 'extracting', 'parsed', 'ocr_required', 'failed', 'chunked')),
+                    parser_name TEXT,
+                    parser_version TEXT,
+                    page_count INTEGER,
+                    chunk_count INTEGER,
+                    attempt INTEGER NOT NULL DEFAULT 0,
+                    failure_reason TEXT,
+                    diagnostics_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS page_artifacts (
+                    job_id TEXT NOT NULL,
+                    page_number INTEGER NOT NULL,
+                    status TEXT NOT NULL CHECK (status IN ('parsed', 'ocr_required', 'failed')),
+                    checksum TEXT,
+                    char_count INTEGER NOT NULL DEFAULT 0,
+                    element_count INTEGER NOT NULL DEFAULT 0,
+                    attempt INTEGER NOT NULL DEFAULT 0,
+                    failure_reason TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (job_id, page_number)
+                );
+                CREATE INDEX IF NOT EXISTS idx_ingestion_jobs_document
+                    ON ingestion_jobs(document_id, status);
+                CREATE INDEX IF NOT EXISTS idx_page_artifacts_status
+                    ON page_artifacts(job_id, status);
             """)
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_notes_policy_lifecycle "

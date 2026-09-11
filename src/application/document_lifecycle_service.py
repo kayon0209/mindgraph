@@ -13,6 +13,7 @@ from domain.errors import ConflictError, NotFoundError, ValidationError
 from domain.models import AuthorityLevel, DocumentStatus, DocumentVersionModel
 from infrastructure.database import ProductDatabase, dumps, loads
 from infrastructure.parsers import default_parser_registry
+from application.page_ingestion import PageIngestionService
 from application.structured_chunker import StructuredChunker
 
 
@@ -42,6 +43,7 @@ class DocumentLifecycleService:
         self.database, self.storage_root = database, Path(storage_root)
         self.storage_root.mkdir(parents=True, exist_ok=True)
         self.chunker = StructuredChunker()
+        self.page_ingestion = PageIngestionService(database)
 
     def import_existing_markdown(self, paths: list[Path]) -> None:
         for path in paths:
@@ -68,6 +70,7 @@ class DocumentLifecycleService:
         target_dir.mkdir(parents=True)
         source = target_dir / ("source." + Path(filename).suffix.lower().lstrip("."))
         source.write_bytes(data)
+        chunks: list = []  # 解析失败时为空；页级记录据此跳过 finalize
         try:
             parsed = parser.parse(data, filename); chunks = self.chunker.chunk(parsed)
             ocr_required_pages = list(parsed.ocr_required_pages)
@@ -88,6 +91,13 @@ class DocumentLifecycleService:
         except Exception as exc:
             diagnostics = {"status": "failed", "failure_reason": f"{type(exc).__name__}: {exc}", "warnings": []}
             status = "parse_failed"
+        # 页级摄取记录（PR-06）：把已算出的页级产物落库，供"失败在哪一页"与
+        # "重试跳过成功页"查询。它是观测/恢复能力，**不是入库前置条件**：
+        # 落库失败只进诊断，绝不允许让一次本可成功的上传失败。
+        diagnostics["page_ingestion"] = self._record_page_ingestion(
+            document_id=document_id, logical_id=logical_id, version=version,
+            filename=filename, checksum=checksum, data=data, chunks=chunks,
+        )
         now = datetime.now(timezone.utc)
         record = DocumentVersionModel(document_id=document_id, logical_document_id=logical_id, version=version,
             title=Path(filename).stem, file_type=Path(filename).suffix.lower().lstrip("."), knowledge_category=category,
@@ -110,6 +120,25 @@ class DocumentLifecycleService:
             ),
         )
         return record
+
+    def _record_page_ingestion(self, *, document_id: str, logical_id: str, version: str, filename: str,
+                               checksum: str, data: bytes, chunks: list) -> dict:
+        """落页级摄取记录（PR-06）。**任何异常都吞掉**：它是观测能力，不该阻断入库。"""
+        try:
+            self.page_ingestion.register(document_id=document_id, logical_document_id=logical_id,
+                                         version=version, filename=filename, checksum=checksum)
+            report = self.page_ingestion.run(document_id, data, filename)
+            if chunks:
+                self.page_ingestion.finalize(document_id, len(chunks))
+            return {
+                "job_id": document_id,
+                "status": report["status"],
+                "pages_recorded": len(report["processed_pages"]),
+                "ocr_required_pages": report.get("ocr_required_pages", []),
+                "failed_pages": report.get("failed_pages", []),
+            }
+        except Exception as exc:  # noqa: BLE001 -- 观测失败不得影响文档入库
+            return {"status": "not_recorded", "failure_reason": f"{type(exc).__name__}: {exc}"}
 
     def transition(self, document_id: str, target: str) -> DocumentVersionModel:
         record = self.get(document_id)
