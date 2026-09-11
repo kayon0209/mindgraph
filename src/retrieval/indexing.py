@@ -12,8 +12,9 @@ from .dense import FAISSDenseRetriever
 from .types import Chunk, EmbeddingProvider
 
 
-def load_corpus(doc_dirs) -> list[Chunk]:
-    chunks = load_all_kb_chunks(doc_dirs)
+def load_corpus(doc_dirs, *, included_subtrees=None) -> list[Chunk]:
+    """加载语料。``included_subtrees`` 只影响"范围外跳过"的日志等级，不改变扫描范围。"""
+    chunks = load_all_kb_chunks(doc_dirs, included_subtrees=included_subtrees)
     return [
         Chunk(
             chunk_id=f"{item['metadata']['doc_name']}::{item['metadata']['chunk_index']}",

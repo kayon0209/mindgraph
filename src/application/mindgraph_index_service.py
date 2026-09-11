@@ -24,6 +24,7 @@ import uuid
 import faiss
 import numpy as np
 
+from application.index_metadata import document_key
 from document_loader import _chunk_text, _split_by_markdown_headers
 from infrastructure.database import ProductDatabase, dumps, loads
 from infrastructure.markdown_frontmatter import parse_frontmatter
@@ -170,6 +171,52 @@ class MindGraphIndexService:
         return chunks
 
     # ------------------------------------------------------------------ #
+    # 索引缩水可见性（2026-09-10）
+    # ------------------------------------------------------------------ #
+    def _report_shrinkage(self, previous_version: str | None, chunks: list[Chunk], version: str) -> None:
+        """比较新索引与上一版覆盖的文档，缩小就报 error（本路径不阻断，见下）。
+
+        为什么这里只告警不拦截：本路径按 ``notes`` 表全量重建，笔记被删除时缩小是
+        **预期行为**（扫描阶段已物理剪枝），没有"显式删除清单"可用来区分意外与正常。
+        真正需要 fail-closed 的是 ``m3-`` 文件扫描路径（``knowledge_service.rebuild``）——
+        那里任何文档丢失都只能是 bug，且它是 2026-09-09 那次事故的肇事路径。
+        """
+        if not previous_version:
+            return
+        try:
+            previous_chunks = json.loads(
+                (self.index_root / previous_version / "chunks.json").read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError):
+            return
+        previous_keys: set[str] = set()
+        for chunk in previous_chunks if isinstance(previous_chunks, list) else []:
+            metadata = chunk.get("metadata") if isinstance(chunk, dict) else None
+            if isinstance(metadata, dict):
+                key = document_key(metadata)
+                if key:
+                    previous_keys.add(key)
+        current_keys = {key for key in (document_key(chunk.metadata) for chunk in chunks) if key}
+        lost = sorted(previous_keys - current_keys)
+        if lost:
+            logger.error(
+                "index_shrinkage_detected",
+                extra={
+                    "index_version": version,
+                    "previous_index_version": previous_version,
+                    "previous_documents": len(previous_keys),
+                    "current_documents": len(current_keys),
+                    "lost_count": len(lost),
+                    "lost_documents": lost[:20],
+                },
+            )
+        else:
+            logger.info(
+                "index_document_coverage_unchanged",
+                extra={"index_version": version, "documents": len(current_keys)},
+            )
+
+    # ------------------------------------------------------------------ #
     # embedding 缓存（按 chunk 正文 checksum）
     # ------------------------------------------------------------------ #
     def _cached_embedding(self, checksum: str) -> list[float] | None:
@@ -290,6 +337,10 @@ class MindGraphIndexService:
                 "INSERT INTO index_builds VALUES (?,?,?,?,?,?,?)",
                 (version, "validated", dumps(manifest), previous, manifest["created_at"], now, None),
             )
+            # 索引缩水检测（2026-09-10）：三条写入 CURRENT 的路径里，这条会**主动剪枝**
+            # 被删除的笔记，所以缩小可能是合法的——但它必须可见，不能像 m3- 那条路径
+            # 一样在无人知晓的情况下把语料换小。
+            self._report_shrinkage(previous, chunks, version)
             self._activate(version)
             if self.on_activated is not None:
                 try:

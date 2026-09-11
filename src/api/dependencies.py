@@ -13,6 +13,7 @@ from application.evaluation_governance_service import EvaluationGovernanceServic
 from application.evaluation_service import EvaluationService
 from application.feedback_service import FeedbackService
 from application.index_lifecycle_service import IndexLifecycleService
+from application.index_metadata import parse_included_subtrees
 from application.knowledge_service import KnowledgeService
 from application.mindgraph_graph_store import MindGraphGraphStore
 from application.question_concept_miner import QuestionConceptMiner
@@ -39,6 +40,7 @@ class ServiceContainer:
         UPLOAD_DIR = self.root / "data" / "uploads"
 
         self.database = ProductDatabase(self.root / "data" / "product" / "product.sqlite3")
+        self.product_db_path = self.root / "data" / "product" / "product.sqlite3"
         self.database.initialize()
         self.database.mark_abandoned_runs_interrupted()
         self._pipelines: dict[int, Any] = {}
@@ -72,7 +74,10 @@ class ServiceContainer:
             graph_default_enabled=self.graph_default_enabled,
             on_question_logged=self._maybe_auto_mine_concepts,
         )
-        self.knowledge = KnowledgeService(DOCS_DIR, UPLOAD_DIR, INDEX_ROOT, self.invalidate_pipelines)
+        self.knowledge = KnowledgeService(
+            DOCS_DIR, UPLOAD_DIR, INDEX_ROOT, self.invalidate_pipelines, db_path=self.product_db_path,
+            included_subtrees=parse_included_subtrees(getattr(_settings, "INDEX_INCLUDED_SUBTREES", "")),
+        )
         self.document_lifecycle = DocumentLifecycleService(self.database, self.root / "data" / "product" / "documents")
         self.document_lifecycle.import_existing_markdown(list(DOCS_DIR.glob("*.md")))
         self.index_lifecycle = IndexLifecycleService(self.database, self.document_lifecycle, INDEX_ROOT, self.invalidate_pipelines)

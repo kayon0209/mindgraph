@@ -179,6 +179,16 @@ class Settings(BaseSettings):
     SQLITE_SYNCHRONOUS: str = "NORMAL"
     SQLITE_CACHE_SIZE: int = -20000  # 20MB
 
+    # ── 索引语料范围（产品决策，2026-09-10 拍板） ──
+    # 活跃索引**声明只覆盖 vault 根目录**的 markdown；子目录（policies/、
+    # workflows/、cases/、external/public/）显式声明为"不在索引范围"。
+    # 审计据此把"范围外缺失"（INFO，已接受的口径）与"真分叉"（ERROR）分开，
+    # 避免一个已知缺口变成永远消不掉的假警报。
+    # 逗号分隔的一级子树名；空字符串 = 仅根目录。
+    # ⚠️ 修改此值 = 改语料口径：索引内容会变，已公布的检索指标（R@5 等）随即
+    # 失效，必须重跑消融并重新公布。
+    INDEX_INCLUDED_SUBTREES: str = ""
+
     # ── 缓存 ──
     CACHE_ENABLED: bool = True
     ANSWER_CACHE_TTL_SECONDS: int = 3600

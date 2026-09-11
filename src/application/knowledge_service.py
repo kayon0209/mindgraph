@@ -9,7 +9,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
 
-from domain.errors import ConflictError, NotFoundError
+from application.index_metadata import (
+    document_key,
+    enrich_records_with_notes,
+    evaluate_index_shrinkage,
+    index_document_keys,
+    load_note_index,
+)
+from domain.errors import ConflictError, IndexShrinkageError, NotFoundError
 from domain.models import DocumentRecord, IndexStatus
 from retrieval.embeddings import BGEEmbeddingProvider
 from retrieval.indexing import build_versioned_index, load_corpus
@@ -20,9 +27,23 @@ logger = logging.getLogger("mindgraph.knowledge")
 
 
 class KnowledgeService:
-    def __init__(self, docs_dir: Path, upload_dir: Path, index_root: Path, invalidate_pipeline=lambda: None) -> None:
+    def __init__(
+        self,
+        docs_dir: Path,
+        upload_dir: Path,
+        index_root: Path,
+        invalidate_pipeline=lambda: None,
+        db_path: Path | str | None = None,
+        included_subtrees: tuple[str, ...] | None = None,
+    ) -> None:
         self.docs_dir, self.upload_dir, self.index_root = docs_dir, upload_dir, index_root
         self.invalidate_pipeline = invalidate_pipeline
+        # 索引元数据的单一事实源是 product.sqlite3 的 notes 表（见 application/index_metadata.py）。
+        # 这里只存路径、构建时才只读打开，避免 KnowledgeService 持有长连接。
+        self.db_path = Path(db_path) if db_path is not None else None
+        # 已声明的语料范围（settings.INDEX_INCLUDED_SUBTREES）。只用于把"范围外跳过"
+        # 的日志降级为 INFO，不改变实际扫描范围；None = 未声明，保持原样告警。
+        self.included_subtrees = None if included_subtrees is None else tuple(included_subtrees)
         self.upload_dir.mkdir(parents=True, exist_ok=True)
         self._deletions_file = self.upload_dir / ".pending_deletions.json"
 
@@ -47,7 +68,10 @@ class KnowledgeService:
             return {}
 
     def list_documents(self) -> list[DocumentRecord]:
-        chunks = load_corpus([(self.docs_dir, "official"), (self.upload_dir, "upload")])
+        chunks = load_corpus(
+            [(self.docs_dir, "official"), (self.upload_dir, "upload")],
+            included_subtrees=self.included_subtrees,
+        )
         counts: dict[str, int] = {}
         for chunk in chunks:
             doc_name = chunk.metadata.get("doc_name", "") if hasattr(chunk, "metadata") else ""
@@ -114,13 +138,60 @@ class KnowledgeService:
         record.pending_reindex = True
         return record
 
-    def rebuild(self) -> IndexStatus:
+    def _pending_deletion_names(self) -> list[str]:
+        return [str(item.get("document_name") or "") for item in self._pending_deletions()]
+
+    def rebuild(self, *, force: bool = False) -> IndexStatus:
         previous = None
         try:
             previous = (self.index_root / "CURRENT").read_text(encoding="utf-8").strip()
         except OSError:
             pass
-        chunks = load_corpus([(self.docs_dir, "official"), (self.upload_dir, "upload")])
+        chunks = load_corpus(
+            [(self.docs_dir, "official"), (self.upload_dir, "upload")],
+            included_subtrees=self.included_subtrees,
+        )
+
+        # ── 元数据单一事实源（2026-09-10 P0）─────────────────────────────────
+        # 这条路径只扫顶层 markdown，产出的 chunk 原本没有任何 ACL / 命名空间字段。
+        # 一旦它的版本成为 CURRENT，按源过滤（source_ids）与按权限过滤（access_scope）
+        # 会同时静默失效——2026-09-09 就是这样丢掉 21 篇文档+全部 ACL 元数据的。
+        # 这里从 notes 表补齐字段：只加键，不改正文与分块，因此召回指标不受影响。
+        enrichment = enrich_records_with_notes(chunks, load_note_index(self.db_path))
+        if not enrichment.source_available:
+            logger.warning(
+                "index_metadata_source_unavailable",
+                extra={"reason": enrichment.source_reason, "chunks": enrichment.total},
+            )
+        elif enrichment.unmatched:
+            logger.warning(
+                "index_metadata_partial",
+                extra={
+                    "matched": enrichment.matched,
+                    "unmatched": enrichment.unmatched,
+                    "coverage": enrichment.coverage,
+                    "samples": enrichment.unmatched_samples,
+                },
+            )
+
+        # ── 准入守卫：拒绝在无人知晓的情况下把索引改小 ──────────────────────
+        candidate_keys = {key for key in (document_key(chunk.metadata) for chunk in chunks) if key}
+        guard = evaluate_index_shrinkage(
+            previous_keys=index_document_keys(self.index_root)[0],
+            candidate_keys=candidate_keys,
+            excused_names=self._pending_deletion_names(),
+        )
+        emit = logger.error if (guard["blocked"] and not force) else logger.info
+        emit("index_rebuild_shrinkage_guard", extra=guard)
+        if guard["blocked"] and not force:
+            raise IndexShrinkageError(
+                "索引重建会让以下文档从活跃索引中消失，已拒绝激活："
+                + ", ".join(guard["unexplained_missing"][:5])
+                + ("…" if guard["unexplained_missing_count"] > 5 else "")
+                + "；确认无误请显式 force=true 重试。",
+                detail={"guard": guard, "previous_index_version": previous},
+            )
+
         version = datetime.now(timezone.utc).strftime("m3-%Y%m%dT%H%M%SZ-") + uuid.uuid4().hex[:8]
         try:
             _, _ = build_versioned_index(BGEEmbeddingProvider(), chunks, self.index_root, version)  # 尊重 BGE_LOCAL_FILES_ONLY（默认 true；设 false 允许首次自动下载）
