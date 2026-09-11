@@ -52,6 +52,16 @@ class InvalidStateTransitionError(ValidationError):
     status_code = 409
 
 
+class IndexShrinkageError(InvalidStateTransitionError):
+    """索引重建会导致活跃索引丢失文档 —— 拒绝在无人知晓的情况下变小。
+
+    2026-09-09 真实事故：一次 ``/knowledge/index/rebuild`` 把 25 篇索引换成 4 篇，
+    而 ``notes`` 表仍显示全部 ready。守卫默认 fail-closed，需显式 ``force`` 才放行。
+    """
+
+    code = "index_shrinkage_blocked"
+
+
 class ChunkingError(ValidationError):
     code = "chunking_error"
 

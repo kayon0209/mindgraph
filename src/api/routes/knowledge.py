@@ -36,8 +36,8 @@ def delete_document(document_id: str, _auth: dict = Depends(require_role("write"
 
 
 @router.post("/index/rebuild", response_model=IndexStatus)
-def rebuild_index(_auth: dict = Depends(require_role("write"))):
-    return get_container().knowledge.rebuild()
+def rebuild_index(force: bool = Query(False, description="确认索引缩水后仍要激活（默认拒绝）"), _auth: dict = Depends(require_role("write"))):
+    return get_container().knowledge.rebuild(force=force)
 
 
 @router.get("/index/status", response_model=IndexStatus)

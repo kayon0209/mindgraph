@@ -17,7 +17,7 @@ from datetime import date
 import inspect
 from typing import Any
 
-from .pipeline import RetrievalPipeline
+from .pipeline import RetrievalPipeline, filter_candidates_by_source
 from .types import RetrievalCandidate, RetrievalTrace
 
 
@@ -65,16 +65,21 @@ class MindGraphRetrievalPipeline:
 
     def retrieve(self, query, strategy, query_date=None, categories=None,
                  include_historical=False, graph_enabled=None, access_scope=None, graph_hops=None,
-                 query_variants=None):
+                 query_variants=None, source_ids=None):
         ge = self.graph_enabled if graph_enabled is None else graph_enabled
         hops = self.max_graph_hops if graph_hops is None else graph_hops
         variants = [query]
         for v in query_variants or []:
             if v and v.strip() and v != query:
                 variants.append(v.strip())
+        # source_ids 只在基础管线声明了该参数时下传（测试替身/旧实现没有这个形参，
+        # 无条件传会 TypeError）；下传不了就在本层兜底过滤，语义不丢。
+        base_supports_source = "source_ids" in inspect.signature(self.base.retrieve).parameters
+        base_extra: dict[str, Any] = {"source_ids": source_ids} if base_supports_source else {}
         if len(variants) == 1:
             trace = self.base.retrieve(
                 query, strategy, query_date, categories, include_historical, access_scope=access_scope,
+                **base_extra,
             )
             trace.query_variants = [query]
         else:
@@ -82,12 +87,18 @@ class MindGraphRetrievalPipeline:
             # （score 跨语言不可比，rank 可比——与 chat 层同语言 max-score 合并互补）
             traces = [self.base.retrieve(
                 v, strategy, query_date, categories, include_historical, access_scope=access_scope,
+                **base_extra,
             ) for v in variants]
             trace = traces[0]
             self._rrf_merge_variants(traces, strategy)
             trace.query_variants = list(variants)
             trace.original_query = query
             trace.warnings.append(f"query_variants_applied:{len(variants)}")
+        if source_ids and not base_supports_source:
+            trace.final_selected_chunks = filter_candidates_by_source(
+                trace.final_selected_chunks, source_ids, trace,
+            )
+        trace.applied_filters = {**(trace.applied_filters or {}), "source_ids": source_ids or []}
         trace.graph_enabled = ge
         trace.graph_hops = hops
         if ge and strategy in {"hybrid", "hybrid_rerank"}:
@@ -96,6 +107,15 @@ class MindGraphRetrievalPipeline:
             except Exception as exc:
                 trace.warnings.append(f"graph_expansion_failed:{type(exc).__name__}")
                 trace.graph_links = []
+        # 图扩展是唯一一条**绕过**基础管线过滤器的补料路径（它只按 access_scope
+        # 取邻居）。若指定了 source_ids，必须在这里再收一次口，否则「按源隔离」
+        # 会被一跳/两跳的邻居 chunk 静默穿透。
+        if source_ids:
+            trace.final_selected_chunks = filter_candidates_by_source(
+                trace.final_selected_chunks, source_ids, trace,
+            )
+            for rank, candidate in enumerate(trace.final_selected_chunks, 1):
+                candidate.final_rank = rank
         trace.candidate_counts = {
             **trace.candidate_counts,
             "final": len(trace.final_selected_chunks),

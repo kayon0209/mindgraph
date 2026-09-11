@@ -69,7 +69,7 @@ class FakeKnowledge:
     def delete(self, document_id):
         self.deleted = document_id
         return DocumentRecord(document_id=document_id, document_name="x.md", knowledge_category="upload", version="v1", chunk_count=1, index_status="pending_deletion", uploaded_at="2026-01-01T00:00:00Z", pending_reindex=True)
-    def rebuild(self): return self.index_status()
+    def rebuild(self, *, force: bool = False): return self.index_status()
 
 
 class FakeEvaluation:
