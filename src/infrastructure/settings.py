@@ -213,6 +213,19 @@ class Settings(BaseSettings):
     # （回滚路径），但切换后果仍由人承担。
     INDEX_CONSISTENCY_GATE: bool = True
 
+    # ── OCR（PR-07）──────────────────────────────────────────────────────
+    # 默认**关闭**：OCR 是可选增强，装了引擎也不自动启用 —— 否则换台机器
+    # 行为就变了，且扫描件会被静默改写。启用 = 显式选择承担"识别文本进索引"的风险。
+    OCR_ENABLED: bool = False
+    # none | rapidocr。未知取值按 none 处理（见 get_ocr_provider）。
+    OCR_PROVIDER: str = "rapidocr"
+    # 低于该页级置信度的识别结果**不进索引**（宁可少收，不可错收）。
+    OCR_MIN_CONFIDENCE: float = 0.6
+    # 单页超时：到点不再等待并记该页失败。注意它不是强中断（见 provider 文档）。
+    OCR_TIMEOUT_SECONDS: float = 30.0
+    # 渲染 DPI：越高越慢越准。150 是中文印刷体的实用下限。
+    OCR_DPI: int = 150
+
     # ── 缓存 ──
     CACHE_ENABLED: bool = True
     ANSWER_CACHE_TTL_SECONDS: int = 3600

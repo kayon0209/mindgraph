@@ -13,8 +13,12 @@ from domain.errors import ConflictError, NotFoundError, ValidationError
 from domain.models import AuthorityLevel, DocumentStatus, DocumentVersionModel
 from infrastructure.database import ProductDatabase, dumps, loads
 from infrastructure.parsers import default_parser_registry
+from application.ocr_enrichment import ocr_pages
 from application.page_ingestion import PageIngestionService
 from application.structured_chunker import StructuredChunker
+from infrastructure.ocr.base import OCRProvider
+from infrastructure.ocr import get_ocr_provider
+from infrastructure.settings import get_settings
 
 
 TRANSITIONS = {
@@ -39,11 +43,14 @@ def _safe_segment(value: str, name: str) -> str:
 
 
 class DocumentLifecycleService:
-    def __init__(self, database: ProductDatabase, storage_root: Path) -> None:
+    def __init__(self, database: ProductDatabase, storage_root: Path,
+                 ocr_provider: OCRProvider | None = None) -> None:
         self.database, self.storage_root = database, Path(storage_root)
         self.storage_root.mkdir(parents=True, exist_ok=True)
         self.chunker = StructuredChunker()
         self.page_ingestion = PageIngestionService(database)
+        # None = 由 OCR_ENABLED / OCR_PROVIDER 决定；注入用于测试与自定义引擎
+        self.ocr_provider = ocr_provider
 
     def import_existing_markdown(self, paths: list[Path]) -> None:
         for path in paths:
@@ -71,8 +78,11 @@ class DocumentLifecycleService:
         source = target_dir / ("source." + Path(filename).suffix.lower().lstrip("."))
         source.write_bytes(data)
         chunks: list = []  # 解析失败时为空；页级记录据此跳过 finalize
+        ocr_report: dict | None = None
         try:
-            parsed = parser.parse(data, filename); chunks = self.chunker.chunk(parsed)
+            parsed = parser.parse(data, filename)
+            parsed, ocr_report = self._maybe_ocr(parsed, data)
+            chunks = self.chunker.chunk(parsed)
             ocr_required_pages = list(parsed.ocr_required_pages)
             if ocr_required_pages:
                 diagnostics = {"parser": parsed.parser_name, "parser_version": parsed.parser_version,
@@ -94,6 +104,9 @@ class DocumentLifecycleService:
         # 页级摄取记录（PR-06）：把已算出的页级产物落库，供"失败在哪一页"与
         # "重试跳过成功页"查询。它是观测/恢复能力，**不是入库前置条件**：
         # 落库失败只进诊断，绝不允许让一次本可成功的上传失败。
+        # OCR 报告只含统计信息（页数/置信度/耗时/失败原因），不含识别文本
+        if ocr_report is not None:
+            diagnostics["ocr"] = ocr_report
         diagnostics["page_ingestion"] = self._record_page_ingestion(
             document_id=document_id, logical_id=logical_id, version=version,
             filename=filename, checksum=checksum, data=data, chunks=chunks,
@@ -120,6 +133,24 @@ class DocumentLifecycleService:
             ),
         )
         return record
+
+    def _maybe_ocr(self, parsed, data: bytes):
+        """OCR 关闭时**原样返回**（默认路径）；开启时对标记页跑识别。
+
+        失败一律降级为"这页没解析出来"，不让 OCR 异常影响整份文档入库。
+        """
+        settings = get_settings()
+        if not settings.OCR_ENABLED or not parsed.ocr_required_pages:
+            return parsed, None
+        provider = self.ocr_provider or get_ocr_provider(
+            settings.OCR_PROVIDER, timeout_seconds=settings.OCR_TIMEOUT_SECONDS
+        )
+        try:
+            report = ocr_pages(parsed, data, provider=provider,
+                               min_confidence=settings.OCR_MIN_CONFIDENCE, dpi=settings.OCR_DPI)
+        except Exception as exc:  # noqa: BLE001 -- OCR 是增强，失败不该阻断入库
+            return parsed, {"enabled": True, "error": f"{type(exc).__name__}: {exc}"}
+        return report["document"], report
 
     def _record_page_ingestion(self, *, document_id: str, logical_id: str, version: str, filename: str,
                                checksum: str, data: bytes, chunks: list) -> dict:
