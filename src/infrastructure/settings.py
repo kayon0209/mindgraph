@@ -205,6 +205,13 @@ class Settings(BaseSettings):
     # 已公布指标（R@5 等）随即失效。
     CHUNKING_POLICY: str = ""
 
+    # ── Parent 上下文扩展（PR-09，默认关）──
+    # 打开后：命中带 parent lineage 的 child（m4 上传文档索引）时，预算内
+    # 用完整父块替换子块文本进入 LLM 上下文；扁平索引（mg-/m3-）自动跳过。
+    # 激活前提：双跑评测证明 Recall@5 不降、跨页/条款事实覆盖提升。
+    CONTEXT_EXPANSION_ENABLED: bool = False
+    CONTEXT_EXPANSION_MAX_CHARS: int = 1200
+
     # ── 索引激活一致性门禁（PR-04）──
     # 激活前比对候选索引与活跃索引的切分口径/文档覆盖，不一致则拒绝改写 CURRENT。
     # 2026-09-11 实测：69 chunks（扁平）与 98 chunks（StructuredChunker）两个版本

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+from datetime import date
 import inspect
 import logging
 import time
-from datetime import date
 
 from infrastructure.date_utils import parse_date_safe
 
@@ -107,11 +107,19 @@ class RetrievalPipeline:
         candidate_count: int = 20,
         rerank_top_n: int = 10,
         final_top_k: int = 5,
+        *,
+        context_expansion: bool = False,
+        context_expansion_max_chars: int = 1200,
     ) -> None:
         self.dense, self.sparse, self.fusion, self.reranker = dense, sparse, fusion, reranker
         self.candidate_count = candidate_count
         self.rerank_top_n = rerank_top_n
         self.final_top_k = final_top_k
+        # PR-09：parent 上下文扩展（默认关——命中带 lineage 的 child 后按预算
+        # 用 parent_text 补上下文）。开关在检索工厂按 CONTEXT_EXPANSION_ENABLED
+        # 注入；关闭时检索输出与历史完全一致。
+        self.context_expansion_enabled = context_expansion
+        self.context_expansion_max_chars = context_expansion_max_chars
 
     @staticmethod
     def _search(
@@ -319,6 +327,15 @@ class RetrievalPipeline:
         final = self._filter_by_source(final, source_ids, trace)
         for rank, candidate in enumerate(final, 1):
             candidate.final_rank = rank
+        # PR-09：parent 上下文扩展——只影响进入 LLM 上下文的最终证据，
+        # rerank/fusion 阶段结果保持原样；决策账本进 trace 供评测分层。
+        if self.context_expansion_enabled and final:
+            from application.context_expansion import expand_to_parent
+
+            final, expansion_report = expand_to_parent(
+                final, max_context_chars=self.context_expansion_max_chars,
+            )
+            trace.context_expansion = expansion_report.to_dict()
         trace.final_selected_chunks = final
         trace.candidate_counts = {
             "dense": len(trace.dense_results),

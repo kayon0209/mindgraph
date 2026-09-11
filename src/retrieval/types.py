@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
-from typing import Any, Protocol, Sequence
+from typing import Any, Protocol
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,9 @@ class RetrievalTrace:
     # PR-10：QueryAnalyzer 的 **shadow** 输出。只观测，不参与路由/检索/生成；
     # 缺省为空 dict，旧代码与旧产物不受影响。
     query_analysis: dict[str, Any] = field(default_factory=dict)
+    # PR-09：parent 上下文扩展的决策账本（expanded/duplicates/reason codes）。
+    # 扩展开关关闭时恒为空 dict。
+    context_expansion: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -84,6 +88,7 @@ class RetrievalTrace:
             "query_variants": self.query_variants,
             "original_query": self.original_query,
             "query_analysis": self.query_analysis,
+            "context_expansion": self.context_expansion,
         }
 
 

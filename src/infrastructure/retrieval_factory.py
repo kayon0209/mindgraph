@@ -3,16 +3,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from config import DOCS_DIR, ROOT, UPLOAD_DIR
+from config import ROOT
 from infrastructure.settings import get_settings
 from retrieval.embeddings import BGEEmbeddingProvider
 from retrieval.fusion import ReciprocalRankFusion
-from retrieval.indexing import load_corpus, load_current_index
+from retrieval.indexing import load_current_index
 from retrieval.mindgraph_pipeline import MindGraphRetrievalPipeline
 from retrieval.pipeline import RetrievalPipeline
 from retrieval.reranker import CrossEncoderReranker
 from retrieval.sparse import BM25Retriever
-
 
 INDEX_ROOT = ROOT / "data" / "retrieval_indexes"
 
@@ -26,6 +25,16 @@ def _rerank_top_n() -> int:
     return value
 
 
+def _context_expansion_kwargs() -> dict[str, Any]:
+    """PR-09：parent 上下文扩展开关（默认关）。m4 上传文档索引的 chunk 带
+    parent lineage 时才有可观察效果；mg-/m3- 扁平块自动走 no_parent_lineage。"""
+    settings = get_settings()
+    return {
+        "context_expansion": bool(settings.CONTEXT_EXPANSION_ENABLED),
+        "context_expansion_max_chars": int(settings.CONTEXT_EXPANSION_MAX_CHARS),
+    }
+
+
 def create_retrieval_pipeline(final_top_k: int = 5) -> RetrievalPipeline:
     settings = get_settings()
     provider = BGEEmbeddingProvider()
@@ -37,6 +46,7 @@ def create_retrieval_pipeline(final_top_k: int = 5) -> RetrievalPipeline:
         dense, sparse, ReciprocalRankFusion(int(settings.RRF_CONSTANT)), reranker,
         candidate_count=int(settings.RETRIEVAL_CANDIDATE_COUNT),
         rerank_top_n=_rerank_top_n(), final_top_k=final_top_k,
+        **_context_expansion_kwargs(),
     )
 
 
@@ -55,7 +65,7 @@ def create_mindgraph_retrieval_pipeline(
     graph_store: Any,
     final_top_k: int = 5,
     graph_enabled: bool = False,
-) -> "MindGraphRetrievalPipeline":
+) -> MindGraphRetrievalPipeline:
     """构建 MindGraph 检索管线（Hybrid + 图谱一跳扩展）。
 
     - 索引已构建：加载当前版本（load_current_index 兼容 MindGraph 索引结构）；
@@ -76,6 +86,7 @@ def create_mindgraph_retrieval_pipeline(
             candidate_count=candidate_count,
             rerank_top_n=rerank_top_n,
             final_top_k=final_top_k,
+            **_context_expansion_kwargs(),
         )
         return MindGraphRetrievalPipeline(base, graph_store, graph_enabled=graph_enabled)
 
@@ -86,5 +97,6 @@ def create_mindgraph_retrieval_pipeline(
         dense, sparse, ReciprocalRankFusion(int(settings.RRF_CONSTANT)), reranker,
         candidate_count=candidate_count,
         rerank_top_n=rerank_top_n, final_top_k=final_top_k,
+        **_context_expansion_kwargs(),
     )
     return MindGraphRetrievalPipeline(base, graph_store, graph_enabled=graph_enabled)
