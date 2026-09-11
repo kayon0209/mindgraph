@@ -297,6 +297,24 @@ def _active_index_stats() -> dict:
         return {"chunks": 0, "notes": 0, "index_version": None, "built_at": None}
 
 
+def _loads_or_default(raw: str | None, default, run_id: str, field: str):
+    """解析 evaluation_runs 里的 JSON 列，坏数据降级为默认值但**不再静默**。
+
+    这 5 列是评测看板的唯一数据源；解析失败此前会安静地退化成 {} / []，
+    看板显示「无指标」而没有任何线索说明是数据坏了还是压根没跑过。
+    """
+    if not raw:
+        return default
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        logger.warning(
+            "evaluation_run_column_unreadable",
+            extra={"run_id": run_id, "column": field, "error": str(exc)[:200]},
+        )
+        return default
+
+
 @router.get("/evaluation/ablation")
 def evaluation_ablation(request: Request):
     """评测看板：真实知识库规模 + 真实 evaluation_runs（按策略分组的消融结果）。"""
@@ -336,26 +354,11 @@ def evaluation_ablation(request: Request):
     )
     runs = []
     for r in run_rows:
-        try:
-            metrics = json.loads(r["summary_metrics_json"]) if r["summary_metrics_json"] else {}
-        except Exception:
-            metrics = {}
-        try:
-            category_metrics = json.loads(r["category_metrics_json"]) if r["category_metrics_json"] else {}
-        except Exception:
-            category_metrics = {}
-        try:
-            failed_cases = json.loads(r["failed_cases_json"]) if r["failed_cases_json"] else []
-        except Exception:
-            failed_cases = []
-        try:
-            result_files = json.loads(r["result_files_json"]) if r["result_files_json"] else []
-        except Exception:
-            result_files = []
-        try:
-            progress_messages = json.loads(r["progress_messages_json"]) if r["progress_messages_json"] else []
-        except Exception:
-            progress_messages = []
+        metrics = _loads_or_default(r["summary_metrics_json"], {}, r["run_id"], "summary_metrics")
+        category_metrics = _loads_or_default(r["category_metrics_json"], {}, r["run_id"], "category_metrics")
+        failed_cases = _loads_or_default(r["failed_cases_json"], [], r["run_id"], "failed_cases")
+        result_files = _loads_or_default(r["result_files_json"], [], r["run_id"], "result_files")
+        progress_messages = _loads_or_default(r["progress_messages_json"], [], r["run_id"], "progress_messages")
         runs.append(
             {
                 "run_id": r["run_id"],
