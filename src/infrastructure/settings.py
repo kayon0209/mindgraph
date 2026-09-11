@@ -205,6 +205,14 @@ class Settings(BaseSettings):
     # 已公布指标（R@5 等）随即失效。
     CHUNKING_POLICY: str = ""
 
+    # ── 索引激活一致性门禁（PR-04）──
+    # 激活前比对候选索引与活跃索引的切分口径/文档覆盖，不一致则拒绝改写 CURRENT。
+    # 2026-09-11 实测：69 chunks（扁平）与 98 chunks（StructuredChunker）两个版本
+    # 在同一根内并存，CURRENT 被切换过而无任何阻止 —— 本 flag 就为阻断这类
+    # 「未经认可的口径切换」而设。默认 fail-closed；置 false 即恢复旧激活流程
+    # （回滚路径），但切换后果仍由人承担。
+    INDEX_CONSISTENCY_GATE: bool = True
+
     # ── 缓存 ──
     CACHE_ENABLED: bool = True
     ANSWER_CACHE_TTL_SECONDS: int = 3600

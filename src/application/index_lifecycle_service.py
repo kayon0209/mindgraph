@@ -9,7 +9,8 @@ from pathlib import Path
 import faiss
 import numpy as np
 
-from domain.errors import NotFoundError
+from application.index_snapshot import evaluate_activation_gate, load_snapshot
+from domain.errors import IndexConsistencyError, NotFoundError
 from infrastructure.database import ProductDatabase, dumps, loads
 from retrieval.embeddings import BGEEmbeddingProvider
 from retrieval.types import Chunk
@@ -70,10 +71,47 @@ class IndexLifecycleService:
         if not row: raise NotFoundError("Index version not found")
         return self._public(row)
 
+    def _consistency_gate(self, version: str, previous: str | None) -> None:
+        """PR-04：激活一致性门禁，在 ``CURRENT`` 被改写**之前**拦截。
+
+        只拦两类「无人知晓就换掉证据体系」的切换：
+        - **切分口径变化**（含构建入口/schema 变化，如 69 chunks 扁平 ↔ 98 chunks 结构化）；
+        - **文档丢失**（09-09 那类静默缩水）。
+
+        不拦 chunk_id 命名空间不相交：文档换版本会让 chunk_id 全变，那是正常重建。
+        缺 manifest 也只降级为「不可比」——全仓有 4 个版本目录没有 metadata.json，
+        把它当失败会让索引永远激活不了。
+        """
+        if not previous:
+            return  # 首次构建：无从比较，不冒充判断
+        from infrastructure.settings import get_settings
+
+        if not get_settings().INDEX_CONSISTENCY_GATE:
+            return
+        gate = evaluate_activation_gate(
+            load_snapshot(self.index_root, previous), load_snapshot(self.index_root, version)
+        )
+        if not gate["blocked"]:
+            return
+        report = gate["report"]
+        detail = ", ".join(gate["reasons"])
+        if report["chunking_changed"]:
+            detail += (
+                f"; 切分口径 {report['chunking']['previous']['schema']}"
+                f"{report['chunking']['previous']['child_size']}/{report['chunking']['previous']['overlap']}"
+                f" -> {report['chunking']['candidate']['schema']}"
+                f"{report['chunking']['candidate']['child_size']}/{report['chunking']['candidate']['overlap']}"
+            )
+        if report["documents_removed"]:
+            detail += f"; 丢失文档 {report['documents_removed'][:10]}"
+        raise IndexConsistencyError(f"index activation blocked: {detail}")
+
     def activate(self, version, operator="local", reason="manual activation"):
         row = self.get(version)
         if row["status"] != "validated": raise ValueError("Only validated indexes can be activated")
-        previous = self._current(); temp = self.index_root / "CURRENT.tmp"; temp.write_text(version, encoding="utf-8"); temp.replace(self.index_root / "CURRENT")
+        previous = self._current()
+        self._consistency_gate(version, previous)  # PR-04：CURRENT 改写前的最后一道闸
+        temp = self.index_root / "CURRENT.tmp"; temp.write_text(version, encoding="utf-8"); temp.replace(self.index_root / "CURRENT")
         now = datetime.now(timezone.utc).isoformat(); self.database.execute("UPDATE index_builds SET activated_at=? WHERE index_version=?", (now, version))
         self.database.execute("INSERT INTO index_audit VALUES (?,?,?,?,?,?,?)", (str(uuid.uuid4()), "activate", previous, version, operator, reason, now)); self.invalidate(); return self.get(version)
 

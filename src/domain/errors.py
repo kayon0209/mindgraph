@@ -62,6 +62,21 @@ class IndexShrinkageError(InvalidStateTransitionError):
     code = "index_shrinkage_blocked"
 
 
+class IndexConsistencyError(InvalidStateTransitionError):
+    """候选索引与活跃索引的切分口径/文档覆盖不一致 —— 拒绝在无人知晓的情况下换口径。
+
+    2026-09-11 实测：``data/retrieval_indexes/`` 里 69 chunks（``document_loader``
+    扁平切分）与 98 chunks（``StructuredChunker``）两个版本并存，``CURRENT`` 在它们
+    之间被切换过而**没有任何机制阻止**。两者的 ``chunk_size/overlap`` 数值相同
+    （500/50），差异在**构建入口**——切换等于换掉全部 chunk_id，已公布的检索指标
+    只对应其中一套。
+
+    门禁默认 fail-closed；产品确认要换口径时显式放行（``allow_chunking_change``）。
+    与 :class:`IndexShrinkageError` 同族（都是"索引状态转换不合法"），但针对的是
+    **口径一致性**而非规模缩水。
+    """
+
+
 class ChunkingError(ValidationError):
     code = "chunking_error"
 
