@@ -67,7 +67,7 @@ def test_answer_evaluation_cli_dry_run_emits_auditable_summary(tmp_path: Path) -
 
     assert completed.returncode == 0, completed.stderr
     payload = json.loads(completed.stdout)
-    assert payload["evaluator_version"] == "deterministic-answer-v1"
+    assert payload["evaluator_version"] == "deterministic-answer-v2"
     assert payload["dataset_version"] == "test-1"
     assert payload["metrics"]["refusal_correctness"] == 1.0
     assert payload["sample_size"] == 1

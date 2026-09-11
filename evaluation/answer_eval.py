@@ -1,4 +1,19 @@
-"""Deterministic answer-level trust evaluation for MindGraph Golden cases."""
+"""Deterministic answer-level trust evaluation for MindGraph Golden cases.
+
+口径版本 **deterministic-answer-v2**（2026-09-11）相对 v1 的两处修复，都是为了
+让指标名与其真实含义一致，而不是让分数好看——v1 的数值由 ``citation_offered_f1``
+完整保留，可与历史结果直接对照：
+
+1. **引用正确性改为以「正文实际引用的证据」为基准**（v1 用候选证据集合）。
+   v1 的口径下，系统固定返回检索 top-k（实测均值 5.11 条）而 Gold 通常只有 1 条，
+   precision 被结构性稀释到 ≈0.35；而同一批数据里 Gold 文档命中率其实是 92%。
+   新增 ``citation_precision`` / ``citation_recall`` 让丢掉的维度可见。
+2. **事实匹配全链路归一化**（NFKC + 去 markdown 标记 + 去空白）。v1 用裸子串
+   ``fact in answer``，答案写 ``**800 元**`` 就匹配不上 Gold 的 ``800元``。
+3. **「检索到但未被引用」不再判为引用标注缺陷**。运行时契约里 ``citations`` 是
+   提供给模型的候选证据，提示词只要求"使用 [citation-N] 标注引用来源"。该现象
+   改由 ``citation_usage_ratio`` 量化记录。
+"""
 
 from __future__ import annotations
 
@@ -7,11 +22,16 @@ from datetime import date
 import math
 from statistics import fmean
 from typing import Any
+import unicodedata
 
 
 REFUSAL_STATES = {"insufficient_evidence", "out_of_scope", "conflicting_evidence"}
 ANSWER_METRICS = (
     "citation_correctness",
+    "citation_precision",
+    "citation_recall",
+    "citation_offered_f1",
+    "citation_usage_ratio",
     "refusal_correctness",
     "version_validity",
     "citation_fidelity",
@@ -22,6 +42,23 @@ ANSWER_METRICS = (
     "conflict_accuracy",
 )
 INACTIVE_POLICY_STATUSES = {"archived", "expired", "superseded", "replaced"}
+# markdown 强调/代码标记：真实模型输出里普遍包在 **加粗** 或 `反引号` 内，
+# 裸子串比对会因为这两个字符判"缺失"（详见 _normalize_for_match）。
+_MARKDOWN_MARKS = str.maketrans("", "", "*_`~")
+
+
+def _normalize_for_match(text: str) -> str:
+    """把文本归一化到"只比较语义字符"的形态，供确定性事实匹配使用。
+
+    P1 口径修复：答案由真实模型生成，常写成 ``**30 个自然日**``（加粗 + 空格），
+    而 Gold 里的事实是 ``30个自然日``；裸 ``fact in answer`` 会把它判成缺失，
+    这是评测口径缺陷而不是模型答错。这里做三件事：
+    1. NFKC 统一全/半角（``８００元`` → ``800元``）；
+    2. 去掉 markdown 强调与代码标记（``*`` ``_`` ``` ``~``）；
+    3. 去掉全部空白（含全角空格，交给 :meth:`str.split` 判定）。
+    """
+    normalized = unicodedata.normalize("NFKC", text or "")
+    return "".join(normalized.translate(_MARKDOWN_MARKS).split())
 
 
 def _citation_f1(expected_paths: set[str], actual_paths: set[str]) -> float:
@@ -53,6 +90,36 @@ def _citation_ranks(citations: list[dict[str, Any]]) -> set[int]:
     return ranks
 
 
+def _cited_ranks(prediction: dict[str, Any]) -> set[int]:
+    """答案正文**实际引用**的证据序号集合（P0 契约澄清的落点）。
+
+    优先使用运行时写入的 ``cited_citation_ids``（由 chat_service 在落库前统一
+    派生）；历史预测文件没有该字段时，退化为「答案里的 [citation-N] 标注 ∩
+    引用列表序号」——两者在语义上等价，因此 v1 的预测文件也能按 v2 口径重算，
+    不需要重新调用模型。
+
+    注意：``prediction["citations"]`` 是**候选证据**（检索 top-k），不是引用。
+    """
+    from application.evidence_fidelity import extract_citation_marks
+
+    citations = prediction.get("citations") or []
+    available = _citation_ranks(citations)
+    declared = prediction.get("cited_citation_ids")
+    if isinstance(declared, list) and declared:
+        declared_ids = {item for item in declared if isinstance(item, str)}
+        declared_ranks = {rank for rank in available if f"citation-{rank}" in declared_ids}
+        declared_ranks |= {
+            item.get("final_rank")
+            for item in citations
+            if isinstance(item.get("citation_id"), str)
+            and item.get("citation_id") in declared_ids
+            and isinstance(item.get("final_rank"), int)
+        }
+        if declared_ranks:
+            return declared_ranks & available if available else declared_ranks
+    return set(extract_citation_marks(str(prediction.get("answer") or ""))) & available
+
+
 def _citation_fidelity(answer: str, citations: list[dict[str, Any]]) -> float | None:
     """确定性引用一致性：答案中的 [citation-N] 必须全部命中实际引用集。
 
@@ -67,20 +134,50 @@ def _citation_fidelity(answer: str, citations: list[dict[str, Any]]) -> float | 
     return float(report.ok)
 
 
-def _citation_marker_validity(answer: str, citations: list[dict[str, Any]]) -> float | None:
-    """引用标注完整性：格式合法、无越界、无重复、无未使用引用。
+def _citation_marker_report(answer: str, citations: list[dict[str, Any]]):
+    """构造引用标注完整性报告（P0：关闭「必须用尽候选证据」这道门）。
 
-    与 ``citation_fidelity`` 互补：后者只检查「标注→引用集合」单向缺失；
-    此函数检查更严格的完整视图（含畸形、重复、未用引用）。
-
-    无引用且无标注 → None（不可判定，不计入聚合分母）。
+    见 :func:`_citation_marker_validity` 的说明。单独暴露报告是为了让失败归因
+    能落到具体原因（畸形/越界/重复），而不是一律报 ``citation_marker_integrity``。
     """
     from application.citation_integrity import CitationIntegrityValidator
 
     ranks = _citation_ranks(citations)
     citation_ids = {item.get("citation_id") for item in citations if isinstance(item.get("citation_id"), str)}
-    validator = CitationIntegrityValidator(citation_ids=citation_ids, citation_ranks=ranks)
-    report = validator.validate(answer)
+    validator = CitationIntegrityValidator(
+        citation_ids=citation_ids,
+        citation_ranks=ranks,
+        require_all_citations_used=False,
+    )
+    return validator.validate(answer)
+
+
+def _citation_marker_failure_code(report: Any) -> str:
+    """把标注完整性的失败原因映射成可读的失败码。"""
+    if report.malformed_markers:
+        return "citation_marker_malformed"
+    if report.unknown_markers:
+        return "citation_marker_unknown"
+    if report.duplicate_markers:
+        return "citation_marker_duplicate"
+    return "citation_marker_integrity"
+
+
+def _citation_marker_validity(answer: str, citations: list[dict[str, Any]]) -> float | None:
+    """引用标注完整性：格式合法、无越界、无重复。
+
+    与 ``citation_fidelity`` 互补：后者只检查「标注→引用集合」单向缺失；
+    此函数检查更严格的完整视图（含畸形、重复）。
+
+    P0 口径修复：**不再把「检索到但未被引用」判为失败**。运行时契约里
+    ``citations`` 是提供给模型的候选证据，系统提示词只要求「使用 [citation-N]
+    标注引用来源」，从未要求每条候选都被引用（实测 90 条里 79 条存在这种候选
+    未被引用的情况，属正常现象而非模型缺陷）。未使用数量本身仍可审计——
+    由 ``citation_usage_ratio`` 指标单独承载。
+
+    无引用且无标注 → None（不可判定，不计入聚合分母）。
+    """
+    report = _citation_marker_report(answer, citations)
     if not report.applicable:
         return None
     return float(report.passed)
@@ -111,7 +208,20 @@ def _is_version_valid(citation: dict[str, Any], case: dict[str, Any]) -> bool:
 def _fact_coverage(answer: str, facts: list[str]) -> float:
     if not facts:
         return 1.0
-    return sum(fact in answer for fact in facts) / len(facts)
+    haystack = _normalize_for_match(answer)
+    return sum(_normalize_for_match(fact) in haystack for fact in facts) / len(facts)
+
+
+def _fact_avoidance(answer: str, facts: list[str]) -> float:
+    """被禁事实规避率：出现任一被禁事实即 0。
+
+    与 :func:`_fact_coverage` 共用同一套归一化。对安全类判定宁可更敏感：
+    归一化只会让"本该被拦下"的表达更容易命中，不会放过它们。
+    """
+    if not facts:
+        return 1.0
+    haystack = _normalize_for_match(answer)
+    return 0.0 if any(_normalize_for_match(fact) in haystack for fact in facts) else 1.0
 
 
 def evaluate_answer_case(case: dict[str, Any], prediction: dict[str, Any]) -> dict[str, Any]:
@@ -152,6 +262,10 @@ def evaluate_answer_case(case: dict[str, Any], prediction: dict[str, Any]) -> di
         return {
             "case_id": case["case_id"],
             "citation_correctness": None,
+            "citation_precision": None,
+            "citation_recall": None,
+            "citation_offered_f1": None,
+            "citation_usage_ratio": None,
             "refusal_correctness": refusal_correctness,
             "version_validity": None,
             "citation_fidelity": None,
@@ -163,30 +277,65 @@ def evaluate_answer_case(case: dict[str, Any], prediction: dict[str, Any]) -> di
             "failures": failures + (["acl_leakage"] if acl_leakage else []),
         }
 
+    answer = str(prediction.get("answer") or "")
     citations = prediction.get("citations") or []
     expected_paths = set(case.get("gold_vault_paths", []))
-    actual_paths = {item.get("vault_path") for item in citations if item.get("vault_path")}
-    citation_correctness = _citation_f1(expected_paths, actual_paths)
-    if citation_correctness < 1:
+
+    # P0：``citations`` 是候选证据，``cited`` 才是正文实际引用的证据。
+    cited_ranks = _cited_ranks(prediction)
+    cited_paths = {
+        item.get("vault_path")
+        for item in citations
+        if item.get("final_rank") in cited_ranks and item.get("vault_path")
+    }
+    offered_paths = {item.get("vault_path") for item in citations if item.get("vault_path")}
+
+    citation_precision: float | None
+    citation_recall: float | None
+    citation_correctness: float | None
+    if not expected_paths or not offered_paths:
+        # 没有可比对象：本 case 没有 Gold 路径，或本次压根没有候选证据可引。
+        citation_precision = citation_recall = citation_correctness = None
+    elif not cited_paths:
+        # 有候选证据、却一条都没引用 → 明确记 0。这不是"不可判定"：提示词要求
+        # 使用 [citation-N] 标注来源，"没去引用"与"没能引用"必须分开。
+        citation_precision = None
+        citation_recall = 0.0
+        citation_correctness = 0.0
+    else:
+        overlap = len(expected_paths & cited_paths)
+        citation_precision = overlap / len(cited_paths)
+        citation_recall = overlap / len(expected_paths)
+        citation_correctness = (
+            0.0
+            if citation_precision + citation_recall == 0
+            else 2 * citation_precision * citation_recall / (citation_precision + citation_recall)
+        )
+    # 旧口径（对候选证据集合算 F1）保留为独立指标，用于与 v1 结果逐位对照。
+    # 这里刻意不加"任一侧为空则不可判定"的守卫：v1 就是把这种情况记 0.0 的，
+    # 要能复现 v1 就必须保留它原本的语义（这也是它作为历史对照指标的意义）。
+    citation_offered_f1 = _citation_f1(expected_paths, offered_paths)
+    citation_usage_ratio = len(cited_ranks) / len(citations) if citations else None
+    if citation_correctness is not None and citation_correctness < 1:
         failures.append("citation_mismatch")
 
-    citation_fidelity = _citation_fidelity(str(prediction.get("answer") or ""), citations)
+    citation_fidelity = _citation_fidelity(answer, citations)
     if citation_fidelity == 0.0:
         failures.append("citation_fidelity_violation")
 
-    citation_marker_validity = _citation_marker_validity(str(prediction.get("answer") or ""), citations)
+    marker_report = _citation_marker_report(answer, citations)
+    citation_marker_validity = _citation_marker_validity(answer, citations)
     if citation_marker_validity == 0.0:
-        failures.append("citation_marker_integrity")
+        failures.append(_citation_marker_failure_code(marker_report))
 
     version_validity = float(bool(citations) and all(_is_version_valid(item, case) for item in citations))
     if not version_validity:
         failures.append("invalid_policy_version")
 
-    answer = str(prediction.get("answer") or "")
     required_fact_coverage = _fact_coverage(answer, case.get("required_facts", []))
     if required_fact_coverage < 1:
         failures.append("missing_required_fact")
-    forbidden_fact_avoidance = float(not any(fact in answer for fact in case.get("forbidden_facts", [])))
+    forbidden_fact_avoidance = _fact_avoidance(answer, case.get("forbidden_facts", []))
     if not forbidden_fact_avoidance:
         failures.append("forbidden_fact_present")
 
@@ -197,6 +346,10 @@ def evaluate_answer_case(case: dict[str, Any], prediction: dict[str, Any]) -> di
     return {
         "case_id": case["case_id"],
         "citation_correctness": citation_correctness,
+        "citation_precision": citation_precision,
+        "citation_recall": citation_recall,
+        "citation_offered_f1": citation_offered_f1,
+        "citation_usage_ratio": citation_usage_ratio,
         "refusal_correctness": refusal_correctness,
         "version_validity": version_validity,
         "citation_fidelity": citation_fidelity,
@@ -237,6 +390,10 @@ def evaluate_answer_predictions(cases: list[dict[str, Any]], predictions: list[d
 # 答案级图消融对比的信任指标（operational 指标单独处理）
 _GRAPH_ABLATION_COMPARED_METRICS = (
     "citation_correctness",
+    "citation_precision",
+    "citation_recall",
+    "citation_offered_f1",
+    "citation_usage_ratio",
     "citation_fidelity",
     "citation_marker_validity",
     "version_validity",

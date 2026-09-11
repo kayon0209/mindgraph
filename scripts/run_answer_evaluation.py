@@ -4,6 +4,10 @@ Predictions are JSONL rows with ``case_id``, ``result_state``, ``answer`` and
 ``citations``. Each citation must carry ``vault_path``, ``policy_status``,
 ``effective_from`` and optional ``effective_to``. The prediction set must contain
 exactly one row for every Golden case.
+
+``citations`` 是**候选证据**；正文实际引用的子集由 ``cited_citation_ids`` 给出
+（缺失时由答案里的 ``[citation-N]`` 标注确定性推导）。评分口径见
+:mod:`evaluation.answer_eval` 的 v2 说明。
 """
 
 from __future__ import annotations
@@ -25,7 +29,7 @@ from evaluation.answer_eval import evaluate_answer_predictions  # noqa: E402
 from domain.models import ChatRequest  # noqa: E402
 
 
-EVALUATOR_VERSION = "deterministic-answer-v1"
+EVALUATOR_VERSION = "deterministic-answer-v2"
 DEFAULT_GOLDEN = PROJECT_ROOT / "evaluation" / "datasets" / "mindgraph_golden_v2.jsonl"
 
 
@@ -82,7 +86,19 @@ def answer_run_label(strategy: str, *, graph_enabled: bool) -> str:
     return f"answer_eval_{strategy}{suffix}"
 
 
-def _write_run(args: argparse.Namespace, payload: dict, failed_cases: list[dict]) -> str:
+def _uniform_prediction_field(predictions: list[dict], field: str) -> str | None:
+    """预测集里该字段一致时返回它，否则 None（不一致就不假装知道）。"""
+    values = {str(item.get(field)) for item in predictions if item.get(field)}
+    return values.pop() if len(values) == 1 else None
+
+
+def _write_run(
+    args: argparse.Namespace,
+    payload: dict,
+    failed_cases: list[dict],
+    chat_model: str | None,
+    chat_provider: str | None,
+) -> str:
     from api.dependencies import get_container
     from infrastructure.database import dumps
 
@@ -101,7 +117,9 @@ def _write_run(args: argparse.Namespace, payload: dict, failed_cases: list[dict]
             args.dataset_name,
             payload["dataset_version"],
             answer_run_label(args.strategy, graph_enabled=not args.no_graph),
-            args.model,
+            # P2：不再写 None。未显式传 --model 时回落到预测行里记录的模型，
+            # 保证运行记录能自证是哪个模型产出的结果。
+            chat_model,
             now,
             now,
             dumps(
@@ -109,6 +127,7 @@ def _write_run(args: argparse.Namespace, payload: dict, failed_cases: list[dict]
                     "evaluator_version": EVALUATOR_VERSION,
                     "golden": Path(args.golden).name,
                     "predictions": payload["prediction_source"],
+                    "chat_provider": chat_provider,
                 }
             ),
             dumps({**payload["metrics"], "sample_size": payload["sample_size"], "failed_case_count": payload["failed_case_count"]}),
@@ -165,15 +184,19 @@ def main() -> None:
         predictions = _load_jsonl(Path(args.predictions))
         prediction_source = Path(args.predictions).name
     summary = evaluate_answer_predictions(cases, predictions)
+    chat_model = args.model or _uniform_prediction_field(predictions, "model")
+    chat_provider = _uniform_prediction_field(predictions, "actual_provider")
     payload = {
         "evaluator_version": EVALUATOR_VERSION,
         "dataset_version": _dataset_version(cases),
         **summary,
+        "chat_model": chat_model,
+        "chat_provider": chat_provider,
         "prediction_source": prediction_source,
         "written": False,
     }
     if not args.dry_run:
-        payload["run_id"] = _write_run(args, payload, summary["failed_cases"])
+        payload["run_id"] = _write_run(args, payload, summary["failed_cases"], chat_model, chat_provider)
         payload["written"] = True
     print(json.dumps(payload, ensure_ascii=False, indent=2))
 

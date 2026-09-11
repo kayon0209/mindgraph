@@ -64,3 +64,43 @@ V2 当前有 90 条，已达到路线图要求的 50--200 条独立样本区间�
 旧版数据曾从私人 Vault 和 confirmed 关系自动派生，包含本机路径并造成“用系统输出
 证明系统”的数据泄漏；V2 已替换该做法。新增 holdout 不得从旧题改写或运行日志直接
 复制，并应在候选版本冻结后独立运行一次，披露样本规模和数据来源。
+
+## 评分口径版本（evaluator_version）
+
+数字必须连着口径一起引用。运行记录把口径写在
+`evaluation_runs.configuration_json.evaluator_version`，比对历史结果前先确认这个字段。
+
+### v2/deterministic-answer-v2（2026-09-11）
+
+相对 v1 的三处修复，都是「让指标名与真实含义一致」，不是为了让分数好看：
+
+1. **引用正确性改用「正文实际引用的证据」为基准。** v1 用候选证据集合，而系统固定返回
+   检索 top-k（实测均值 5.11 条、中位数 5），Gold 通常只有 1 条，于是 precision 被结构性
+   稀释——同一批数据里 Gold 文档命中率其实是 92%（76 条中命中 70 条），v1 的
+   `citation_correctness` 却只有 0.351。v2 新增 `citation_precision` / `citation_recall`
+   把被丢掉的维度显式化。
+2. **事实匹配全链路归一化**（NFKC 统一全半角 + 去 markdown 标记 + 去空白）。v1 用裸子串
+   `fact in answer`，模型写 `**800 元**` 就匹配不上 Gold 的 `800元`。
+3. **「检索到但未被引用」不再判为引用标注缺陷。** 运行时契约里 `citations` 是提供给模型的
+   候选证据；系统提示词只要求「使用 [citation-N] 标注引用来源」，从未要求每条候选都被引用。
+   v1 该规则在 90 条里命中 79 条，属正常现象而非模型缺陷。改用 `citation_usage_ratio`
+   如实记录「候选证据被用掉的比例」。
+
+**v1 数值的延续性**：v1 的引用 F1 原样保留为 `citation_offered_f1`，实测与 v1 的
+`citation_correctness` **逐位一致**（`0.3510442774`），因此历史结果可直接对照，不存在
+"改了口径就再也比不了"的问题。
+
+**新增指标**：`citation_precision`、`citation_recall`、`citation_offered_f1`、
+`citation_usage_ratio`。引用标注完整性的失败码细化为
+`citation_marker_malformed` / `citation_marker_unknown` / `citation_marker_duplicate`
+（v1 一律记 `citation_marker_integrity`）。
+
+**读法提醒**：`citation_correctness` 是**逐条 F1 再求均值**，而 `citation_precision` /
+`citation_recall` 是各自先求均值，因此三者不满足 `F1 = 2pr/(p+r)` 的恒等关系
+（例如 0.7799 vs 由 0.7295/0.8838 反推的 0.7995）。这是均值与比值的次序差异，不是错误。
+
+### v1/deterministic-answer-v1
+
+初版确定性口径。引用正确性按候选证据集合算 F1，事实匹配为裸子串，引用标注完整性包含
+「必须用尽候选证据」这一条。
+

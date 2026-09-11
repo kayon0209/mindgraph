@@ -41,23 +41,110 @@ def test_answer_case_scores_supported_current_answer() -> None:
         },
         {
             "result_state": "answered",
-            "answer": "应在30个自然日内提交。",
-            "citations": [_citation("policies/current.md", effective_from="2026-07-01")],
+            "answer": "应在30个自然日内提交 [citation-1]。",
+            "citations": [_citation("policies/current.md", effective_from="2026-07-01", rank=1)],
         },
     )
 
     assert {key: result[key] for key in (
-        "case_id", "citation_correctness", "refusal_correctness", "version_validity",
+        "case_id", "citation_correctness", "citation_precision", "citation_recall",
+        "citation_usage_ratio", "refusal_correctness", "version_validity",
         "required_fact_coverage", "forbidden_fact_avoidance", "failures",
     )} == {
         "case_id": "current-policy",
         "citation_correctness": 1.0,
+        "citation_precision": 1.0,
+        "citation_recall": 1.0,
+        "citation_usage_ratio": 1.0,
         "refusal_correctness": 1.0,
         "version_validity": 1.0,
         "required_fact_coverage": 1.0,
         "forbidden_fact_avoidance": 1.0,
         "failures": [],
     }
+
+
+def test_answered_case_without_any_citation_marker_is_penalized() -> None:
+    """Catches "有候选证据却一条都不引用"被当成不可判定而逃过计分（v2 新规则）。"""
+    result = evaluate_answer_case(
+        {
+            "case_id": "uncited",
+            "expected_behavior": "answer",
+            "evaluation_date": "2026-08-18",
+            "gold_vault_paths": ["policies/current.md"],
+            "historical_vault_paths": [],
+            "required_facts": [],
+            "forbidden_facts": [],
+        },
+        {
+            "result_state": "answered",
+            "answer": "应在30个自然日内提交。",
+            "citations": [_citation("policies/current.md", effective_from="2026-07-01", rank=1)],
+        },
+    )
+
+    assert result["citation_correctness"] == 0.0
+    assert result["citation_recall"] == 0.0
+    assert result["citation_precision"] is None
+    assert result["citation_usage_ratio"] == 0.0
+    assert "citation_mismatch" in result["failures"]
+
+
+def test_unused_offered_evidence_is_not_a_marker_defect() -> None:
+    """Catches 把「检索到但未引用」判成引用标注缺陷（v1 的口径错误）。
+
+    系统提示词只要求「使用 [citation-N] 标注引用来源」，未要求每条候选都被引用；
+    3 条候选里引用 1 条是合法输出，``citation_marker_validity`` 必须仍为 1.0，
+    而"用了多少"由 ``citation_usage_ratio`` 如实记录。
+    """
+    result = evaluate_answer_case(
+        {
+            "case_id": "partially-used",
+            "expected_behavior": "answer",
+            "evaluation_date": "2026-08-18",
+            "gold_vault_paths": ["policies/a.md"],
+            "historical_vault_paths": [],
+            "required_facts": [],
+            "forbidden_facts": [],
+        },
+        {
+            "result_state": "answered",
+            "answer": "结论 [citation-1]。",
+            "citations": [
+                _citation("policies/a.md", rank=1),
+                _citation("policies/b.md", rank=2),
+                _citation("policies/c.md", rank=3),
+            ],
+        },
+    )
+
+    assert result["citation_marker_validity"] == 1.0
+    assert result["citation_usage_ratio"] == pytest.approx(1 / 3)
+    assert "citation_marker_integrity" not in result["failures"]
+
+
+def test_fact_matching_normalizes_markdown_and_whitespace() -> None:
+    """Catches Gold 事实「30个自然日」匹配不上模型输出「**30 个自然日**」（v2 口径修复）。"""
+    result = evaluate_answer_case(
+        {
+            "case_id": "formatting",
+            "expected_behavior": "answer",
+            "evaluation_date": "2026-08-18",
+            "gold_vault_paths": ["policies/a.md"],
+            "historical_vault_paths": [],
+            "required_facts": ["30个自然日"],
+            "forbidden_facts": ["60个自然日"],
+        },
+        {
+            "result_state": "answered",
+            "answer": "结论：应在 **30 个自然日** 内提交 [citation-1]。",
+            "citations": [_citation("policies/a.md", rank=1)],
+        },
+    )
+
+    assert result["required_fact_coverage"] == 1.0
+    assert result["forbidden_fact_avoidance"] == 1.0
+    assert "missing_required_fact" not in result["failures"]
 
 
 def test_citation_correctness_penalizes_missing_and_unrelated_sources() -> None:
@@ -74,12 +161,17 @@ def test_citation_correctness_penalizes_missing_and_unrelated_sources() -> None:
         },
         {
             "result_state": "answered",
-            "answer": "结论",
-            "citations": [_citation("policies/a.md"), _citation("policies/unrelated.md")],
+            "answer": "结论 [citation-1] [citation-2]",
+            "citations": [
+                _citation("policies/a.md", rank=1),
+                _citation("policies/unrelated.md", rank=2),
+            ],
         },
     )
 
     assert result["citation_correctness"] == 0.5
+    assert result["citation_precision"] == 0.5
+    assert result["citation_recall"] == 0.5
     assert "citation_mismatch" in result["failures"]
 
 
@@ -209,6 +301,10 @@ def test_summary_ignores_not_applicable_metrics_and_reports_failed_cases() -> No
 
     assert summary["metrics"] == {
         "citation_correctness": 0.5,
+        "citation_precision": None,
+        "citation_recall": None,
+        "citation_offered_f1": None,
+        "citation_usage_ratio": None,
         "refusal_correctness": 0.5,
         "version_validity": 1.0,
         "citation_fidelity": None,
@@ -295,6 +391,10 @@ def test_prediction_evaluation_aggregates_latency_tokens_and_cost_with_coverage(
 
     assert summary["metrics"] == {
         "citation_correctness": None,
+        "citation_precision": None,
+        "citation_recall": None,
+        "citation_offered_f1": None,
+        "citation_usage_ratio": None,
         "refusal_correctness": 1.0,
         "version_validity": None,
         "citation_fidelity": None,
