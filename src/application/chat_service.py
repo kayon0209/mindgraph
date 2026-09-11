@@ -302,6 +302,12 @@ class ChatService:
 
             report = check_citation_fidelity(result.answer, [item.final_rank for item in result.citations])
             result.citation_fidelity = report.ok if report.applicable else None
+            # P0：把「正文实际标注引用的证据」独立记下来。``citations`` 是候选证据，
+            # 不能代表模型真的用了它们；引用正确性等评测必须看这个子集。
+            referenced_ranks = set(report.referenced)
+            result.cited_citation_ids = [
+                item.citation_id for item in result.citations if item.final_rank in referenced_ranks
+            ]
             if not report.ok and result.retrieval_trace is not None:
                 warning = fidelity_warning(report)
                 if warning and warning not in result.retrieval_trace.warnings:

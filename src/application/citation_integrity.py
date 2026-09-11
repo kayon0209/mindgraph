@@ -21,7 +21,9 @@ evaluation 消费。
 1. 无畸形标注；
 2. 无越界标注（合法标注全部命中引用集合）；
 3. 无重复标注；
-4. 无未使用引用（引用集合里的每一项都至少被一个合法标注引用）。
+4. 无未使用引用（引用集合里的每一项都至少被一个合法标注引用）——
+   由构造参数 ``require_all_citations_used`` 控制，默认 True；当引用集合的语义是
+   「提供给模型的候选证据」而非「应被全部引用的清单」时，调用方应传 False。
 无标注且无引用时 ``applicable=False``（不可判定），此时 ``passed`` 恒为 True。
 """
 
@@ -84,7 +86,15 @@ class CitationIntegrityValidator:
         self,
         citation_ids: Iterable[str] | None = None,
         citation_ranks: Iterable[int] | None = None,
+        require_all_citations_used: bool = True,
     ) -> None:
+        # P0 契约澄清：``require_all_citations_used`` 控制第 4 条判定。
+        # 运行时契约里 ``citations`` 是「提供给模型的候选证据」，系统提示词只要求
+        # 「使用 [citation-N] 标注引用来源」，并未要求每条候选都被引用；此时
+        # 「未使用引用」不是缺陷，评测应以 False 关闭该门（未使用数量仍会照常
+        # 记录在 ``unused_citations`` 里供审计）。默认 True 保持本模块原有的严格
+        # 语义不变。
+        self._require_all_citations_used = require_all_citations_used
         self._citation_ids: set[str] = set()
         self._ranks: set[int] = set()
         for citation_id in citation_ids or ():
@@ -146,7 +156,9 @@ class CitationIntegrityValidator:
         )
 
         applicable = bool(markers) or bool(self._ranks)
-        passed = not malformed_markers and not unknown_marks and not duplicate_marks and not unused
+        passed = not malformed_markers and not unknown_marks and not duplicate_marks
+        if self._require_all_citations_used:
+            passed = passed and not unused
         if not applicable:
             passed = True
         return CitationIntegrityReport(

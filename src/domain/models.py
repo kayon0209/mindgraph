@@ -151,7 +151,11 @@ class AnswerResult(BaseModel):
     # M0 契约基线：引用保真检查结果（回答中 [citation-N] 全部命中引用集为 True；
     # 无引用且无标注时为 None；M2 前仅提示不阻断，见 ADR-003）
     citation_fidelity: bool | None = None
+    # P0 契约澄清：``citations`` 是「本次提供给模型的候选证据」（检索 top-k），
+    # 不代表模型都用了；``cited_citation_ids`` 才是「答案正文实际标注引用的证据」，
+    # 由 [citation-N] 标注与 citation_id 对应得出。评测的引用正确性以本字段为准。
     citations: list[Citation] = Field(default_factory=list)
+    cited_citation_ids: list[str] = Field(default_factory=list)
     retrieval_trace: RetrievalTraceModel | None = None
     usage: UsageMetrics = Field(default_factory=UsageMetrics)
     timing: TimingMetrics
