@@ -11,7 +11,9 @@ import uuid
 
 from application.adaptive_retrieval_router import AdaptiveRetrievalRouter, RetrievalRouteDecision
 from application.policy_conflict_service import PolicyConflictService
+from application.query_analysis import QueryAnalysisService
 from application.query_understanding import QueryUnderstandingService
+from application.scope_terms import OUT_OF_SCOPE_TERMS
 from domain.contracts import error_event_data
 from domain.errors import RetrievalUnavailableError
 from domain.models import (
@@ -25,7 +27,8 @@ from domain.models import (
 )
 from infrastructure.database import ProductDatabase, dumps
 
-OUT_OF_SCOPE = ("工资", "薪资", "年终奖", "股票", "请假", "年假", "辞职", "离职", "wifi", "食堂", "系统提示词", "ignore previous", "system prompt")
+# PR-10：词表下沉到 scope_terms，供生产拦截与 query_analysis 的 shadow 观测共用同一份。
+OUT_OF_SCOPE = OUT_OF_SCOPE_TERMS
 REFUSAL = "抱歉，我只能回答公司报销相关问题。"
 INSUFFICIENT = "未在制度文件中找到足够依据。建议联系 HR/财务确认。"
 PERMISSION_DENIED = "当前账号没有权限访问相关制度内容。请联系管理员申请对应工作区/部门的访问权限。"
@@ -50,6 +53,7 @@ class ChatService:
         system_prompt: str | None = None,
         retrieval_router: AdaptiveRetrievalRouter | None = None,
         query_understanding: QueryUnderstandingService | None = None,
+        query_analysis: QueryAnalysisService | None = None,
         graph_default_enabled: bool = False,
         on_question_logged: Callable[[], None] | None = None,
     ) -> None:
@@ -61,6 +65,8 @@ class ChatService:
         self.policy_conflict_service = PolicyConflictService(database)
         self.retrieval_router = retrieval_router or AdaptiveRetrievalRouter()
         self.query_understanding = query_understanding or QueryUnderstandingService()
+        # PR-10：shadow 观测层（只写 trace，不参与路由/检索/生成）
+        self.query_analysis = query_analysis or QueryAnalysisService()
         # 计划 Phase 5 发布闸门的配置消费方：消融达标后由 GRAPH_DEFAULT_ENABLED
         # 打开服务端默认图路由；客户端 graph_enabled=false 始终可以关闭。
         self.graph_default_enabled = graph_default_enabled
@@ -203,7 +209,25 @@ class ChatService:
             3,
         )
         trace.latency_ms["query_understanding_ms"] = 0.0
+        self._attach_query_analysis(trace, request.question)
         return trace
+
+    def _attach_query_analysis(self, trace, question: str) -> None:
+        """PR-10：把结构化查询分析以 **shadow** 方式挂到 trace 上。
+
+        三条硬约束：
+        1. **只写 trace**，不参与路由、检索或生成 —— 否则就不是 shadow；
+        2. 任何异常都必须吞掉并记 warning —— 观测层出错可以接受，
+           因为它拖垮生产问答不可接受；
+        3. 输出不含原始问题全文（见 ``QueryAnalysis.to_dict``）。
+        """
+        try:
+            started = time.perf_counter()
+            trace.query_analysis = self.query_analysis.analyze(question).to_dict()
+            trace.latency_ms["query_analysis_ms"] = round((time.perf_counter() - started) * 1000, 3)
+        except Exception as exc:  # noqa: BLE001 -- shadow 不得影响生产路径
+            logger.warning("query_analysis_shadow_failed", extra={"error": str(exc)[:200]})
+            trace.query_analysis = {}
 
     @staticmethod
     def _is_out_of_scope(question: str) -> bool:

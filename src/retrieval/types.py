@@ -56,6 +56,9 @@ class RetrievalTrace:
     route_decision: dict[str, Any] = field(default_factory=dict)
     query_variants: list[str] = field(default_factory=list)
     original_query: str | None = None
+    # PR-10：QueryAnalyzer 的 **shadow** 输出。只观测，不参与路由/检索/生成；
+    # 缺省为空 dict，旧代码与旧产物不受影响。
+    query_analysis: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -80,6 +83,7 @@ class RetrievalTrace:
             "route_decision": self.route_decision,
             "query_variants": self.query_variants,
             "original_query": self.original_query,
+            "query_analysis": self.query_analysis,
         }
 
 
