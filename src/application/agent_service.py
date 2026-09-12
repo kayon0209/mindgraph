@@ -24,19 +24,19 @@ schema 授权后另行实现），不在本层预埋半成品 API。
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+from datetime import UTC, datetime, timedelta
 import hashlib
 import hmac
 import logging
 import time
-import uuid
-from collections.abc import Iterable
-from datetime import UTC, datetime, timedelta
 from typing import Any
+import uuid
 
-from application.agent_execution_policy import ExecutionPlan, ExecutionStep
+from application.agent_execution_policy import ExecutionStep
 from application.chat_service import ChatService
 from application.citation_integrity import CitationIntegrityValidator
-from application.evidence_query_service import EvidenceQueryService, EvidenceQueryResult
+from application.evidence_query_service import EvidenceQueryResult, EvidenceQueryService
 from domain.errors import RetrievalUnavailableError
 from domain.evidence import EvidenceResultState
 from domain.models import ChatRequest, Citation, ResultState
@@ -149,11 +149,32 @@ class AgentService:
         )
 
         # ── 澄清路由特例：结构化提问，不检索 ──
-        # P0-1：此路径只发 clarification_required + completed(waiting_for_input)
-        # 后关流，不产出 answer_delta；用户补充后由前端拼成新请求重新提交。
+        # PR-13：clarification_required 同步持久化（clarification_requests 表的
+        # 业务消费方），owner 可在有效期内服务端幂等恢复——前端不再只是
+        # "自己拼新问题"。落库失败不阻断澄清卡下发（resume 是增益不是依赖）。
         if decision.route == "clarification_required":
             questions = self._clarification_questions(request.question)
-            clarification_id, context_hash, expires_at = make_clarification_token(request.question, questions)
+            # 签名 key 与 ClarificationService.record 的校验口径一致：问句 hash
+            # （DB 只存 hash；口径不一致会让 resume 校验必然失败）。
+            import hashlib as _hashlib
+
+            question_hash = _hashlib.sha256(request.question.encode("utf-8")).hexdigest()[:16]
+            clarification_id, context_hash, expires_at = make_clarification_token(question_hash, questions)
+            try:
+                from application.clarification_service import ClarificationService
+
+                ClarificationService(self.chat_service.database).record(
+                    clarification_id=clarification_id,
+                    principal_id=((access_scope or {}).get("user") if access_scope else None) or "anonymous",
+                    questions=questions,
+                    context_hash=context_hash,
+                    expires_at=expires_at,
+                    conversation_id=getattr(request, "conversation_id", None),
+                    original_question=request.question,
+                    retrieval_budget={"final_top_k": request.final_top_k, "graph_enabled": decision.graph_enabled},
+                )
+            except Exception:
+                logger.exception("clarification_record_failed", extra={"request_id": request_id})
             yield self._event(
                 request_id, "clarification_required",
                 {
