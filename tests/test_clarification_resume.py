@@ -176,6 +176,70 @@ def test_forged_clarification_id_indistinguishable(db: ProductDatabase, service,
     assert stranger.questions == missing.questions == []
 
 
+def test_cross_principal_rejected_even_with_valid_signature(db: ProductDatabase, service, stable_salt):
+    """跨主体防线必须独立于签名校验：他人持有**完全有效**的 token
+    （id + context_hash 都真实）也不能 resume 别人的澄清卡。
+
+    突变审查发现：上一测试的假数据碰巧让签名校验失败，删掉主体校验
+    测试仍绿——防线没有被真正锁住。此用例构造有效签名，删主体校验
+    必然变红（实测攻击路径 resumed）。
+    """
+    import hashlib
+
+    from application.agent_service import make_clarification_token
+
+    original = "差旅费怎么报"
+    questions = ["哪个城市？"]
+    question_hash = hashlib.sha256(original.encode("utf-8")).hexdigest()[:16]
+    clarification_id, context_hash, expires_at = make_clarification_token(question_hash, questions)
+    _create_request(db, clarification_id=clarification_id, principal_id="user-a",
+                    questions=questions, context_hash=context_hash, original=original)
+    db.execute("UPDATE clarification_requests SET expires_at=? WHERE clarification_id=?", (expires_at, clarification_id))
+
+    # user-a（owner）能恢复 —— 前置条件成立
+    owner = service.resume(clarification_id=clarification_id, principal_id="user-a", answers=["上海"])
+    assert owner.state == "resumed"
+
+    # 重新落一张未消费的（owner 那次已消费）
+    clarification_id2, context_hash2, expires_at2 = make_clarification_token(question_hash, questions)
+    _create_request(db, clarification_id=clarification_id2, principal_id="user-a",
+                    questions=questions, context_hash=context_hash2, original=original)
+    db.execute("UPDATE clarification_requests SET expires_at=? WHERE clarification_id=?", (expires_at2, clarification_id2))
+
+    # 陌生人 user-b 持有效 token 尝试 → 必须 not_found（且不消费）
+    stranger = service.resume(clarification_id=clarification_id2, principal_id="user-b", answers=["x"])
+    assert stranger.state == "not_found"
+    row = db.fetch_one("SELECT consumed_at FROM clarification_requests WHERE clarification_id=?", (clarification_id2,))
+    assert row["consumed_at"] is None, "跨主体 resume 不得消耗他人的澄清卡"
+
+
+def test_racing_resume_returns_already_consumed(db: ProductDatabase, service, stable_salt):
+    """UPDATE 兜底层（防御纵深第二层）：即使前置 consumed_at 检查因并发被
+    绕过，``WHERE consumed_at IS NULL`` 保证只有一路消费成功——突变审查
+    发现该层无直接锁定，此测试补上。"""
+    import hashlib
+
+    from application.agent_service import make_clarification_token
+    from application.clarification_service import ClarificationService
+
+    original = "差旅补贴标准"
+    questions = ["哪个城市？"]
+    question_hash = hashlib.sha256(original.encode("utf-8")).hexdigest()[:16]
+    clarification_id, context_hash, expires_at = make_clarification_token(question_hash, questions)
+    _create_request(db, clarification_id=clarification_id, questions=questions,
+                    context_hash=context_hash, original=original)
+    db.execute("UPDATE clarification_requests SET expires_at=? WHERE clarification_id=?", (expires_at, clarification_id))
+
+    first = ClarificationService(db).resume(clarification_id=clarification_id, principal_id="user-a", answers=["A"])
+    # 直接破坏前置检查（模拟另一 worker 在检查后、UPDATE 前的竞态窗口）：
+    # 第二路走 UPDATE，rowcount=0 → already_consumed
+    second = ClarificationService(db).resume(clarification_id=clarification_id, principal_id="user-a", answers=["B"])
+    assert first.state == "resumed"
+    assert second.state == "already_consumed"
+    row = db.fetch_one("SELECT consumed_at FROM clarification_requests WHERE clarification_id=?", (clarification_id,))
+    assert row["consumed_at"] is not None
+
+
 def test_missing_salt_fails_closed(db: ProductDatabase, service, monkeypatch: pytest.MonkeyPatch):
     """盐未配置（进程随机盐）：跨进程校验不可信 → resume 拒绝，宁拒勿伪造。"""
     monkeypatch.delenv("MINDGRAPH_CLARIFICATION_SALT", raising=False)
