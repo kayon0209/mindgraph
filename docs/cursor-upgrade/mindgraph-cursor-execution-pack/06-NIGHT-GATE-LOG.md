@@ -482,3 +482,112 @@ R1 否 · R2 否（已修且验证）· **R3 部分解除**（已有 1 个 PR-02
 
 
 
+
+
+---
+
+## 2026-09-12 01:00–01:35｜PR-05 拍板落地 + PR-06（我执行，接替 zcode 后的第二批）
+
+### PR-05 待拍板项已由用户拍板 → 提交 `a9de8b5`
+用户指令：「按推荐的方式来吧，要考虑健壮性、可维护性、可扩展性，也不要弄成屎山代码」。
+采用 **A+B 组合**（C 另立 PR）：
+
+- **A 拆类别**：从 Gold 路径推断 `version_conflict` / `cross_policy_conflict` / `not_a_conflict`，
+  注册表 `EXPECTED_STATE_BY_KIND` 决定期望状态（加类别 = 加一行）。
+- **B 只计适用的**：不适用记 `None` 而非 `0`。
+
+**真实数据结果**：6 条中仅 2 条适用（MG-ENT-039/040 真版本冲突），分母 6→2。
+`conflict_accuracy` 数值仍是 0.0，但含义变了：**不再是"系统 6 题全错"，而是"2 题真缺口"**。
+那 2 题的根因是历史版本被生命周期正确排除 → 缺「历史版本对比检索」能力（新能力，进 backlog）。
+
+关键决策与理由：
+- **类别从 Gold 路径推断，不改数据集** —— 改 `mindgraph_golden_v2.jsonl` 会移动 `dataset_sha256`，
+  与冻结基线不可比。靠 `conflict_attribution.conflict_expectation()` 单一真源，answer_eval 只调用。
+- **分母必须可见**（`conflict_breakdown` / `scoring_denominator`）：否则"不适用"与"没有冲突案例"在报表上长得一样，指标能悄悄消失。
+- **新发现**：`cand-conflict-2-930265bb1e` 的 `result_state=model_unavailable`（根本没跑成功）却被当正常样本计分。范围内未动，记入 backlog。
+
+⚠️ **提交夹带说明**：`scripts/freeze_baseline.py` 与 `tests/test_freeze_baseline.py` 同时含
+PR-01 收尾（A 类）与本次改动，**同一文件内无法用 `git add <file>` 分离**，已在 commit message 显式声明。
+
+### PR-06 页级解析状态机与检查点 → 提交 `af6494b`（7 文件 +884）
+- 按修正 4 执行：**不重写解析层**，只补「已算出产物的落库」+ 状态机。新增 `ingestion_jobs` / `page_artifacts`（schema 17，**纯新增**，`test_v16_upgrades_to_v17_additively` 守着）。
+- `PDFParser.parse_pages` 作为**可选能力**（独立 `PagedDocumentParser` Protocol + `supports_paged()` 探测）：
+  Markdown 没有页，塞进主协议会逼每个 parser 实现不支持的方法。
+- 不支持分页时退化为全量重解析，并**如实**报 `paged_retry=False`，不假装省了工作。
+- 单页解析无法做跨页页眉抑制，重试页文本可能多出页眉 —— 已写进代码注释，不静默伪装成等价结果。
+
+**测试中发现的两个真 bug**（都会让功能"说谎"）：
+1. 产出 0 个元素的页**整体消失** → 正是本 PR 要定位的失败反而看不见。改：按 `page_count` 铺满并记 failed。
+2. "无需重试"分支硬编码 `paged_retry=True`，实际什么都没跑。
+
+17 测试（含测试内生成的真实 3 页 PDF，断言重试只请求第 2 页）；全量 **780 passed**。
+突变验证：retry 退化为全量 → 1 failed（`[None, None] != [None, [2]]`）；去掉页数铺满 → 1 failed；
+让"无文本"压过 parser 的 OCR 标记 → 1 failed（空白扫描页会被记成失败，而重试永远救不了扫描件）。
+
+---
+
+## 2026-09-12 01:35–02:05｜PR-07 接入可替换 OCR Provider → 提交 `6c94fc5`（9 文件 +723）
+
+**前提解除**：此前 OCR 引擎一个都没装（PR-07/08 被判"卡住"）。本轮用
+`uv pip install --python .venv/Scripts/python.exe` 装上 `rapidocr-onnxruntime` + `pymupdf`
+（venv 里没有 pip，是 uv 建的）。**实机验证通过**：仓库内已提交的纯图像页
+`rendered/guowuyuan-gongbao-202524_p2.png` 识别出 46 行、置信度 1.00，含"国务院公报/国务院办公厅"。
+
+- `infrastructure/ocr/`：`OCRProvider` Protocol + `OcrPageResult`（**强制带 confidence 与 model/version**，
+  OCR 文本是推测不是事实）+ `NullOcrProvider`（"关闭"也是一种实现，调用点不用各自发明）。
+- 采纳策略：低置信 / 失败 / 空 / 超时 → **一律不产出 element**，绝不进索引；
+  采纳的页在 `page_artifacts` 里变 `parsed`，PR-06 重试天然跳过 → **不再建第二张缓存表**（会漂移）。
+- **默认关闭**（`OCR_ENABLED=False`）：扫描页仍如旧判 `parse_failed`，关闭即回滚。
+- 诊断只留统计（行数/置信度/耗时/失败原因），**不留 OCR 全文**，有测试守着。
+- `pyproject.toml` 的 `ocr` extra 从 paddleocr 改为 rapidocr + pymupdf，取舍已写入注释。
+
+**测试中发现真 bug**：`get_ocr_provider` 用 `extra={"name": ...}` 打日志 —— 撞 LogRecord 内置字段
+抛 `KeyError`，导致**配置写错 provider 名会变成 500 而不是优雅降级**。已修并补断言。
+
+15 测试（含真引擎断言 `国务院` 且置信度 ≥0.6）；全量 **795 passed / 2 skipped / 0 failed**；ruff/mypy 新文件 0。
+
+---
+
+## 2026-09-12 02:0x–04:0x｜PR-08/09/11/12/13/14/15 接续执行（workbuddy 中断后接手）✅ 全部通过
+
+接手状态：workbuddy 完成至 PR-07（`6c94fc5`）后中断，PR-08 处于半途
+（`cross_page_join.py` 判断器已写但未接线：构造参数缺失、无 import、无测试）。
+本轮沿同一 worktree 接续，不新建分支。
+
+| PR | commit | 突变审查 |
+|---|---|---|
+| PR-08 跨页条款与续表 | `c5aafb0` | decide_join 恒拒 → 5 红 ✅ |
+| PR-09 parent 消费端 + PR-03 生效端缺口修复 | `9a064bf` | 去重失效 → 1 红 / 预算失效 → 1 红 ✅ |
+| PR-11 条件式 Rerank | `d02e585` | 路由名单清空 → 1 红 / delta 置零 → 1 红 ✅ |
+| PR-12 服务端续问解析 | `7226745`+`09a1c7d` | 词表清空 → 1 红（正交化修复后）/ 自引用过滤删除 → 1 红 ✅ |
+| PR-13 可恢复澄清协议 | `13d39a8`+`e723607` | 双层幂等（组合突变 → 1 红）/ 跨主体有效签名攻击 → 红 ✅ |
+| PR-14 bad-case 归因与升级 | `d4fb2e7` | 阈值 999 → 红 / 归因 JOIN 破坏 → 红 ✅ |
+| PR-15 存储队列边界 | `a964c4c` | claim 互斥破坏 → 红 / 双层幂等组合突变 → 红 ✅ |
+
+**逐 PR 即时审查修复的真实缺陷**（不留到下一任务）：
+
+1. PR-08：错误表头两表被「页尾未终结句」弱信号粘合（加表格边界规则）；
+   clause_numbers 重复收集（去重保序）。
+2. PR-09：PR-03 遗留生效端缺口确认修复（policy 贯通 load_corpus 全链 +
+   manifest 同源）。
+3. PR-12：**append-before-resolve 自引用 bug**——当前问题先落库再解析，
+   指代绑定到自己身上，resolved == 原文 → 解析静默失效。修复：窗口排除
+   当前问题。单测抓不到（不经 append），集成测试才暴露。
+4. PR-13：**HMAC 口径断裂**——写入端用原问句作 conversation_key，校验端
+   只能用库里存的问句 hash → resume 永远失败。统一为问句 hash。
+   外加**有效签名跨主体攻击路径**：旧测试假数据让签名碰巧失败，
+   删主体校验测试仍绿。补有效签名用例后突变击中。
+5. 全程：突变验证一律 subprocess 跑（改磁盘不 reload = 假阴性，
+   PR-13 审查时发现并纠正方法论）。
+
+**终审**：874 passed / 2 skipped / 0 failed（起点 780）；离线全链路 PASS；
+CI ruff gate 绿；30 项新增/触碰模块 mypy 0 错。
+
+**已知遗留（非本人工作，不代提交）**：工作区 16 项脏文件 = 另一会话的
+evaluation_v2 迁移（自带 30 测试全绿）+ gate log 未提交部分，归属该会话。
+20 个提交未推送——按红线等用户指令。
+
+**新增 feature flag 清单**（全部默认关，即回滚）：
+`CONTEXT_EXPANSION_ENABLED` / `CONDITIONAL_RERANK_ENABLED` /
+`CONVERSATION_SERVER_CONTEXT_ENABLED` / `BAD_CASE_ESCALATION_ENABLED` /
+`STRUCTURED_CHUNKER cross_page_join` / `CHUNKING_POLICY`。
