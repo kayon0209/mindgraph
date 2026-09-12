@@ -36,7 +36,16 @@ def service(db: ProductDatabase):
 
 @pytest.fixture
 def stable_salt(monkeypatch: pytest.MonkeyPatch) -> None:
+    """固定部署盐 + 清 Settings 缓存。
+
+    ``clarification_salt()`` 经 ``get_settings()``（lru_cache）取值，而 pydantic
+    的 env_file 只在**构造 Settings 时**读一次：设了环境变量却不清缓存，拿到的是
+    上一次构造的实例——测试会在"改了 env 仍用旧盐"的状态下假绿。
+    """
     monkeypatch.setenv("MINDGRAPH_CLARIFICATION_SALT", "test-salt-fixed")
+    from infrastructure.settings import get_settings
+
+    get_settings.cache_clear()
 
 
 def _create_request(
@@ -241,12 +250,92 @@ def test_racing_resume_returns_already_consumed(db: ProductDatabase, service, st
 
 
 def test_missing_salt_fails_closed(db: ProductDatabase, service, monkeypatch: pytest.MonkeyPatch):
-    """盐未配置（进程随机盐）：跨进程校验不可信 → resume 拒绝，宁拒勿伪造。"""
-    monkeypatch.delenv("MINDGRAPH_CLARIFICATION_SALT", raising=False)
-    # salt._random 属于另一进程概念；这里清掉模块级缓存模拟"盐不稳定"
-    from application import agent_service
+    """盐未配置（进程随机盐）：跨进程校验不可信 → resume 拒绝，宁拒勿伪造。
 
+    P3 修复：拒绝语义从 not_found 升级为 server_misconfigured——
+    与"卡片不存在"严格区分，用户能定位到配置问题而不是误判卡片过期。
+    """
+    monkeypatch.delenv("MINDGRAPH_CLARIFICATION_SALT", raising=False)
+    from application import agent_service
+    from infrastructure.settings import get_settings
+
+    get_settings.cache_clear()  # 盐的读点是缓存的 Settings，删 env 后必须清缓存
     monkeypatch.delattr(agent_service._clarification_salt, "_random", raising=False)
     _create_request(db, clarification_id="clar-nosalt", context_hash="whatever")
     resume = service.resume(clarification_id="clar-nosalt", principal_id="user-a", answers=["x"])
-    assert resume.state == "not_found"  # 校验失败与不存在同语义（不暴露内部原因）
+    assert resume.state == "server_misconfigured"
+    assert resume.questions == []  # 配置错误不泄露原问题内容
+
+
+def test_dotenv_salt_is_visible_to_business_code(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """锁住 PR-13 验收实测的坑：写在 .env 里的盐必须真的生效。
+
+    pydantic-settings 只把 .env 载入**已声明字段**、不写进 ``os.environ``；旧实现
+    用 ``os.getenv`` 直读 → 「按 .env.example 配了盐」等于没配，症状是 resume
+    全坏且排查方向被误导到「卡片过期」。这条测试同时锁两件事：字段确实声明了
+    （Settings 能读到），以及业务读点确实走 Settings（clarification_salt() 能读到）。
+    """
+    from infrastructure.settings import Settings, clarification_salt
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("MINDGRAPH_CLARIFICATION_SALT=salt-from-dotenv-file\n", encoding="utf-8")
+    monkeypatch.delenv("MINDGRAPH_CLARIFICATION_SALT", raising=False)  # 只留 .env 一条来源
+
+    settings = Settings(_env_file=str(env_file))
+    assert settings.MINDGRAPH_CLARIFICATION_SALT == "salt-from-dotenv-file", \
+        "字段没声明时 pydantic 会静默忽略 .env 里的这一行"
+
+    monkeypatch.setattr("infrastructure.settings.get_settings", lambda: settings)
+    assert clarification_salt() == "salt-from-dotenv-file"
+
+    # 生成端与校验端必须走同一个读点：只修校验端的话，签名永远对不上，
+    # 症状仍是"配了盐 resume 全坏"，而这比没修更难查。
+    from application.agent_service import _clarification_salt
+
+    assert _clarification_salt() == b"salt-from-dotenv-file"
+
+
+def test_missing_salt_does_not_leak_existence(db: ProductDatabase, service, monkeypatch: pytest.MonkeyPatch):
+    """缺盐时也不做存在性预言机：非 owner / 不存在的 id 仍然只得到 not_found。"""
+    from infrastructure.settings import get_settings
+
+    monkeypatch.delenv("MINDGRAPH_CLARIFICATION_SALT", raising=False)
+    get_settings.cache_clear()
+    _create_request(db, clarification_id="clar-owned", context_hash="whatever")
+
+    assert service.resume(clarification_id="clar-does-not-exist", principal_id="user-a", answers=["x"]).state == "not_found"
+    assert service.resume(clarification_id="clar-owned", principal_id="user-b", answers=["x"]).state == "not_found"
+
+
+def test_resume_round_trip_with_dotenv_only_salt(
+    tmp_path: Path, service, db: ProductDatabase, monkeypatch: pytest.MonkeyPatch
+):
+    """只配 .env（进程环境变量为空）也必须能完整 resume —— PR-13 实测的坑本体。
+
+    与 test_dotenv_salt_is_visible_to_business_code 的分工：那条只查读点取值；
+    这条跑完整链路（生成端签名 → 校验端比对 → resumed）。校验端若偷偷退回
+    ``os.getenv``，读点测试仍会绿，而这一条会红。
+    """
+    import hashlib
+
+    from application.agent_service import make_clarification_token
+    from infrastructure.settings import Settings
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("MINDGRAPH_CLARIFICATION_SALT=dotenv-only-salt\n", encoding="utf-8")
+    monkeypatch.delenv("MINDGRAPH_CLARIFICATION_SALT", raising=False)  # 只留 .env 一条来源
+    settings = Settings(_env_file=str(env_file))
+    monkeypatch.setattr("infrastructure.settings.get_settings", lambda: settings)
+
+    original_question, questions = "差旅餐补标准", ["哪个城市？"]
+    question_hash = hashlib.sha256(original_question.encode("utf-8")).hexdigest()[:16]
+    clarification_id, context_hash, expires_at = make_clarification_token(question_hash, questions)
+    service.record(
+        clarification_id=clarification_id, principal_id="user-a", questions=questions,
+        context_hash=context_hash, expires_at=expires_at,
+        conversation_id=None, original_question=original_question,
+    )
+
+    outcome = service.resume(clarification_id=clarification_id, principal_id="user-a", answers=["上海"])
+    assert outcome.state == "resumed", "盐只配在 .env 时，resume 必须真的能用"
+    assert outcome.questions == questions

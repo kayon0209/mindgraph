@@ -48,14 +48,20 @@ CLARIFICATION_TTL_MINUTES = 30
 
 def _clarification_salt() -> bytes:
     """澄清 token 的 HMAC 盐（审查 F10）：部署经 MINDGRAPH_CLARIFICATION_SALT
-    注入；缺省时进程级随机——源码可见的固定盐不可用于伪造。当前 token 仅用于
-    澄清卡展示面的定位与过期判定（前端拼接新请求，不做服务端恢复），跨进程
-    一致性无消费方；若未来引入服务端 resume 校验，需先落地独立的
-    clarification_requests 持久化契约（见模块 docstring）。"""
-    import os as _os
+    注入，缺省时退回进程级随机盐——源码可见的固定盐不可用于伪造。
+
+    读 ``get_settings()`` 而不是 ``os.getenv``：pydantic-settings 只把 .env 载入
+    已声明的字段、不写进 os.environ，直读环境变量会让"按 .env.example 配了盐"
+    变成静默无效（PR-13 验收实测的坑）。
+
+    进程级随机盐只在同进程内自洽；自 PR-13 起 resume 是**跨进程契约**
+    （见 clarification_service 模块 docstring），所以生产部署必须显式配盐。
+    """
     import secrets as _secrets
 
-    salt = _os.getenv("MINDGRAPH_CLARIFICATION_SALT", "")
+    from infrastructure.settings import get_settings
+
+    salt = get_settings().MINDGRAPH_CLARIFICATION_SALT
     if not salt:
         cached = getattr(_clarification_salt, "_random", None)
         if cached is None:

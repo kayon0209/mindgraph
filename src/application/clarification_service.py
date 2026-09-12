@@ -14,13 +14,21 @@ schema v14 已建好（principal_id NOT NULL、consumed_at 天然幂等键），
 | 重复 resume | ``already_consumed`` + 原问题集 | 幂等：不重复副作用，consumed_at 不改写 |
 | 过期 | ``expired`` | 不返回原问题内容 |
 | 不存在 / 跨主体 / 校验失败 | ``not_found`` | 三者**不可区分**（不暴露存在性/内部原因） |
+| 盐未配置（部署错误） | ``server_misconfigured`` | 在归属/过期/已消费校验**之后**判定：非 owner 与不存在的 id 仍然只得到 ``not_found``，所以这一态不向非 owner 泄露存在性 |
 
 ## 盐的跨进程前提（审查 F10 的延续）
 
 ``_clarification_salt`` 缺省时是**进程级随机盐**——同进程校验能过，跨进程
 （重启、多 worker）必然失败。服务端 resume 是跨进程契约，因此部署必须显式
-设置 ``MINDGRAPH_CLARIFICATION_SALT``；校验失败一律按 not_found 处理，
-绝不以"盐没配"为由放过伪造 token（fail-closed）。
+设置 ``MINDGRAPH_CLARIFICATION_SALT``。
+
+**读法只有一个**：``infrastructure.settings.clarification_salt()``（经
+``Settings.MINDGRAPH_CLARIFICATION_SALT``）。不要退回 ``os.getenv``——pydantic
+只把 .env 载入已声明字段、不写进 ``os.environ``，直读会让"按 .env.example
+配了盐"静默无效，症状是 resume 全坏且指向完全错误的排查方向。
+
+盐没配时也**绝不**放过 token（fail-closed）：除了这一态，校验失败一律按
+``not_found`` 处理，不以"配置缺失"为由放松校验。
 """
 
 from __future__ import annotations
@@ -33,6 +41,7 @@ import logging
 from typing import Any
 
 from infrastructure.database import ProductDatabase
+from infrastructure.settings import clarification_salt
 
 logger = logging.getLogger("mindgraph.clarification")
 
@@ -40,6 +49,9 @@ RESUMED = "resumed"
 ALREADY_CONSUMED = "already_consumed"
 EXPIRED = "expired"
 NOT_FOUND = "not_found"
+# P3：部署配置错误（随机进程盐无法跨进程校验）——与 not_found 严格区分，
+# 否则用户会把"系统没配好"当成"卡片不存在/过期"排查。
+SERVER_MISCONFIGURED = "server_misconfigured"
 
 # resume 恢复时沿用原请求的检索预算（clarification 写入时未存预算字段的
 # 历史记录按此默认；新写入路径由 writer 显式传入）。
@@ -152,7 +164,18 @@ class ClarificationService:
             )
 
         # 签名校验：context_hash 必须与「原问句 + 问题集」在**部署盐**下一致。
-        # 未配盐（进程随机）→ 校验必败 → not_found（宁拒勿伪造，不暴露原因）。
+        # P3 修复：盐未配置（进程随机盐）→ server_misconfigured 业务态——
+        # 这是部署错误不是卡片不存在，与 not_found 混在一起会让用户排查方向
+        # 完全错误（以为卡过期/被删）。
+        # 顺序上它在归属/过期/已消费之后：非 owner 与不存在的 id 仍然只得到
+        # not_found，因此这一态不向非 owner 泄露存在性（能拿到它的只有
+        # "本人持有、未过期、未消费"的卡）。
+        if not clarification_salt():
+            logger.error("clarification_salt_missing", extra={"hint": "set MINDGRAPH_CLARIFICATION_SALT for resumable clarifications"})
+            return ResumeOutcome(
+                SERVER_MISCONFIGURED,
+                questions=[],
+            )
         if not self._context_hash_matches(row, questions):
             logger.warning("clarification_context_hash_mismatch", extra={"clarification_id": clarification_id})
             return ResumeOutcome(NOT_FOUND)
@@ -196,9 +219,7 @@ class ClarificationService:
     @staticmethod
     def _context_hash_matches(row, questions: list[str]) -> bool:
         """部署盐下重算 context_hash 与存量比对；盐未配置时必败（fail-closed）。"""
-        import os
-
-        if not os.getenv("MINDGRAPH_CLARIFICATION_SALT", ""):
+        if not clarification_salt():
             return False
         from application.agent_service import make_clarification_token
 

@@ -143,6 +143,15 @@ class Settings(BaseSettings):
     # Assist 通道的时限与上限（沿用 chat 检索语义，仅作为通道级护栏）
     ASSIST_TIMEOUT_SECONDS: float = 60.0
     ASSIST_MAX_TOP_K: int = 10
+    # ── 可恢复澄清协议（PR-13）的 HMAC 盐 ──
+    # resume 校验要求盐跨进程稳定；空 = 未配置 → 生成端退回进程级随机盐
+    # （同进程能验、跨进程必败），resume 因此返回 server_misconfigured，
+    # 而不是伪造成功（fail-closed）。
+    # 为什么必须声明成字段而不是直接 os.getenv 读：pydantic-settings 只把
+    # .env 载入**已声明的字段**，不会写进 os.environ——用 os.getenv 读时
+    # ".env 里按文档配了盐"依然等于没配（PR-13 验收实测：配了盐 resume 全坏，
+    # 排查方向被误导到"卡片过期"）。优先级：进程环境变量 > .env > 默认值。
+    MINDGRAPH_CLARIFICATION_SALT: str = ""
 
     # ── Agentic Evidence Layer 阶段开关（ADR-003；M0 仅登记，不消费） ──
     # 依据《MindGraph Agent 化实施方案》M0 要求登记、后续里程碑按序消费：
@@ -351,3 +360,13 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """获取全局配置单例（缓存，第一次加载后不变）。"""
     return Settings()
+
+
+def clarification_salt() -> str:
+    """部署的澄清盐，空串表示未配置。
+
+    唯一的读点（agent_service 生成端、clarification_service 校验端、
+    main.py 启动告警都调它）——盐是"跨进程一致"这条契约的根，四个地方各自
+    读一遍就会各自读错一遍：PR-13 实测的 .env 静默失效正是这么来的。
+    """
+    return get_settings().MINDGRAPH_CLARIFICATION_SALT
