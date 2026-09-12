@@ -82,7 +82,9 @@ class ServiceContainer:
         self.document_lifecycle.import_existing_markdown(list(DOCS_DIR.glob("*.md")))
         self.index_lifecycle = IndexLifecycleService(self.database, self.document_lifecycle, INDEX_ROOT, self.invalidate_pipelines)
         self.feedback = FeedbackService(self.database)
-        self.evaluation = EvaluationService(self.database)
+        # 检索回调按需取自 mindgraph_pipeline（惰性：管线在 _init_mindgraph 之后才存在，
+        # 而这里只是传入工厂，execute 时才真正调用）。application 层不反向依赖 api 层。
+        self.evaluation = EvaluationService(self.database, mindgraph_retrieve=self._mindgraph_retrieve)
         self.governance = EvaluationGovernanceService(self.database)
         # M1：共享证据工具注册表（三个只读治理工具的统一执行面；
         # MCP tools/list 与 _call_tool 经它执行，后续 Assist/Task 通道复用）。
@@ -211,21 +213,59 @@ class ServiceContainer:
             )
         return self._mindgraph_pipelines[key]
 
+    def _mindgraph_retrieve(self, strategy: str, top_k: int, graph_enabled: bool = False):
+        """给 EvaluationService 用的检索回调工厂。
+
+        返回的闭包逐案例调用 ``pipeline.retrieve``。工厂本身不做任何 IO，
+        因此可以在 ``_init_mindgraph()`` 之前就把 EvaluationService 装配好。
+        """
+        pipeline = self.mindgraph_pipeline(top_k=top_k, graph_enabled=graph_enabled)
+        return lambda case: pipeline.retrieve(case["question"], strategy, graph_enabled=graph_enabled)
+
     def _register_builtin_datasets(self) -> None:
         path = self.root / "evaluation" / "datasets" / "expense_qa_v1.jsonl"
+        if path.exists():
+            cases = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+            for split, dataset_type in (("development", "development"), ("regression", "regression")):
+                dataset_id = f"expense_qa_{split}"
+                if not self.database.fetch_one("SELECT 1 FROM datasets WHERE dataset_id=? AND version=?", (dataset_id, "1.0.0")):
+                    self.governance.register_dataset(dataset_id, "1.0.0", dataset_type,
+                        f"Existing Milestone 1 {split} split", [item for item in cases if item["split"] == split],
+                        "approved", "Imported without changing fixed split labels")
+            if not self.database.fetch_one("SELECT 1 FROM datasets WHERE dataset_id='expense_qa_holdout' AND version='0.1.0'"):
+                self.governance.register_dataset("expense_qa_holdout", "0.1.0", "holdout",
+                    "Independent future validation; no cases supplied", [], "incomplete",
+                    "Structure only; no fabricated cases or labels")
+        self._register_mindgraph_golden_v2_datasets()
+
+    def _register_mindgraph_golden_v2_datasets(self) -> None:
+        """把 golden v2 登记进 datasets 表。
+
+        缺这一步，治理层（`/api/v1/governance/datasets`）对**线上评测集**是空的：
+        `expense_qa_v1` 之外的栈在 datasets 表里查不到，于是"数据集版本化"这条治理
+        能力覆盖不到与线上问答同源的那套集合。
+
+        注意与「默认入口」是两件事：`EvaluationRunCreate.dataset_name` 的默认值仍是
+        `expense_qa_v1`（改默认入口 = 改 API 行为，须单独授权）。这里只是让治理层
+        认得 golden v2，不影响不传名字的调用行为。
+        """
+        path = self.root / "evaluation" / "datasets" / "mindgraph_golden_v2.jsonl"
         if not path.exists():
             return
         cases = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        if not cases:
+            return
+        version = str(cases[0].get("dataset_version") or "unknown")
         for split, dataset_type in (("development", "development"), ("regression", "regression")):
-            dataset_id = f"expense_qa_{split}"
-            if not self.database.fetch_one("SELECT 1 FROM datasets WHERE dataset_id=? AND version=?", (dataset_id, "1.0.0")):
-                self.governance.register_dataset(dataset_id, "1.0.0", dataset_type,
-                    f"Existing Milestone 1 {split} split", [item for item in cases if item["split"] == split],
-                    "approved", "Imported without changing fixed split labels")
-        if not self.database.fetch_one("SELECT 1 FROM datasets WHERE dataset_id='expense_qa_holdout' AND version='0.1.0'"):
-            self.governance.register_dataset("expense_qa_holdout", "0.1.0", "holdout",
-                "Independent future validation; no cases supplied", [], "incomplete",
-                "Structure only; no fabricated cases or labels")
+            dataset_id = f"mindgraph_golden_v2_{split}"
+            if self.database.fetch_one("SELECT 1 FROM datasets WHERE dataset_id=? AND version=?", (dataset_id, version)):
+                continue
+            self.governance.register_dataset(
+                dataset_id, version, dataset_type,
+                f"MindGraph golden v2 {split} split (与线上检索栈同源；文档级 gold_vault_paths)",
+                [item for item in cases if item.get("split") == split],
+                "approved", "Imported from frozen golden v2 JSONL; labels unchanged",
+            )
 
     def pipeline(self, top_k: int):
         if top_k not in self._pipelines:
