@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pdf_fixture import build_pdf
 import pytest
 
 from application.document_lifecycle_service import DocumentLifecycleService
@@ -301,54 +302,13 @@ def test_finalize_records_chunk_count(database: ProductDatabase) -> None:
 
 # ── 真实 PDF 端到端 ───────────────────────────────────────────────────────
 
-def _build_pdf(page_texts: list[str]) -> bytes:
-    """生成最小多页 PDF（未压缩内容流）。空白页会被 PDFParser 判为 ocr_required。
-
-    对象号从 3 起：1 = Catalog，2 = Pages，其余按入列顺序编号。
-    """
-    objects: list[bytes] = []
-
-    def add(body: bytes) -> int:
-        objects.append(body)
-        return len(objects) + 2  # 1 与 2 预留给 Catalog / Pages
-
-    font_id = add(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
-    page_ids: list[int] = []
-    for text in page_texts:
-        content = f"BT /F1 12 Tf 72 720 Td ({text}) Tj ET".encode("latin-1")
-        content_id = add(b"<< /Length " + str(len(content)).encode() + b" >>\nstream\n"
-                         + content + b"\nendstream")
-        page_ids.append(add(
-            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
-            b"/Resources << /Font << /F1 " + str(font_id).encode() + b" 0 R >> >> "
-            b"/Contents " + str(content_id).encode() + b" 0 R >>"
-        ))
-
-    kids = b" ".join(str(pid).encode() + b" 0 R" for pid in page_ids)
-    bodies = [
-        b"<< /Type /Catalog /Pages 2 0 R >>",
-        b"<< /Type /Pages /Kids [" + kids + b"] /Count " + str(len(page_ids)).encode() + b" >>",
-        *objects,
-    ]
-    out = bytearray(b"%PDF-1.4\n")
-    offsets = []
-    for index, body in enumerate(bodies, start=1):
-        offsets.append(len(out))
-        out += str(index).encode() + b" 0 obj\n" + body + b"\nendobj\n"
-    xref_at = len(out)
-    out += b"xref\n0 " + str(len(bodies) + 1).encode() + b"\n0000000000 65535 f \n"
-    for offset in offsets:
-        out += f"{offset:010d} 00000 n \n".encode()
-    out += (b"trailer\n<< /Size " + str(len(bodies) + 1).encode()
-            + b" /Root 1 0 R >>\nstartxref\n" + str(xref_at).encode() + b"\n%%EOF\n")
-    return bytes(out)
-
+# 最小 PDF 生成器已抽到 pdf_fixture.build_pdf（test_ocr_enrichment 共用一份）
 
 
 def test_real_pdf_end_to_end(database: ProductDatabase) -> None:
     """真 PDF 兜底：验证 PDFParser.parse_pages 与状态机真的能配合工作。"""
     pytest.importorskip("pypdf")
-    pdf = _build_pdf(["page one travel reimbursement deadline policy text", "",
+    pdf = build_pdf(["page one travel reimbursement deadline policy text", "",
                      "page three client entertainment standard policy text"])
     from infrastructure.parsers import default_parser_registry
 

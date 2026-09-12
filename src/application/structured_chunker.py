@@ -72,7 +72,10 @@ class StructuredChunker:
                 chunks.append(StructuredChunk(child_chunk_id=child_id, parent_chunk_id=parent_id, document_id=document.document_id,
                     text=text, parent_text=parent_text, heading_path=elements[0].heading_path if elements else [],
                     page_start=min(pages) if pages else None, page_end=max(pages) if pages else None,
-                    clause_numbers=sorted({item.clause_number for item in elements if item.clause_number}),
+                    # 去重但**保序**：条款号是 "第十二条" / "1.10." 这类字符串，
+                    # 字典序不等于文档序（"第十一条" 会排到 "第二条" 前、"1.10." 会排到
+                    # "1.2." 前）——下游按这个列表读"这段落覆盖了哪几条"就会读错。
+                    clause_numbers=list(dict.fromkeys(item.clause_number for item in elements if item.clause_number)),
                     table_ids=sorted({item.table_id for item in elements if item.table_id}),
                     checksum=hashlib.sha256(text.encode()).hexdigest()))
                 if end == len(parent_text): break

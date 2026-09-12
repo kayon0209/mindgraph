@@ -48,6 +48,14 @@ powershell -ExecutionPolicy Bypass -File scripts\start-dev.ps1
 # 测试
 .\.venv\Scripts\python.exe -m pytest
 
+# 提交态复核（工作区绿 ≠ 提交可过）：在干净的 HEAD 工作树上再跑一次全量
+# 起因：曾把"消费方"提交了、实现留在未提交的工作区改动里，提交态 14 个测试
+# ImportError 全红，而本地工作区是绿的（同一失误已发生两次）。
+git worktree add --detach ..\_verify HEAD
+cd ..\_verify
+..\mindgraph\.venv\Scripts\python.exe -m pytest
+cd ..\mindgraph; git worktree remove --force ..\_verify
+
 # 当前 CI 的运行时致命错误 gate（全量 Ruff 债务见产品路线）
 .\.venv\Scripts\python.exe -m ruff check src scripts tests --select F821,F822,F823,E902
 
@@ -73,6 +81,9 @@ pnpm build
 5. 行为变更先写失败测试，再写实现；完成后运行相关测试与 lint。
 6. 不提交 `.env`、API Key、真实 Vault、真实企业资料或生成索引。
 7. 历史 Expense RAG 命名仅允许出现在迁移说明、历史文档和兼容代码中。
+8. 推送前必须在**提交态**（干净 worktree 上的 HEAD）跑一次全量测试：本地工作区
+   变绿只说明工作区自洽，不能说明这次提交自洽——消费方与实现分属两个提交时，
+   提交态会直接 ImportError 变红（见"常用命令"里的提交态复核）。
 
 ## 当前产品路线
 
