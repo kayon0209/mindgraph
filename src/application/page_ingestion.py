@@ -46,6 +46,11 @@ OCR_REQUIRED = "ocr_required"
 FAILED = "failed"
 CHUNKED = "chunked"
 
+# 终态说明：CHUNKED 无出边。同 document_id 的二次上传不可达——上游
+# create_version 有两层幂等先挡（(logical,version) 目录已存在 + 同内容
+# ConflictError）；不同内容/版本会产生新 document_id → 新 job。验收审查
+# P3 已枚举全部路径确认（tests/test_gate_coverage.py 同批审查）。
+
 JOB_TRANSITIONS: dict[str, set[str]] = {
     REGISTERED: {EXTRACTING, FAILED},
     EXTRACTING: {PARSED, OCR_REQUIRED, FAILED},
@@ -139,7 +144,30 @@ class PageIngestionService:
             return {"job_id": job_id, "status": FAILED, "attempt": attempt,
                     "requested_pages": requested, "processed_pages": [], "skipped_pages": [],
                     "paged_retry": paged, "failure_reason": f"{type(exc).__name__}: {exc}"}
+        return self._record_parsed(job_id, parsed, attempt, requested=requested, paged=paged)
 
+    def run_from_parsed(self, job_id: str, parsed, *, attempt: int | None = None) -> dict[str, Any]:
+        """用**已解析**的 ParsedDocument 记账（验收修复 P1）。
+
+        上传主路径必须用它：文档每份只解析一次，且记账的是**含 OCR 增补**
+        的最终产物——否则双重解析浪费延迟，且 OCR 已采纳的页会在页级账本
+        上仍记 ocr_required（状态分叉）。``run()`` 保留给"从原始字节重跑"
+        的场景（重试、独立工具）。
+
+        parser 元信息从 parsed 自身取；状态机与 ``run`` 完全一致。
+        """
+        job = self.get_job(job_id)
+        self._transition(job_id, EXTRACTING)
+        effective_attempt = int(attempt) if attempt is not None else int(job["attempt"]) + 1
+        self.database.execute(
+            "UPDATE ingestion_jobs SET attempt=?, parser_name=?, parser_version=?, updated_at=? WHERE job_id=?",
+            (effective_attempt, parsed.parser_name, parsed.parser_version, self._now(), job_id),
+        )
+        return self._record_parsed(job_id, parsed, effective_attempt, requested=None, paged=False)
+
+    def _record_parsed(self, job_id: str, parsed, attempt: int,
+                       *, requested: list[int] | None, paged: bool) -> dict[str, Any]:
+        """把解析产物落成页级账本（run / run_from_parsed 的公共尾部）。"""
         pages = self._group_by_page(parsed)
         total_pages = (parsed.metadata or {}).get("page_count")
         if requested is not None:

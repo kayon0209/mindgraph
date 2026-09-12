@@ -1,25 +1,24 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 import hashlib
 import json
-import re
-import uuid
-from datetime import datetime, timezone
 from pathlib import Path
+import re
 from typing import cast
+import uuid
 
 from application.access_control import note_acl_matches
-from domain.errors import ConflictError, NotFoundError, ValidationError
-from domain.models import AuthorityLevel, DocumentStatus, DocumentVersionModel
-from infrastructure.database import ProductDatabase, dumps, loads
-from infrastructure.parsers import default_parser_registry
 from application.ocr_enrichment import ocr_pages
 from application.page_ingestion import PageIngestionService
 from application.structured_chunker import StructuredChunker
-from infrastructure.ocr.base import OCRProvider
+from domain.errors import ConflictError, NotFoundError, ValidationError
+from domain.models import AuthorityLevel, DocumentStatus, DocumentVersionModel
+from infrastructure.database import ProductDatabase, dumps, loads
 from infrastructure.ocr import get_ocr_provider
+from infrastructure.ocr.base import OCRProvider
+from infrastructure.parsers import default_parser_registry
 from infrastructure.settings import get_settings
-
 
 TRANSITIONS = {
     "draft": {"pending_index", "parse_failed", "deleted"},
@@ -99,19 +98,23 @@ class DocumentLifecycleService:
             (target_dir / "parsed.json").write_text(parsed.model_dump_json(indent=2), encoding="utf-8")
             (target_dir / "chunks.json").write_text(json.dumps([item.model_dump(mode="json") for item in chunks], ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception as exc:
+            parsed = None  # 解析都没成功：页级记账走兜底路径（用 data 重解析以留痕）
             diagnostics = {"status": "failed", "failure_reason": f"{type(exc).__name__}: {exc}", "warnings": []}
             status = "parse_failed"
         # 页级摄取记录（PR-06）：把已算出的页级产物落库，供"失败在哪一页"与
         # "重试跳过成功页"查询。它是观测/恢复能力，**不是入库前置条件**：
         # 落库失败只进诊断，绝不允许让一次本可成功的上传失败。
         # OCR 报告只含统计信息（页数/置信度/耗时/失败原因），不含识别文本
+        # 验收修复 P1：记账复用（OCR 增补后的）parsed——每份文档只解析一次，
+        # 且 OCR 已采纳的页在页级账本上正确记 parsed（不再状态分叉）。
         if ocr_report is not None:
             diagnostics["ocr"] = ocr_report
         diagnostics["page_ingestion"] = self._record_page_ingestion(
             document_id=document_id, logical_id=logical_id, version=version,
             filename=filename, checksum=checksum, data=data, chunks=chunks,
+            parsed=parsed,
         )
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         record = DocumentVersionModel(document_id=document_id, logical_document_id=logical_id, version=version,
             title=Path(filename).stem, file_type=Path(filename).suffix.lower().lstrip("."), knowledge_category=category,
             authority_level=cast(AuthorityLevel, authority), effective_date=effective_date, expiration_date=expiration_date, status=cast(DocumentStatus, status),
@@ -153,12 +156,20 @@ class DocumentLifecycleService:
         return report["document"], report
 
     def _record_page_ingestion(self, *, document_id: str, logical_id: str, version: str, filename: str,
-                               checksum: str, data: bytes, chunks: list) -> dict:
-        """落页级摄取记录（PR-06）。**任何异常都吞掉**：它是观测能力，不该阻断入库。"""
+                               checksum: str, data: bytes, chunks: list, parsed=None) -> dict:
+        """落页级摄取记录（PR-06）。**任何异常都吞掉**：它是观测能力，不该阻断入库。
+
+        验收修复 P1：``parsed`` 非空时记账复用它（每份文档只解析一次，且含
+        OCR 增补结果）；仅当解析本身失败（parsed=None）才用 data 兜底重解析
+        ——那种场景需要的就是"留一份失败现场"。
+        """
         try:
             self.page_ingestion.register(document_id=document_id, logical_document_id=logical_id,
                                          version=version, filename=filename, checksum=checksum)
-            report = self.page_ingestion.run(document_id, data, filename)
+            if parsed is not None:
+                report = self.page_ingestion.run_from_parsed(document_id, parsed)
+            else:
+                report = self.page_ingestion.run(document_id, data, filename)
             if chunks:
                 self.page_ingestion.finalize(document_id, len(chunks))
             return {
@@ -175,7 +186,7 @@ class DocumentLifecycleService:
         record = self.get(document_id)
         if target not in TRANSITIONS.get(record.status, set()):
             raise ConflictError(f"Invalid document transition: {record.status} -> {target}")
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         if target == "active":
             # 同化旧版本与新状态必须原子，避免"双 active"中间态
             with self.database.transaction() as connection:

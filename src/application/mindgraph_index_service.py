@@ -221,6 +221,36 @@ class MindGraphIndexService:
                 extra={"index_version": version, "documents": len(current_keys)},
             )
 
+    def _chunking_gate(self, previous_version: str | None, version: str) -> None:
+        """P2 验收修复：CURRENT 改写前的切分口径门禁（与 m4 同源语义）。
+
+        只拦「切分口径变化」：mg 路径的文档增删是合法剪枝（扫描阶段物理
+        删除笔记），交由 _report_shrinkage 的 ERROR 告警承载，这里不重复拦。
+        首次构建（无 previous）与缺 manifest 的历史版本（不可比）不冒充判断。
+        """
+        if not previous_version:
+            return
+        from infrastructure.settings import get_settings
+
+        if not get_settings().INDEX_CONSISTENCY_GATE:
+            return
+        from application.index_snapshot import evaluate_activation_gate, load_snapshot
+
+        gate = evaluate_activation_gate(
+            load_snapshot(self.index_root, previous_version),
+            load_snapshot(self.index_root, version),
+            allow_document_removal=True,  # 文档删除走既有 shrinkage 告警，不在此拦
+        )
+        if not gate["blocked"]:
+            return
+        from domain.errors import IndexConsistencyError
+
+        raise IndexConsistencyError(
+            "MindGraph 索引的切分口径发生变化，已拒绝激活（改口径需重建评测基线）："
+            + "; ".join(gate["reasons"]),
+            detail={"gate": {k: gate[k] for k in ("reasons", "warnings")}},
+        )
+
     # ------------------------------------------------------------------ #
     # embedding 缓存（按 chunk 正文 checksum）
     # ------------------------------------------------------------------ #
@@ -348,6 +378,10 @@ class MindGraphIndexService:
             # 被删除的笔记，所以缩小可能是合法的——但它必须可见，不能像 m3- 那条路径
             # 一样在无人知晓的情况下把语料换小。
             self._report_shrinkage(previous, chunks, version)
+            # P2 验收修复：切分口径门禁（与 m4 同源）。mg 是 09-11 事故路径之一，
+            # 但其文档删除是合法剪枝——因此这里只拦「口径变化」，文档增删交由
+            # _report_shrinkage 的 ERROR 告警（不阻断）承载。
+            self._chunking_gate(previous, version)
             self._activate(version)
             if self.on_activated is not None:
                 try:
