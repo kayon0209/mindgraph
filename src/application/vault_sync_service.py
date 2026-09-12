@@ -19,6 +19,7 @@ import re
 from typing import Any, NamedTuple
 import uuid
 
+from domain.source_ownership import SourceOwnershipError
 from infrastructure.database import ProductDatabase
 from infrastructure.markdown_frontmatter import inject_mindgraph_id, parse_frontmatter
 
@@ -215,6 +216,7 @@ class VaultSyncService:
     def scan_vault(self, *, prune_missing: bool = True) -> VaultScanResult:
         if not self.vault_path.exists() or not self.vault_path.is_dir():
             raise ValueError(f"Vault path is not a directory: {self.vault_path}")
+        self._raise_on_source_conflicts()
         scanned: list[ScannedNote] = []
         skipped: list[str] = []
         errors: list[str] = []
@@ -234,6 +236,9 @@ class VaultSyncService:
                 note = self._process_file(path, now, seen_ids)
                 if note is not None:
                     scanned.append(note)
+            except SourceOwnershipError:
+                # Ownership conflicts must abort the complete sync.
+                raise
             except Exception as exc:  # 单文件失败不影响整体
                 errors.append(f"{path.relative_to(self.vault_path)}: {exc}")
 
@@ -243,6 +248,35 @@ class VaultSyncService:
         if prune_missing and not errors:
             pruned = self._prune_missing({n.vault_path for n in scanned})
         return VaultScanResult(scanned, skipped, errors, pruned)
+
+    def _raise_on_source_conflicts(self) -> None:
+        """Reject known note ownership conflicts before mutating any note."""
+        seen_ids: set[str] = set()
+        for path in sorted(self.vault_path.rglob("*")):
+            if not path.is_file() or path.suffix.lower() not in SUPPORTED_SUFFIXES:
+                continue
+            if self._is_ignored(path):
+                continue
+            try:
+                raw = path.read_text(encoding="utf-8")
+                fm, _, _ = parse_frontmatter(raw)
+            except Exception:
+                continue
+
+            source_rel = path.relative_to(self.vault_path).as_posix()
+            declared_id = fm.get("mindgraph_id")
+            if declared_id:
+                note_id = str(declared_id)
+            elif self.id_namespace:
+                note_id = uuid.uuid5(uuid.NAMESPACE_URL, f"{self.id_namespace}:{source_rel}").hex
+            else:
+                continue
+            if note_id in seen_ids:
+                continue
+            seen_ids.add(note_id)
+            existing = self.db.fetch_one("SELECT source_id FROM notes WHERE note_id=?", (note_id,))
+            if existing is not None and existing["source_id"] != self.source_id:
+                raise SourceOwnershipError("note_source_conflict")
 
     def _process_file(self, path: Path, now: str, seen_ids: dict[str, Path]) -> ScannedNote | None:
         source_rel = path.relative_to(self.vault_path).as_posix()
@@ -339,6 +373,9 @@ class VaultSyncService:
         access_meta: AccessMetadata,
         now: str,
     ) -> None:
+        existing = self.db.fetch_one("SELECT source_id FROM notes WHERE note_id=?", (note_id,))
+        if existing is not None and existing["source_id"] != self.source_id:
+            raise SourceOwnershipError("note_source_conflict")
         self.db.execute(
             self._UPSERT,
             (

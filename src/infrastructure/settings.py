@@ -9,6 +9,7 @@ from functools import lru_cache
 import logging
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
 
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -16,6 +17,16 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 logger = logging.getLogger(__name__)
+
+
+def _known_openai_compatible_backend(base_url: str) -> Literal["gitee", "deepseek"] | None:
+    """Infer a backend only from a recognized official hostname."""
+    host = (urlparse(base_url).hostname or "").lower()
+    if host == "ai.gitee.com" or host.endswith(".ai.gitee.com"):
+        return "gitee"
+    if host == "deepseek.com" or host.endswith(".deepseek.com"):
+        return "deepseek"
+    return None
 
 
 class Settings(BaseSettings):
@@ -225,19 +236,23 @@ class Settings(BaseSettings):
         2. 若 ``CHAT_PROVIDER`` 是已弃用别名且与槽名不一致，改写为槽名（避免旧
            ``.env`` 因注册表按名路由而突然起不来），同时告警。
         """
-        slot_name = self.OPENAI_COMPAT_PROVIDER_NAME
-        base_host = self.OPENAI_COMPAT_BASE_URL.split("//")[-1].split("/")[0].lower()
-        if "deepseek" in slot_name.lower() and "deepseek" not in base_host:
+        slot_name = self.OPENAI_COMPAT_PROVIDER_NAME.strip().lower()
+        base_host = (urlparse(self.OPENAI_COMPAT_BASE_URL).hostname or "").lower()
+        inferred_backend = _known_openai_compatible_backend(self.OPENAI_COMPAT_BASE_URL)
+        if inferred_backend is not None and slot_name != inferred_backend:
             logger.warning(
                 "chat_provider_label_mismatch",
                 extra={
                     "provider_name": slot_name,
                     "base_url_host": base_host,
                     "model": self.OPENAI_COMPAT_MODEL,
-                    "hint": "provider 名应与真实后端一致，否则评测记录会标错来源",
+                    "effective": inferred_backend,
+                    "hint": "provider 名与真实后端一致，否则评测记录会标错来源",
                 },
             )
-        if self.CHAT_PROVIDER == "deepseek" and slot_name != "deepseek":
+            self.OPENAI_COMPAT_PROVIDER_NAME = inferred_backend
+            slot_name = inferred_backend
+        if self.CHAT_PROVIDER in {"deepseek", "gitee"} and self.CHAT_PROVIDER != slot_name:
             logger.warning(
                 "chat_provider_alias_deprecated",
                 extra={"configured": self.CHAT_PROVIDER, "effective": slot_name},

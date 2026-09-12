@@ -24,7 +24,6 @@ from statistics import fmean
 from typing import Any
 import unicodedata
 
-
 REFUSAL_STATES = {"insufficient_evidence", "out_of_scope", "conflicting_evidence"}
 ANSWER_METRICS = (
     "citation_correctness",
@@ -286,7 +285,7 @@ def evaluate_answer_case(case: dict[str, Any], prediction: dict[str, Any]) -> di
     cited_paths = {
         item.get("vault_path")
         for item in citations
-        if item.get("final_rank") in cited_ranks and item.get("vault_path")
+        if _citation_ranks([item]) & cited_ranks and item.get("vault_path")
     }
     offered_paths = {item.get("vault_path") for item in citations if item.get("vault_path")}
 

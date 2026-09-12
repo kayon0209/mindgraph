@@ -190,6 +190,7 @@ class ChatRequest(BaseModel):
     conversation_id: str | None = Field(default=None, max_length=100)
     query_date: str | None = None
     knowledge_categories: list[str] = Field(default_factory=list, max_length=10)
+    source_ids: list[str] = Field(default_factory=list, max_length=20)
     include_historical: bool = False
     graph_enabled: bool = False
     # 调用方可显式声明问题类型以驱动路由（计划 3.3）：

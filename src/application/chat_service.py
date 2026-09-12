@@ -147,6 +147,8 @@ class ChatService:
         kwargs: dict[str, Any] = {}
         if access_scope is not None and "access_scope" in parameters:
             kwargs["access_scope"] = access_scope
+        if "source_ids" in parameters:
+            kwargs["source_ids"] = request.source_ids
         effective_query_date = (decision.filters or {}).get("effective_at") or request.query_date
         mode, variants, reason = self._merge_query_variants(decision, request)
 

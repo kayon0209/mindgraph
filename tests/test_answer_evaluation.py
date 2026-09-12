@@ -90,6 +90,32 @@ def test_answered_case_without_any_citation_marker_is_penalized() -> None:
     assert "citation_mismatch" in result["failures"]
 
 
+def test_citation_id_only_prediction_maps_the_cited_path() -> None:
+    """A citation-id-only prediction must map its marker to the cited path."""
+    citation = _citation("policies/current.md", effective_from="2026-07-01")
+    citation["citation_id"] = "citation-1"
+    result = evaluate_answer_case(
+        {
+            "case_id": "citation-id-only",
+            "expected_behavior": "answer",
+            "evaluation_date": "2026-08-18",
+            "gold_vault_paths": ["policies/current.md"],
+            "historical_vault_paths": [],
+            "required_facts": [],
+            "forbidden_facts": [],
+        },
+        {
+            "result_state": "answered",
+            "answer": "结论 [citation-1]。",
+            "citations": [citation],
+        },
+    )
+
+    assert result["citation_correctness"] == 1.0
+    assert result["citation_precision"] == 1.0
+    assert result["citation_recall"] == 1.0
+
+
 def test_unused_offered_evidence_is_not_a_marker_defect() -> None:
     """Catches 把「检索到但未引用」判成引用标注缺陷（v1 的口径错误）。
 

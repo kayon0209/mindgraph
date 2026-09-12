@@ -54,7 +54,7 @@ def test_subtrees_are_reported_when_skipped(tmp_path):
     assert len(events) == 1
     event = events[0]
     assert event.scanned_top_level_files == 1
-    assert event.unscanned_subtrees == {"policies": 2, "external\\public": 1}
+    assert event.unscanned_subtrees == {"policies": 2, "external/public": 1}
 
 
 def test_no_warning_when_everything_is_top_level(tmp_path):

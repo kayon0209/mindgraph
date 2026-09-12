@@ -261,6 +261,45 @@ def test_request_graph_hops_is_forwarded_to_graph_capable_pipeline(tmp_path) -> 
     assert pipeline.calls[0]["graph_enabled"] is True
 
 
+def test_request_source_ids_are_forwarded_to_source_capable_pipeline(tmp_path) -> None:
+    """Source isolation must flow from the request into retrieval."""
+    database = ProductDatabase(tmp_path / "product.sqlite3")
+    database.initialize()
+
+    class _SourceCapturingPipeline(_CapturingPipeline):
+        def retrieve(
+            self,
+            query,
+            strategy,
+            query_date=None,
+            categories=None,
+            include_historical=False,
+            graph_enabled=None,
+            access_scope=None,
+            graph_hops=None,
+            source_ids=None,
+        ):
+            trace = super().retrieve(
+                query,
+                strategy,
+                query_date,
+                categories,
+                include_historical,
+                graph_enabled,
+                access_scope,
+                graph_hops,
+            )
+            self.calls[-1]["source_ids"] = source_ids
+            return trace
+
+    pipeline = _SourceCapturingPipeline()
+    service = ChatService(database, lambda _top_k: pipeline, _Provider())
+
+    service.answer(ChatRequest(question="只查公开手册", source_ids=["external/public"]))
+
+    assert pipeline.calls[0]["source_ids"] == ["external/public"]
+
+
 def test_graph_default_enabled_flag_opens_server_side_graph_route(tmp_path) -> None:
     """计划 Phase 5 闸门消费方：GRAPH_DEFAULT_ENABLED=true 时服务端默认允许图路由。"""
     database = ProductDatabase(tmp_path / "product.sqlite3")
@@ -280,4 +319,3 @@ def test_graph_default_enabled_flag_opens_server_side_graph_route(tmp_path) -> N
     pipeline.calls.clear()
     service.answer(ChatRequest(question="无发票例外和冲突时适用哪个？", graph_enabled=False))
     assert pipeline.calls[0]["graph_enabled"] is True
-

@@ -104,7 +104,7 @@ def _warn_about_unscanned_subtrees(
             continue
         if len(rel.parts) < 2:
             continue  # 顶层文件已被非递归 glob 覆盖
-        key = str(rel.parent)
+        key = rel.parent.as_posix()
         unscanned[key] = unscanned.get(key, 0) + 1
     if not unscanned:
         return

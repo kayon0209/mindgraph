@@ -199,6 +199,36 @@ def test_syncing_second_connector_does_not_delete_first_source(tmp_path: Path):
     assert [row["note_id"] for row in rows] == ["note-a", "note-b"]
 
 
+def test_second_connector_cannot_take_over_an_existing_note_id(tmp_path: Path):
+    """A duplicate ID from another source must fail without partial writes."""
+    database = ProductDatabase(tmp_path / "product.sqlite3")
+    database.initialize()
+    source_a = _make_single_note_source(tmp_path, "source-a", "shared-note")
+    source_b = _make_single_note_source(tmp_path, "source-b", "shared-note")
+    (source_b / "a-new.md").write_text(
+        "---\nmindgraph_id: source-b-new\n---\n# New note\nMust not be partially synced.\n",
+        encoding="utf-8",
+    )
+    service = DirectoryConnectorService(
+        database,
+        tmp_path,
+        index_service=None,
+        allowed_roots=(tmp_path,),
+    )
+
+    _sync_real(service, source_a, connector_id="connector-a")
+    dry_run = service.sync(source_b, connector_id="connector-b", dry_run=True)
+    assert dry_run["audit_status"] == "clean"
+
+    with pytest.raises(ValueError, match="note_source_conflict"):
+        service.sync(source_b, connector_id="connector-b", dry_run=False)
+
+    note = database.fetch_one("SELECT source_id, source_path FROM notes WHERE note_id='shared-note'")
+    assert note["source_id"] == "connector-a"
+    assert note["source_path"].startswith("connector-a/")
+    assert database.fetch_one("SELECT COUNT(*) AS count FROM notes WHERE source_id='connector-b'")["count"] == 0
+
+
 def test_connector_sync_does_not_modify_source_markdown(tmp_path: Path):
     """External connector identity belongs in MindGraph, not source files."""
     database = ProductDatabase(tmp_path / "product.sqlite3")
