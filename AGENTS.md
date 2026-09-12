@@ -52,6 +52,13 @@ powershell -ExecutionPolicy Bypass -File scripts\start-dev.ps1
 # 起因：曾把"消费方"提交了、实现留在未提交的工作区改动里，提交态 14 个测试
 # ImportError 全红，而本地工作区是绿的（同一失误已发生两次）。
 git worktree add --detach ..\_verify HEAD
+# 运行期数据（data/ 被 gitignore）不会随 worktree 检出：缺了它，
+# test_evaluation_v2_migration / test_index_root_registry / test_freeze_baseline
+# 会以 "No index version under data/mindgraph_indexes is compatible…" 报 14 个
+# **假失败**——那不是代码问题，是索引根不存在。必须先把两套索引根复制过去
+# （复制而非软链：避免测试把结果写回主工作区）：
+xcopy /E /I /Y data\mindgraph_indexes ..\_verify\data\mindgraph_indexes
+xcopy /E /I /Y data\retrieval_indexes ..\_verify\data\retrieval_indexes
 cd ..\_verify
 ..\mindgraph\.venv\Scripts\python.exe -m pytest
 cd ..\mindgraph; git worktree remove --force ..\_verify
