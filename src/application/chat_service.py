@@ -246,6 +246,16 @@ class ChatService:
         return any(term in lowered for term in OUT_OF_SCOPE)
 
     @staticmethod
+    def _attach_reasoning(result: AnswerResult, parts: list[str]) -> None:
+        """P1：把思考模型的 reasoning 原文挂到 trace 上（审计面）。
+
+        只在真有思考流时写。没有思考流的模型保持 ``None`` 而不是空串——
+        「没思考」与「思考了但内容为空」是两件事，报表里不能长得一样。
+        """
+        if parts and result.retrieval_trace is not None:
+            result.retrieval_trace.reasoning_text = "".join(parts)
+
+    @staticmethod
     def _trace_model(trace) -> RetrievalTraceModel:
         payload = trace.to_dict()
         # 权限侧信道修正（审查发现）：applied_filters.access_scope 携带主体的
@@ -556,9 +566,15 @@ class ChatService:
         else:
             yield event("generation_started", {"stream_mode": "provider_native"})
             text_parts, usage, first_delta = [], UsageMetrics(), None
+            reasoning_parts: list[str] = []
             generation_start = time.perf_counter()
             try:
                 for item in provider.stream(self._messages(request.question, citations, trace.graph_links if trace else None)):
+                    if item.get("reasoning"):
+                        # 思考流（P1）：单独事件类型透传，不混入答案正文；
+                        # generation_started 后的死寂期（思考阶段）由此可见。
+                        reasoning_parts.append(item["reasoning"])
+                        yield event("reasoning_delta", {"text": item["reasoning"], "stream_mode": "provider_native"})
                     if item.get("delta"):
                         if first_delta is None:
                             first_delta = (time.perf_counter() - started) * 1000
@@ -573,6 +589,7 @@ class ChatService:
                     degraded=trace.degraded, degradation_reason=trace.degradation_reason, model=provider.model_name,
                     requested_provider=request.chat_provider or provider.provider_name, actual_provider=provider.provider_name,
                     index_version=trace.index_version)
+                self._attach_reasoning(result, reasoning_parts)
             except Exception as exc:
                 reason = getattr(exc, "code", "provider_error")
                 yield event("degraded", {"reason": reason, "actual_strategy": trace.actual_strategy})
@@ -584,6 +601,8 @@ class ChatService:
                     actual_strategy=trace.actual_strategy, degraded=True, degradation_reason=reason, model=provider.model_name,
                     requested_provider=request.chat_provider or provider.provider_name, actual_provider=provider.provider_name,
                     index_version=trace.index_version)
+                # 失败路径也留思考原文：生成中途炸掉时，「模型想到哪儿了」正是诊断依据。
+                self._attach_reasoning(result, reasoning_parts)
         self._persist(result, principal)
         yield event("citations", {"citations": [item.model_dump(mode="json") for item in citations]})
         yield event("usage", result.usage.model_dump(mode="json"))

@@ -22,8 +22,8 @@ from domain.models import ErrorCode, ResultState, error_code_for_result_state
 
 
 def test_sse_event_names_are_frozen():
-    # 既有 14 个事件 + M2 agent-assist 6 个新事件（flag 门控，默认关闭不产出；
-    # 旧客户端按契约忽略未知事件名）
+    # 既有 14 个事件 + P1 reasoning_delta + M2 agent-assist 6 个新事件
+    #（flag 门控，默认关闭不产出；旧客户端按契约忽略未知事件名）
     assert SSE_EVENT_NAMES == (
         "request_started",
         "scope_check_completed",
@@ -34,6 +34,7 @@ def test_sse_event_names_are_frozen():
         "degraded",
         "policy_conflict_detected",
         "generation_started",
+        "reasoning_delta",
         "answer_delta",
         "citations",
         "usage",
@@ -46,13 +47,17 @@ def test_sse_event_names_are_frozen():
         "loop_fell_back",
         "citation_integrity_checked",
     )
-    assert len(SSE_EVENT_NAMES) == 20
+    assert len(SSE_EVENT_NAMES) == 21
     assert len(set(SSE_EVENT_NAMES)) == len(SSE_EVENT_NAMES)
 
 
 def test_sse_event_names_split_by_generation():
-    """基线 14 事件与 M2 新 6 事件的分界冻结：assist 事件只增不改。"""
-    assert SSE_EVENT_NAMES[:14] == (
+    """基线 14 事件与 M2 新 6 事件的分界冻结：assist 事件只增不改。
+
+    P1 修复：reasoning_delta 插在 generation_started 之后（基线 15）——
+    思考流与答案正文同段产出，早于 citations/usage/completed 收尾。
+    """
+    assert SSE_EVENT_NAMES[:15] == (
         "request_started",
         "scope_check_completed",
         "retrieval_routed",
@@ -62,13 +67,14 @@ def test_sse_event_names_split_by_generation():
         "degraded",
         "policy_conflict_detected",
         "generation_started",
+        "reasoning_delta",
         "answer_delta",
         "citations",
         "usage",
         "completed",
         "error",
     )
-    assert set(SSE_EVENT_NAMES[14:]) == {
+    assert set(SSE_EVENT_NAMES[15:]) == {
         "plan_created",
         "tool_call_started",
         "tool_call_finished",
