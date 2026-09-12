@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from index_data_hint import runtime_data_hint
 import pytest
 
 from application.index_metadata import (
@@ -47,8 +48,8 @@ def test_registry_is_not_empty_and_names_are_unique() -> None:
 def test_every_registered_root_exists_on_disk() -> None:
     for spec in INDEX_ROOT_REGISTRY:
         root = PROJECT_ROOT / spec.root
-        assert root.is_dir(), f"登记的根不存在：{spec.root}"
-        assert (root / "CURRENT").is_file(), f"{spec.root} 没有 CURRENT"
+        assert root.is_dir(), f"登记的根不存在：{spec.root}{runtime_data_hint()}"
+        assert (root / "CURRENT").is_file(), f"{spec.root} 没有 CURRENT{runtime_data_hint()}"
 
 
 def test_every_registered_dataset_exists_on_disk() -> None:
@@ -68,7 +69,7 @@ def test_root_label_set_intersects_its_dataset(spec) -> None:
     labels, version, chunk_count = index_label_set(PROJECT_ROOT / spec.root, spec.label_key)
     gold = dataset_gold_labels(DATASET_DIR / spec.dataset, spec.label_key)
 
-    assert version, f"{spec.root} 没有可读的 CURRENT"
+    assert version, f"{spec.root} 没有可读的 CURRENT{runtime_data_hint()}"
     assert chunk_count > 0, f"{spec.root} 的活跃索引为空"
     assert labels, f"{spec.root} 没读出任何 {spec.label_key} 标签"
     assert gold, f"{spec.dataset} 没读出任何 gold 标签（字段：{spec.label_key}）"
@@ -99,7 +100,7 @@ def test_index_root_spec_rejects_unknown_name() -> None:
 
 def test_binding_report_marks_every_root_ok() -> None:
     report = index_root_binding_report(PROJECT_ROOT)
-    assert report["binding_ok"] is True
+    assert report["binding_ok"] is True, f"{report}{runtime_data_hint()}"
     assert {entry["name"] for entry in report["roots"]} == {
         spec.name for spec in INDEX_ROOT_REGISTRY
     }
@@ -123,7 +124,7 @@ def test_legacy_and_online_label_spaces_do_not_intersect() -> None:
     labels, _, _ = index_label_set(production_root, "chunk_id")
     gold = dataset_gold_labels(DATASET_DIR / LEGACY_DATASET, "chunk_id")
 
-    assert labels, "线上根没读出 chunk_id 标签，本断言的证据链不成立"
+    assert labels, f"线上根没读出 chunk_id 标签，本断言的证据链不成立{runtime_data_hint()}"
     assert gold, f"{LEGACY_DATASET} 没读出 gold_chunk_ids，本断言的证据链不成立"
     assert not (labels & gold), (
         "线上根竟然与 expense_qa_v1 的 gold chunk_id 有交集 —— "
@@ -137,6 +138,8 @@ def test_golden_v2_labels_absent_from_legacy_root() -> None:
     labels, _, _ = index_label_set(legacy_root, "vault_path")
     gold = dataset_gold_labels(DATASET_DIR / GOLDEN_V2_DATASET, "vault_path")
 
+    # 少了这一句，缺数据时 labels 为空会让下面的"交集为 0"**空集自动成立**（假绿）。
+    assert labels, f"历史评测根没读出 vault_path 标签，本断言的证据链不成立{runtime_data_hint()}"
     assert gold, f"{GOLDEN_V2_DATASET} 没读出 gold_vault_paths"
     assert not (labels & gold), (
         "历史评测根出现了 golden v2 的 vault_path —— 两栈开始共享标签空间，需重新评估"

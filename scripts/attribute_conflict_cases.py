@@ -31,6 +31,7 @@ for _path in (str(_ROOT), str(_ROOT / "src")):
         sys.path.insert(0, _path)
 
 from evaluation.conflict_attribution import attribute_all  # noqa: E402
+from infrastructure.sqlite_runtime import require_safe_sqlite_runtime  # noqa: E402
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB = PROJECT_ROOT / "data" / "product" / "product.sqlite3"
@@ -41,7 +42,13 @@ def load_policy_versions(db_path: Path) -> dict[str, list[dict]]:
 
     系统侧（``PolicyConflictService.find_for_policy_keys``）查的就是这张表，
     归因若用另一批数据就会失真。
+
+    连库前先过 fail-closed 运行时门禁：本脚本是唯一默认直连
+    ``data/product/product.sqlite3`` 的脚本，不用守卫就成了全仓唯一的例外
+    （另外 5 处直连：``backup.py``/``run_backup_restore_drill.py``/``seed_relations.py``
+    都调了 ``require_safe_sqlite_runtime()``）。例外留着会被复制扩散。
     """
+    require_safe_sqlite_runtime()
     connection = sqlite3.connect(str(db_path))
     connection.row_factory = sqlite3.Row
     try:

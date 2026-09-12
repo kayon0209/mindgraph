@@ -526,6 +526,17 @@ class EvaluationService:
             if score > best_score:
                 best_version, best_score = directory.name, score
         if gold and best_score[0] == 0:
+            # 两种原因必须分开说：① 根/数据集确实分属两套语料（真缺陷，要改配置或根）；
+            # ② 根压根不存在（data/ 被 gitignore，干净检出 / 未 provision 的 CI 都这样）。
+            # 合并成一句话会把人往代码方向带——2026-09-12 实测被带偏 4 次。
+            if not (index_root / "CURRENT").is_file():
+                raise ValueError(
+                    f"No index version under data/{spec.index_root} is compatible with dataset "
+                    f"{spec.name!r}: 该索引根不存在或没有 CURRENT（{index_root}）。data/ 被 "
+                    ".gitignore 忽略，干净 worktree 与未 provision 的 CI 都不会检出它——"
+                    "**先确认运行期数据是否已复制过去**（见 AGENTS.md「提交态复核」），"
+                    "再怀疑数据集与索引根分属两套语料"
+                )
             raise ValueError(
                 f"No index version under data/{spec.index_root} is compatible with dataset "
                 f"{spec.name!r} (label_key={spec.label_key!r}); the dataset and the index root "

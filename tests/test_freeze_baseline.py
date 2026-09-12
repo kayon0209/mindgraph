@@ -17,6 +17,7 @@ import subprocess
 import sys
 from typing import Any
 
+from index_data_hint import runtime_data_hint
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -561,4 +562,9 @@ def test_freeze_baseline_declares_index_root_and_exposes_both_roots(
     # 权威根必须与名义上的另一个根指向不同版本——相同就意味着索引根已收敛，
     # 那时 index_root_policy 与已知边界说明都要重写。
     others = [e for e in index["known_roots"] if e["label"] != "authoritative_for_this_baseline"]
-    assert all(entry["version"] != index["version"] for entry in others)
+    # 裸断言会把「两个根都读不到版本（None == None）」说成「两个根版本收敛了」，
+    # 方向完全相反 —— 带上实际取值与运行期数据诊断。
+    assert all(entry["version"] != index["version"] for entry in others), (
+        f"非权威根与基线版本相同：{[(e['root'], e['version']) for e in others]}，"
+        f"基线版本 {index['version']!r}{runtime_data_hint()}"
+    )

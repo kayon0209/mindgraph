@@ -371,3 +371,54 @@ def test_golden_v2_is_registered_into_governance(db_stub) -> None:
     assert db_stub.fetch_one(
         "SELECT COUNT(*) AS total FROM datasets"
     )["total"] == 2
+
+
+# ── 6. 报错自解释：索引根缺失与标签不兼容必须分开说 ───────────────────────────
+# 背景（2026-09-12）：干净 worktree 缺 data/（被 gitignore）时，旧报错
+# "No index version ... must belong to the same evaluation stack" 把人往代码方向带
+# （实测被带偏 4 次）。现在两种原因分成两条消息，这里守住"不合并回去"。
+
+
+def _spec(name: str = "mindgraph_golden_v2") -> Any:
+    spec, _ = resolve_dataset(name)
+    return spec
+
+
+def test_missing_index_root_reports_missing_runtime_data_not_incompatible_stack(
+    service: EvaluationService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """索引根不存在（干净 worktree / 未 provision 的 CI）→ 指向运行期数据，不是代码。"""
+    monkeypatch.setattr(evaluation_service_module, "ROOT", tmp_path)
+    monkeypatch.setattr(
+        evaluation_service_module, "load_dataset_cases",
+        lambda spec: [{"gold_vault_paths": ["制度/差旅.md"]}],
+    )
+    root = tmp_path / "data" / "mindgraph_indexes"  # 故意不建 CURRENT
+    with pytest.raises(ValueError) as excinfo:
+        service._compatible_index_version(_spec(), None)
+    message = str(excinfo.value)
+    assert "该索引根不存在或没有 CURRENT" in message
+    assert "运行期数据" in message
+    assert ".gitignore" in message
+    assert str(root) in message
+    assert "must belong to the same evaluation stack" not in message
+
+
+def test_incompatible_labels_still_report_the_evaluation_stack_mismatch(
+    service: EvaluationService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """根存在但标签与数据集零重叠 → 保留原判词，别误报"数据没复制"。"""
+    monkeypatch.setattr(evaluation_service_module, "ROOT", tmp_path)
+    monkeypatch.setattr(
+        evaluation_service_module, "load_dataset_cases",
+        lambda spec: [{"gold_vault_paths": ["制度/差旅.md"]}],
+    )
+    version_dir = tmp_path / "data" / "mindgraph_indexes" / "v-other"
+    version_dir.mkdir(parents=True)
+    (tmp_path / "data" / "mindgraph_indexes" / "CURRENT").write_text("v-other\n", encoding="utf-8")
+    (version_dir / "chunks.json").write_text(
+        '[{"chunk_id": "c1", "metadata": {"title": "考勤", "path": "制度/考勤.md"}}]',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="must belong to the same evaluation stack"):
+        service._compatible_index_version(_spec(), None)
