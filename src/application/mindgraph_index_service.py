@@ -221,12 +221,15 @@ class MindGraphIndexService:
                 extra={"index_version": version, "documents": len(current_keys)},
             )
 
-    def _chunking_gate(self, previous_version: str | None, version: str) -> None:
+    def _chunking_gate(self, previous_version: str | None, version: str, *, force: bool = False) -> None:
         """P2 验收修复：CURRENT 改写前的切分口径门禁（与 m4 同源语义）。
 
         只拦「切分口径变化」：mg 路径的文档增删是合法剪枝（扫描阶段物理
         删除笔记），交由 _report_shrinkage 的 ERROR 告警承载，这里不重复拦。
         首次构建（无 previous）与缺 manifest 的历史版本（不可比）不冒充判断。
+
+        ``force=True`` 显式放行（与 m3/m4 的 force 同语义）：换口径=换 chunk
+        命名空间=已公布指标失效，必须是人的决策。409 文案带重试指引。
         """
         if not previous_version:
             return
@@ -234,6 +237,8 @@ class MindGraphIndexService:
 
         if not get_settings().INDEX_CONSISTENCY_GATE:
             return
+        if force:
+            return  # 显式放行：调用方已见过 409 并确认
         from application.index_snapshot import evaluate_activation_gate, load_snapshot
 
         gate = evaluate_activation_gate(
@@ -246,9 +251,12 @@ class MindGraphIndexService:
         from domain.errors import IndexConsistencyError
 
         raise IndexConsistencyError(
-            "MindGraph 索引的切分口径发生变化，已拒绝激活（改口径需重建评测基线）："
-            + "; ".join(gate["reasons"]),
-            detail={"gate": {k: gate[k] for k in ("reasons", "warnings")}},
+            "MindGraph 索引的切分口径发生变化，已拒绝激活（改口径会使已公布的检索指标失效，需重跑评测基线）："
+            + "; ".join(gate["reasons"])
+            + "；确认要切换请带 force=true 重试",
+            detail={"reasons": gate["reasons"], "report": {
+                "chunking_changed": True,  # 本门禁只拦口径变化，reasons 必含 chunking_changed
+            }},
         )
 
     # ------------------------------------------------------------------ #
@@ -380,8 +388,9 @@ class MindGraphIndexService:
             self._report_shrinkage(previous, chunks, version)
             # P2 验收修复：切分口径门禁（与 m4 同源）。mg 是 09-11 事故路径之一，
             # 但其文档删除是合法剪枝——因此这里只拦「口径变化」，文档增删交由
-            # _report_shrinkage 的 ERROR 告警（不阻断）承载。
-            self._chunking_gate(previous, version)
+            # _report_shrinkage 的 ERROR 告警（不阻断）承载。build 的 force
+            # 是显式逃生口（换口径=指标失效，须是人的决策）。
+            self._chunking_gate(previous, version, force=force)
             self._activate(version)
             if self.on_activated is not None:
                 try:

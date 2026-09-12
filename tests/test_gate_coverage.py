@@ -78,6 +78,8 @@ def test_mg_blocks_policy_switch_before_activate(db: ProductDatabase, tmp_path: 
     assert current_file.read_text(encoding="utf-8").strip() == first["index_version"]
 
     # 换切分策略（不同参数）→ 同一批笔记重建 → 激活必须被门禁拒绝
+    #（P2 后 force=True 是显式逃生口——不带 force 的默认构建才被拦）
+    db.execute("UPDATE notes SET index_status='pending'")  # 让重建真的执行
     probe = cp.ChunkingPolicy(name="probe_v2", version="1", child_size=90, parent_size=2000, overlap=10)
     monkeypatch.setitem(cp._PRESETS, "probe_v2", probe)
     monkeypatch.setenv("CHUNKING_POLICY", "probe_v2")
@@ -85,7 +87,7 @@ def test_mg_blocks_policy_switch_before_activate(db: ProductDatabase, tmp_path: 
     try:
         service = _mg_service(db, vault, index_root)  # 新实例读新 policy
         with pytest.raises(Exception, match="chunking|口径"):
-            service.build(force=True)
+            service.build()  # 默认（无 force）：必须拦
         # CURRENT 仍指向旧版本（门禁在改写之前拦截）
         assert current_file.read_text(encoding="utf-8").strip() == first["index_version"]
     finally:

@@ -313,3 +313,92 @@ def test_gate_can_be_disabled_by_flag(tmp_path: Path, monkeypatch: pytest.Monkey
     get_settings.cache_clear()
     indexes.activate("m4-new")  # 不再阻断
     assert (root / "CURRENT").read_text(encoding="utf-8").strip() == "m4-new"
+
+
+# ── P2：force 逃生口（m4 路径）────────────────────────────────────────────
+# 注意分工：tests/test_gate_force_escape.py 覆盖的是 **mg** 路径
+# （MindGraphIndexService），本文件覆盖 **m4**（IndexLifecycleService）。
+# 两条路径的门禁是同一语义的两份实现——只测一条，另一条在重构后会静默
+# 失去逃生口，而"打不开的逃生口"与"没有逃生口"在用户侧是同一种绝望。
+
+
+def test_activation_force_allows_blocked_chunking_change(tmp_path: Path):
+    """先拦后放：默认仍 fail-closed，force=true 才改 CURRENT，且错误可机判。"""
+    db, indexes = _lifecycle(tmp_path)
+    root = tmp_path / "indexes"
+    build_snapshot_dir(root, "m3-old", documents=DOCS, style=STYLE_FLAT, id_style="document")
+    build_snapshot_dir(root, "m4-new", documents=DOCS, style=STYLE_CHUNKER, id_style="hex")
+    activate(root, "m3-old")
+    _register(db, "m3-old", None)
+    _register(db, "m4-new", "m3-old")
+
+    with pytest.raises(IndexConsistencyError) as exc_info:
+        indexes.activate("m4-new")
+    assert (root / "CURRENT").read_text(encoding="utf-8").strip() == "m3-old"  # 拒绝时不改 CURRENT
+    # 门禁类错误必须有自己的 code：靠 409+文案区分不了"缩水拦截"和"口径拦截"
+    assert exc_info.value.code == "index_consistency_blocked"
+    assert "force=true" in str(exc_info.value), "第一次撞上的人必须知道有逃生口"
+    assert exc_info.value.detail and exc_info.value.detail["reasons"]
+
+    indexes.activate("m4-new", reason="operator confirmed chunking change", force=True)
+    assert (root / "CURRENT").read_text(encoding="utf-8").strip() == "m4-new"
+
+
+class _StubDocuments:
+    """只提供 build() 真正用到的方法——为测 force 透传，不必建整套文档生命周期。"""
+
+    def __init__(self, rows) -> None:
+        self._rows = rows
+
+    def active_chunks(self, include_historical: bool = False):
+        return list(self._rows)
+
+
+class _StubEmbedding:
+    model_name, model_revision, dimension = "stub-embed", "local:stub", 3
+
+    def embed_documents(self, texts):
+        return [[0.1, 0.2, 0.3] for _ in texts]
+
+
+def _chunk_rows(count: int = 2):
+    return [
+        {
+            "checksum": f"c{index}", "text": f"第 {index} 条制度", "child_chunk_id": f"chunk-{index}",
+            "document_id": "doc-1", "heading_path": ["报销"], "logical_document_id": "doc-1",
+            "document_version": "v1", "document_status": "active",
+        }
+        for index in range(count)
+    ]
+
+
+def test_build_force_reaches_activate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """build(force=True) 必须把 force 一路传到 activate。
+
+    否则「API 有逃生口」是假的：路由确实收到了 force，但 build 内部吞掉它，
+    用户第二次调用仍然 409——最坏的一种修法（看起来修了）。
+    """
+    from application import chunking_policy as cp
+    from infrastructure.settings import get_settings
+
+    monkeypatch.setattr("application.index_lifecycle_service.BGEEmbeddingProvider", _StubEmbedding)
+    db = ProductDatabase(tmp_path / "build.sqlite3")
+    db.initialize()
+    root = tmp_path / "idx"
+    indexes = IndexLifecycleService(db, _StubDocuments(_chunk_rows()), root)
+    first = indexes.build()
+
+    probe = cp.ChunkingPolicy(name="probe_v2", version="1", child_size=90, parent_size=2000, overlap=10)
+    monkeypatch.setitem(cp._PRESETS, "probe_v2", probe)
+    monkeypatch.setenv("CHUNKING_POLICY", "probe_v2")
+    get_settings.cache_clear()
+    try:
+        with pytest.raises(IndexConsistencyError):
+            indexes.build()
+        assert (root / "CURRENT").read_text(encoding="utf-8").strip() == first["index_version"]
+        forced = indexes.build(force=True)
+        assert forced["index_version"] != first["index_version"]
+        assert (root / "CURRENT").read_text(encoding="utf-8").strip() == forced["index_version"]
+        assert forced["chunking_policy"]["child_size"] == 90  # 确实是新口径
+    finally:
+        get_settings.cache_clear()

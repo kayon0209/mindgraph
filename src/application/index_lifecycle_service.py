@@ -26,7 +26,7 @@ class IndexLifecycleService:
         try: return (self.index_root / "CURRENT").read_text(encoding="utf-8").strip()
         except OSError: return None
 
-    def build(self, operator: str = "local"):
+    def build(self, operator: str = "local", *, force: bool = False):
         provider = BGEEmbeddingProvider(); active = self.documents.active_chunks(include_historical=True)
         version = datetime.now(UTC).strftime("m4-%Y%m%dT%H%M%SZ-") + uuid.uuid4().hex[:8]; directory = self.index_root / version; directory.mkdir()
         chunks: list[Chunk] = []
@@ -57,7 +57,7 @@ class IndexLifecycleService:
             (directory / "metadata.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"); (directory / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
             loaded = faiss.read_index(str(directory / "dense.faiss")); assert loaded.ntotal == len(chunks)
             self.database.execute("INSERT INTO index_builds VALUES (?,?,?,?,?,?,?)", (version, "validated", dumps(manifest), previous, manifest["created_at"], None, None))
-            self.activate(version, operator, "validated build")
+            self.activate(version, operator, "validated build", force=force)
             self.database.execute("UPDATE document_versions SET indexed_at=?,status='active' WHERE status='active'", (datetime.now(UTC).isoformat(),))
             return manifest
         except Exception as exc:
@@ -72,7 +72,7 @@ class IndexLifecycleService:
         if not row: raise NotFoundError("Index version not found")
         return self._public(row)
 
-    def _consistency_gate(self, version: str, previous: str | None) -> None:
+    def _consistency_gate(self, version: str, previous: str | None, *, force: bool = False) -> None:
         """PR-04：激活一致性门禁，在 ``CURRENT`` 被改写**之前**拦截。
 
         只拦两类「无人知晓就换掉证据体系」的切换：
@@ -82,6 +82,10 @@ class IndexLifecycleService:
         不拦 chunk_id 命名空间不相交：文档换版本会让 chunk_id 全变，那是正常重建。
         缺 manifest 也只降级为「不可比」——全仓有 4 个版本目录没有 metadata.json，
         把它当失败会让索引永远激活不了。
+
+        P2 验收修复：``force=True`` 是显式逃生口（与 m3 rebuild 的 force 同语义）——
+        换口径=换 chunk 命名空间=已公布指标失效，必须是人的决策而非默认。
+        409 的 detail 携带 gate 报告与重试指引，让第一次撞上的人有路可走。
         """
         if not previous:
             return  # 首次构建：无从比较，不冒充判断
@@ -94,6 +98,8 @@ class IndexLifecycleService:
         )
         if not gate["blocked"]:
             return
+        if force:
+            return  # 显式放行：调用方已见过 409 并确认
         report = gate["report"]
         detail = ", ".join(gate["reasons"])
         if report["chunking_changed"]:
@@ -105,13 +111,19 @@ class IndexLifecycleService:
             )
         if report["documents_removed"]:
             detail += f"; 丢失文档 {report['documents_removed'][:10]}"
-        raise IndexConsistencyError(f"index activation blocked: {detail}")
+        raise IndexConsistencyError(
+            f"index activation blocked: {detail}；确认要切换请带 force=true 重试（换口径会使已公布的检索指标失效，需重跑评测基线）",
+            detail={"reasons": gate["reasons"], "report": {
+                "chunking_changed": report["chunking_changed"],
+                "documents_removed": report["documents_removed"][:20],
+            }},
+        )
 
-    def activate(self, version, operator="local", reason="manual activation"):
+    def activate(self, version, operator="local", reason="manual activation", force: bool = False):
         row = self.get(version)
         if row["status"] != "validated": raise ValueError("Only validated indexes can be activated")
         previous = self._current()
-        self._consistency_gate(version, previous)  # PR-04：CURRENT 改写前的最后一道闸
+        self._consistency_gate(version, previous, force=force)  # PR-04：CURRENT 改写前的最后一道闸
         temp = self.index_root / "CURRENT.tmp"; temp.write_text(version, encoding="utf-8"); temp.replace(self.index_root / "CURRENT")
         now = datetime.now(UTC).isoformat(); self.database.execute("UPDATE index_builds SET activated_at=? WHERE index_version=?", (now, version))
         self.database.execute("INSERT INTO index_audit VALUES (?,?,?,?,?,?,?)", (str(uuid.uuid4()), "activate", previous, version, operator, reason, now)); self.invalidate(); return self.get(version)

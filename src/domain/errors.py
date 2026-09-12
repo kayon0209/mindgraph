@@ -76,6 +76,11 @@ class IndexConsistencyError(InvalidStateTransitionError):
     **口径一致性**而非规模缩水。
     """
 
+    # 与 IndexShrinkageError.index_shrinkage_blocked 对称：门禁类错误必须有自己的
+    # code——否则调用方只能靠 HTTP 409 + 文案去区分"缩水拦截"和"口径拦截"，
+    # 而这两种拦截的重试指引完全不同（一个补文档，一个 force 换口径）。
+    code = "index_consistency_blocked"
+
 
 class ChunkingError(ValidationError):
     code = "chunking_error"
