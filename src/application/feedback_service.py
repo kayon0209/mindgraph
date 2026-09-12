@@ -39,9 +39,15 @@ class FeedbackService:
         if record.rating == "not_helpful":
             now = datetime.now(UTC)
             trace = loads(query["trace_json"], {})
-            self.database.execute("INSERT OR IGNORE INTO bad_cases VALUES (?,?,?,?,?,?,?,?,?,?,?)", (
-                str(uuid.uuid4()), record.request_id, query["question"], query["answer"], dumps(trace.get("final_chunks", [])),
-                "unclassified", "new", None, None, now.isoformat(), now.isoformat()))
+            # PR-14：位置式 INSERT 改显式列名——位置式会让任何后续
+            # ADD COLUMN 直接因列数不匹配而报错（schema 演进地雷）。
+            self.database.execute(
+                "INSERT OR IGNORE INTO bad_cases ("
+                "bad_case_id, request_id, question, answer, retrieved_chunks_json,"
+                " error_category, status, reviewer_note, resolution, created_at, updated_at"
+                ") VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (str(uuid.uuid4()), record.request_id, query["question"], query["answer"], dumps(trace.get("final_chunks", [])),
+                 "unclassified", "new", None, None, now.isoformat(), now.isoformat()))
         logger.info("feedback_created", extra={"request_id": record.request_id, "feedback_id": record.feedback_id, "rating": record.rating})
         return record
 
