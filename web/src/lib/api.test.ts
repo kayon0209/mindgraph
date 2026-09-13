@@ -139,3 +139,95 @@ describe("streamAssistAgent payload hygiene (P0-1)", () => {
     expect("clarification_answers" in sent).toBe(false);
   });
 });
+
+describe("材料上传走版本化生命周期（P4）", () => {
+  const versionRecord = (status: string, version = "v1") => ({
+    document_id: "doc-abc",
+    logical_document_id: "doc-1a2b3c4d",
+    version,
+    title: "差旅费管理办法",
+    status,
+  });
+
+  it("上传 → 两次状态流转 → 返回 active 记录（缺任何一跳都进不了索引）", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(versionRecord("draft")), { status: 201, headers: { "Content-Type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(versionRecord("pending_index")), { status: 200, headers: { "Content-Type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(versionRecord("active")), { status: 200, headers: { "Content-Type": "application/json" } }));
+
+    const file = new File(["# 差旅费"], "差旅费管理办法.md", { type: "text/markdown" });
+    const record = await api.uploadDocumentVersion(file, "upload");
+
+    expect(record.status).toBe("active");
+    const urls = fetchMock.mock.calls.map((call) => String(call[0]));
+    expect(urls[0]).toContain("/knowledge/versions");
+    expect(urls[1]).toContain("target=pending_index");
+    expect(urls[2]).toContain("target=active");
+    // 中文文件名必须被 slug 化：后端 _SAFE_SEGMENT 只接受 ASCII
+    const firstBody = fetchMock.mock.calls[0][1]?.body as FormData;
+    expect(String(firstBody.get("logical_document_id"))).toMatch(/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/);
+    expect(firstBody.get("authority_level")).toBe("user_uploaded_reference");
+  });
+
+  it("解析未通过（parse_failed）不做流转：把真实原因交回调用方", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ ...versionRecord("parse_failed"), parsing_diagnostics: { ocr_required_pages: [2] } }), {
+        status: 201,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    const record = await api.uploadDocumentVersion(new File(["x"], "scan.pdf"), "upload");
+
+    expect(record.status).toBe("parse_failed");
+    expect(fetchMock).toHaveBeenCalledTimes(1); // 没有去撞 409
+  });
+
+  it("同名同版本冲突时用内容派生版本重试一次，不把死路留给用户", async () => {
+    const conflict = new Response(
+      JSON.stringify({ error: { code: "conflict", message: "Document version already exists" } }),
+      { status: 409, headers: { "Content-Type": "application/json" } },
+    );
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(conflict)
+      .mockResolvedValueOnce(new Response(JSON.stringify(versionRecord("draft", "u20260101T000000s1")), { status: 201, headers: { "Content-Type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(versionRecord("pending_index")), { status: 200, headers: { "Content-Type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(versionRecord("active")), { status: 200, headers: { "Content-Type": "application/json" } }));
+
+    const file = new File(["updated"], "policy.md", { type: "text/markdown" });
+    const record = await api.uploadDocumentVersion(file, "upload");
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    const retryBody = fetchMock.mock.calls[1][1]?.body as FormData;
+    expect(String(retryBody.get("version"))).not.toBe("v1");
+    expect(record.status).toBe("active");
+  });
+
+  it("业务错误体（error.code/message）不再是 HTTP 状态文本", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({ error: { code: "index_consistency_blocked", message: "index activation blocked: chunking_changed；确认要切换请带 force=true 重试" } }),
+        { status: 409, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    const failure = await api.incrementalRebuild().catch((caught: unknown) => caught);
+
+    expect(failure).toMatchObject({ status: 409, code: "index_consistency_blocked" });
+    expect((failure as Error).message).toContain("force=true");
+  });
+
+  it("force 走 query string（空 body POST 也要能过）", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ index_version: "m4-x" }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+
+    await api.incrementalRebuild(true);
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("force=true");
+    expect(init.method).toBe("POST");
+  });
+});

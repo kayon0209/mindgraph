@@ -72,6 +72,29 @@ describe("chat rail reducer（UI-1）", () => {
     expect(next.usage?.total_tokens).toBe(42);
   });
 
+  it("P1：reasoning_started 打开思考标记，answer_delta（reasoning_ended）复位", () => {
+    const thinking = apply([{ type: "request_started" }, { type: "generation_started" }, { type: "reasoning_started" }]);
+    expect(thinking.reasoningActive).toBe(true);
+    expect(apply([{ type: "reasoning_ended" }], thinking).reasoningActive).toBe(false);
+  });
+
+  it("P1：新一轮 generation_started 先复位思考标记（上一轮残留不得串到这一轮）", () => {
+    const next = apply([{ type: "reasoning_started" }, { type: "generation_started" }]);
+    expect(next.reasoningActive).toBe(false);
+  });
+
+  it("P1：非流式收尾（completed/citations）必须复位思考标记，否则'思考中'会永久挂着", () => {
+    const afterCitations = railReducer(apply([{ type: "reasoning_started" }]), {
+      type: "citations",
+      citations: [],
+    });
+    const afterCompleted = railReducer(apply([{ type: "reasoning_started" }]), {
+      type: "completed",
+      result: { citations: [], trace: null, resultState: "answered", citationFidelity: null, usage: null, degraded: null },
+    });
+    expect([afterCitations.reasoningActive, afterCompleted.reasoningActive]).toEqual([false, false]);
+  });
+
   it("reset 回到初始", () => {
     const next = apply([{ type: "request_started" }, { type: "reset" }]);
     expect(next).toEqual(INITIAL_RAIL);

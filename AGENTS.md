@@ -48,8 +48,32 @@ powershell -ExecutionPolicy Bypass -File scripts\start-dev.ps1
 # 测试
 .\.venv\Scripts\python.exe -m pytest
 
+# 提交态复核（工作区绿 ≠ 提交可过）：在干净的 HEAD 工作树上再跑一次全量
+# 起因：曾把"消费方"提交了、实现留在未提交的工作区改动里，提交态 14 个测试
+# ImportError 全红，而本地工作区是绿的（同一失误已发生两次）。
+# 脚本代劳：worktree add → 复制两套索引根 → 跑全量 → 清理
+.\.venv\Scripts\python.exe scripts\verify_committed_state.py
+# 变体：--keep（保留工作树手工排查）/ --ref origin/main / --pytest-args "-q -x"
+#       --without-runtime-data（**故意不复制**运行期数据，用来看清"缺数据"时报什么；
+#       这是诊断手段，不是复核）
+
+# 手工等价步骤（脚本不可用时）：运行期数据（data/ 被 gitignore）不会随 worktree 检出，
+# 缺了它，test_evaluation_v2_migration / test_index_root_registry / test_freeze_baseline
+# 会以 "No index version under data/mindgraph_indexes is compatible…" 报 14 个**假失败**
+# ——那不是代码问题，是索引根不存在。必须先把两套索引根复制过去（复制而非软链：避免
+# 测试把结果写回主工作区）。缺数据时测试会自己把这句话打出来（见 tests/index_data_hint.py）：
+git worktree add --detach ..\_verify HEAD
+xcopy /E /I /Y data\mindgraph_indexes ..\_verify\data\mindgraph_indexes
+xcopy /E /I /Y data\retrieval_indexes ..\_verify\data\retrieval_indexes
+cd ..\_verify
+..\mindgraph\.venv\Scripts\python.exe -m pytest
+cd ..\mindgraph; git worktree remove --force ..\_verify
+
 # 当前 CI 的运行时致命错误 gate（全量 Ruff 债务见产品路线）
 .\.venv\Scripts\python.exe -m ruff check src scripts tests --select F821,F822,F823,E902
+
+# 本机 harness 提示（仅个别 AI agent 环境）：`env -u VAR cmd > file` 输出恒为 0 字节，
+# 要剥离变量请用 bash 内建 `unset VAR` 后再执行；Linux/CI 不受影响。
 
 # 无密钥离线演示
 .\.venv\Scripts\python.exe scripts\validate_mindgraph_offline.py
@@ -73,6 +97,9 @@ pnpm build
 5. 行为变更先写失败测试，再写实现；完成后运行相关测试与 lint。
 6. 不提交 `.env`、API Key、真实 Vault、真实企业资料或生成索引。
 7. 历史 Expense RAG 命名仅允许出现在迁移说明、历史文档和兼容代码中。
+8. 推送前必须在**提交态**（干净 worktree 上的 HEAD）跑一次全量测试：本地工作区
+   变绿只说明工作区自洽，不能说明这次提交自洽——消费方与实现分属两个提交时，
+   提交态会直接 ImportError 变红（见"常用命令"里的提交态复核）。
 
 ## 当前产品路线
 

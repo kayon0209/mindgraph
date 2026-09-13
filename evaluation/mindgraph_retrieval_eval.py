@@ -8,14 +8,33 @@ import json
 import math
 from pathlib import Path
 import re
+import sys
 from typing import Any
 
 from jsonschema import Draft202012Validator, FormatChecker
 
-try:
-    from src.retrieval.types import RetrievalTrace
-except ModuleNotFoundError:
-    from retrieval.types import RetrievalTrace
+# ── 模块身份归一：权威导入侧固定为生产侧 `retrieval.types` ──────────────────
+# `src/` 下没有 `__init__.py`，而 pytest.ini / 各脚本会把项目根与 `src/` 同时
+# 放进 sys.path，于是同一个物理文件 `src/retrieval/types.py` 会被注册成两个
+# 互不相认的模块对象：
+#   * `retrieval.types`     —— src/** 生产代码实际使用的名字（31 处）
+#   * `src.retrieval.types` —— 命名空间包路径下的别名
+# 两个类对象会让 `isinstance(trace_value, RetrievalTrace)` 恒为 False，评测静默
+# 失效（历史上靠调用方 monkey-patch 绕过）。这里做两件事：
+#   1) 把权威侧固定为生产侧，并把别名**确定性地**写回 sys.modules（不用
+#      setdefault：别名必须覆盖，否则别的模块先导入 src.retrieval.types 时失效）；
+#   2) 判定仍保留一道按「类名 + 定义文件」的身份兜底 —— sys.modules 覆盖无法回溯
+#      已经绑定过的名字，兜底保证结构正确的 trace 永远不会被静默拒绝。
+_SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
+if str(_SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SRC_ROOT))
+
+import retrieval.types as _retrieval_types  # noqa: E402
+
+sys.modules["src.retrieval"] = sys.modules["retrieval"]
+sys.modules["src.retrieval.types"] = _retrieval_types
+
+from retrieval.types import RetrievalTrace  # noqa: E402
 
 DEFAULT_DATASET_PATH = Path(__file__).resolve().parent / "datasets" / "mindgraph_golden_v2.jsonl"
 DEFAULT_CANDIDATE_DATASET_PATH = Path(__file__).resolve().parent / "datasets" / "mindgraph_candidates_v2.jsonl"
@@ -381,6 +400,28 @@ def _stratified_metrics(
     return stratified
 
 
+def _defining_file(obj: Any) -> str | None:
+    """某个类/对象所在模块的源文件路径；模块不在 sys.modules 时返回 None。"""
+    module = sys.modules.get(getattr(obj, "__module__", ""))
+    file_path = getattr(module, "__file__", None)
+    return str(Path(file_path).resolve()) if file_path else None
+
+
+def is_retrieval_trace(value: Any) -> bool:
+    """判断 value 是否为 RetrievalTrace，且不受导入路径别名影响。
+
+    首选 ``isinstance``。``src/`` 无 ``__init__.py`` 时同一文件可能被注册成
+    ``retrieval.types`` 与 ``src.retrieval.types`` 两个模块对象，此时 isinstance
+    恒为 False；按「类名 + 定义文件」兜底判定，避免结构正确的 trace 被静默拒绝。
+    """
+    if isinstance(value, RetrievalTrace):
+        return True
+    cls = type(value)
+    if cls.__name__ != RetrievalTrace.__name__:
+        return False
+    return _defining_file(cls) is not None and _defining_file(cls) == _defining_file(RetrievalTrace)
+
+
 def evaluate_retrieval_cases(
     cases: list[dict[str, Any]], retrieve: Callable[[dict[str, Any]], RetrievalTrace], *,
     top_k: int = 5, include_questions: bool = False, dataset_digest: str | None = None,
@@ -410,7 +451,7 @@ def evaluate_retrieval_cases(
             trace_value = retrieve(case)
         except Exception as exc:
             raise RuntimeError(f"case_id {case['case_id']!r}: retrieval failed") from exc
-        if not isinstance(trace_value, RetrievalTrace):
+        if not is_retrieval_trace(trace_value):
             raise TypeError(f"case_id {case['case_id']!r}: retrieve must return RetrievalTrace")
         graph_enabled = bool(trace_value.graph_enabled)
         expanded_candidates = int(trace_value.candidate_counts.get("graph_expanded", 0) or 0)

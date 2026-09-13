@@ -12,7 +12,7 @@ from evaluation.mindgraph_retrieval_eval import (
     validate_candidate_cases,
     validate_golden_cases,
 )
-from src.retrieval.types import Chunk, RetrievalCandidate, RetrievalTrace
+from retrieval.types import Chunk, RetrievalCandidate, RetrievalTrace
 
 
 def case(case_id="A", behavior="answer", paths=None, question="q"):

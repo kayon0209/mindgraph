@@ -17,8 +17,10 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Iterable
 from datetime import date
+from evaluation.conflict_attribution import conflict_expectation
 import math
 from statistics import fmean
 from typing import Any
@@ -44,6 +46,10 @@ INACTIVE_POLICY_STATUSES = {"archived", "expired", "superseded", "replaced"}
 # markdown 强调/代码标记：真实模型输出里普遍包在 **加粗** 或 `反引号` 内，
 # 裸子串比对会因为这两个字符判"缺失"（详见 _normalize_for_match）。
 _MARKDOWN_MARKS = str.maketrans("", "", "*_`~")
+
+
+def _is_conflict_case(case: dict[str, Any]) -> bool:
+    return (case.get("category") or case.get("query_type")) == "conflict"
 
 
 def _normalize_for_match(text: str) -> str:
@@ -252,10 +258,15 @@ def evaluate_answer_case(case: dict[str, Any], prediction: dict[str, Any]) -> di
         cited_paths = " ".join(str(item.get("vault_path") or "") for item in (prediction.get("citations") or []))
         normalized_cited_paths = cited_paths.lower().replace("-", "_")
         acl_leakage = float(any(token in normalized_cited_paths for token in denied_tokens))
-    conflict_accuracy = float(
-        result_state == "conflicting_evidence"
-        if case.get("category") == "conflict" or case.get("query_type") == "conflict"
-        else False
+    # 冲突判分契约（PR-05 拍板 A+B）：类别由 Gold 路径推断，只有"期望系统报出
+    # 冲突状态"的类别才参与计分；其余记 None（不可判定），不再一律记 0。
+    # 旧口径对所有 conflict 案例一律要求 conflicting_evidence，把"不适用"
+    # 与"答错"混为一谈 —— 这是 conflict_accuracy 恒为 0 的根因。
+    conflict_expect = conflict_expectation(case) if _is_conflict_case(case) else None
+    conflict_accuracy = (
+        float(result_state == conflict_expect["expected_state"])
+        if conflict_expect and conflict_expect["applicable"]
+        else None
     )
     if expected_behavior == "abstain":
         return {
@@ -272,7 +283,9 @@ def evaluate_answer_case(case: dict[str, Any], prediction: dict[str, Any]) -> di
             "required_fact_coverage": None,
             "forbidden_fact_avoidance": None,
             "acl_leakage": acl_leakage,
-            "conflict_accuracy": conflict_accuracy if case.get("category") == "conflict" else None,
+            "conflict_accuracy": conflict_accuracy,
+            "conflict_kind": (conflict_expect or {}).get("kind"),
+            "conflict_applicable": bool(conflict_expect and conflict_expect["applicable"]),
             "failures": failures + (["acl_leakage"] if acl_leakage else []),
         }
 
@@ -340,7 +353,9 @@ def evaluate_answer_case(case: dict[str, Any], prediction: dict[str, Any]) -> di
 
     if acl_leakage:
         failures.append("acl_leakage")
-    if (case.get("category") == "conflict" or case.get("query_type") == "conflict") and not conflict_accuracy:
+    # 只在指标适用时报失败：不适用的案例连"是否拦截"都无从判断，
+    # 记 failure 会让它出现在 failed_cases 里，把"口径不适用"读成"系统做错了"。
+    if conflict_expect and conflict_expect["applicable"] and conflict_accuracy == 0.0:
         failures.append("conflict_not_intercepted")
     return {
         "case_id": case["case_id"],
@@ -356,7 +371,9 @@ def evaluate_answer_case(case: dict[str, Any], prediction: dict[str, Any]) -> di
         "required_fact_coverage": required_fact_coverage,
         "forbidden_fact_avoidance": forbidden_fact_avoidance,
         "acl_leakage": acl_leakage,
-        "conflict_accuracy": conflict_accuracy if case.get("category") == "conflict" or case.get("query_type") == "conflict" else None,
+        "conflict_accuracy": conflict_accuracy,
+        "conflict_kind": (conflict_expect or {}).get("kind"),
+        "conflict_applicable": bool(conflict_expect and conflict_expect["applicable"]),
         "failures": failures,
     }
 
@@ -605,4 +622,22 @@ def summarize_answer_evaluations(results: list[dict[str, Any]]) -> dict[str, Any
         "sample_size": len(results),
         "failed_case_count": len(failed_cases),
         "failed_cases": failed_cases,
+        # 分母必须可见：否则"不适用记 None"会让指标悄悄从报表上消失，
+        # 没人能区分"没有冲突案例"与"有案例但都不适用"。
+        "conflict_breakdown": _conflict_breakdown(results),
+    }
+
+
+def _conflict_breakdown(results: list[dict[str, Any]]) -> dict[str, Any] | None:
+    kinds = [item.get("conflict_kind") for item in results if item.get("conflict_kind")]
+    if not kinds:
+        return None
+    applicable = [item for item in results if item.get("conflict_applicable")]
+    return {
+        "conflict_case_count": len(kinds),
+        "by_kind": dict(sorted(Counter(kinds).items())),
+        "applicable_count": len(applicable),
+        "scored_denominator": sum(
+            1 for item in applicable if item.get("conflict_accuracy") is not None
+        ),
     }

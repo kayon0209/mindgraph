@@ -26,8 +26,10 @@ class FakeProvider:
     model_name = "fake-zhipu"
     provider_name = "fake"
 
-    def __init__(self, available=True, fail=False):
+    def __init__(self, available=True, fail=False, reasoning=()):
         self.available, self.fail = available, fail
+        # P1：思考流可注入——默认空，保持既有用例的"无思考模型"口径不变
+        self.reasoning = tuple(reasoning)
 
     def complete(self, messages):
         if self.fail:
@@ -37,6 +39,8 @@ class FakeProvider:
     def stream(self, messages):
         if self.fail:
             raise TimeoutError("timeout")
+        for part in self.reasoning:
+            yield {"reasoning": part}
         yield {"delta": "差旅费应在"}
         yield {"delta": "十个工作日内报销。"}
         yield {"usage": {"usage_source": "provider_reported", "input_tokens": 10, "output_tokens": 8, "total_tokens": 18}}
@@ -135,6 +139,35 @@ class Milestone3APITests(unittest.TestCase):
         data = [json.loads(line.split(":", 1)[1]) for line in response.text.splitlines() if line.startswith("data:")]
         self.assertTrue(all({"request_id", "event", "timestamp", "data"} <= item.keys() for item in data))
 
+    def test_sse_reasoning_delta_precedes_answer_and_lands_in_trace(self):
+        """P1：思考流单独成事件、先于正文，且原文进 trace 审计面。
+
+        (1) 顺序：generation_started → reasoning_delta(×N) → answer_delta。顺序错了，
+            前端"思考中"就不可能在正文出现前亮起，死寂等于没解决。
+        (2) 隔离：思考原文不得混进 answer 正文（它可能包含模型自我怀疑等噪声）。
+        (3) 审计面：completed.trace.reasoning_text 是拼好的完整原文；没思考流的
+            模型保持 None —— "没思考"与"思考了但为空"不能长得一样。
+        """
+        self.provider.reasoning = ("先查差旅费条款。", "再确认报销时限。")
+        response = self.client.post("/api/v1/chat/stream", json={"question": "差旅费多久报销？", "retrieval_strategy": "hybrid"})
+        events = [line.split(":", 1)[1].strip() for line in response.text.splitlines() if line.startswith("event:")]
+        ordered = [name for name in events if name in {"generation_started", "reasoning_delta", "answer_delta"}]
+        self.assertEqual(ordered, ["generation_started", "reasoning_delta", "reasoning_delta", "answer_delta", "answer_delta"])
+        payloads = [json.loads(line.split(":", 1)[1]) for line in response.text.splitlines() if line.startswith("data:")]
+        self.assertEqual(
+            [item["data"]["text"] for item in payloads if item["event"] == "reasoning_delta"],
+            ["先查差旅费条款。", "再确认报销时限。"],
+        )
+        completed = next(item["data"] for item in payloads if item["event"] == "completed")
+        self.assertEqual(completed["retrieval_trace"]["reasoning_text"], "先查差旅费条款。再确认报销时限。")
+        self.assertNotIn("先查差旅费条款", completed["answer"])
+
+        self.provider.reasoning = ()
+        plain = self.client.post("/api/v1/chat/stream", json={"question": "差旅费多久报销？", "retrieval_strategy": "hybrid"})
+        plain_payloads = [json.loads(line.split(":", 1)[1]) for line in plain.text.splitlines() if line.startswith("data:")]
+        self.assertIsNone(next(item["data"] for item in plain_payloads if item["event"] == "completed")["retrieval_trace"]["reasoning_text"])
+        self.assertNotIn("reasoning_delta", [line.split(":", 1)[1].strip() for line in plain.text.splitlines() if line.startswith("event:")])
+
     def test_feedback_duplicate_bad_case_update_and_export(self):
         request_id = self.client.post("/api/v1/chat", json={"question": "差旅费多久报销？"}).json()["request_id"]
         payload = {"request_id": request_id, "rating": "not_helpful", "reason_codes": ["wrong_citation"]}
@@ -172,6 +205,33 @@ class KnowledgeAndClientTests(unittest.TestCase):
             with patch("application.knowledge_service.build_versioned_index", side_effect=RuntimeError("build failed")):
                 with self.assertRaises(RuntimeError): service.rebuild()
             self.assertEqual((indexes / "CURRENT").read_text(encoding="utf-8"), "old")
+
+    def test_api_client_uploads_only_through_versioned_endpoint(self):
+        """桌面客户端只有一条上传路：``/knowledge/versions``。
+
+        旧 ``/knowledge/documents`` 只把文件写进 uploads/（不产生
+        document_versions、无页级账本、无 OCR）。保留它是不破坏历史调用方，
+        但客户端不该再留一份指向它的方法——那等于把弱能力路径摆在手边
+        （P4：同一次上传的能力取决于调用者）。这条断言同时锁住：端点正确、
+        空值元数据不发出去、旧方法不存在。
+        """
+        client = ProductAPIClient("http://test")
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.headers = {"content-type": "application/json"}
+        response.json.return_value = {"document_id": "d1"}
+        session = Mock()
+        session.request.return_value = response
+        with patch.object(client, "_session", return_value=session):
+            result = client.upload_document_version(
+                "a.md", b"# a", {"category": "policy", "version": "", "logical_document_id": None}
+            )
+        self.assertEqual(result, {"document_id": "d1"})
+        args, kwargs = session.request.call_args
+        self.assertEqual(args[:2], ("POST", "/knowledge/versions"))
+        self.assertEqual(kwargs["data"], {"category": "policy"}, "空值元数据不该发给后端")
+        self.assertEqual(kwargs["files"]["file"], ("a.md", b"# a", "text/markdown"))
+        self.assertFalse(hasattr(client, "upload_document"), "旧上传方法必须删除，避免误用弱能力路径")
 
     def test_streamlit_api_client_backend_unavailable(self):
         client = ProductAPIClient("http://test")

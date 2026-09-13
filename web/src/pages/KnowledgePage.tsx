@@ -4,14 +4,21 @@ import { BookMarked, ChevronDown, ChevronLeft, ChevronRight, FileText, Search, S
 import { ContextHint, EmptyState, ErrorState, LoadingState, MetricCard, PageHeader, StatusPill } from "../components/Primitives";
 import { PolicyGovernance } from "../components/PolicyGovernance";
 import { api } from "../lib/api";
+import { UPLOAD_ACCEPT_ATTR, isActivationGateError, uploadFileTypeError } from "../lib/document-upload";
 import { categoryLabel, relationTypeColor, relationTypeLabel } from "../lib/graph-meta";
 import type { EvaluationResponse, NoteDetail, NoteItem } from "../types";
 
 /** U2：台账分页——后端 notes 接口支持 offset/limit，前端不再一次性拉全量 */
 const PAGE_SIZE = 50;
 
-/** 上传流程状态机：idle → uploading → rebuilding → done →（extracting → extracted）| error */
-type UploadPhase = "idle" | "uploading" | "rebuilding" | "done" | "extracting" | "extracted" | "error";
+/**
+ * 上传流程状态机：
+ * idle → uploading（上传+解析）→ rebuilding（状态流转+重建索引）→ done
+ *      →（extracting → extracted）
+ *      | gate（索引门禁拦住口径切换，等人确认）→ rebuilding(force) → done
+ *      | error
+ */
+type UploadPhase = "idle" | "uploading" | "rebuilding" | "gate" | "done" | "extracting" | "extracted" | "error";
 type UploadState = { phase: UploadPhase; message: string };
 
 export function KnowledgePage() {
@@ -128,29 +135,64 @@ export function KnowledgePage() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const handleUploadFile = async (file: File) => {
-    if (!file.name.toLowerCase().endsWith(".md")) {
-      setUpload({ phase: "error", message: "仅支持 .md Markdown 文件（后端限制）。" });
+    const typeError = uploadFileTypeError(file.name);
+    if (typeError) {
+      setUpload({ phase: "error", message: typeError });
       return;
     }
-    setUpload({ phase: "uploading", message: `正在上传「${file.name}」…` });
+    setUpload({ phase: "uploading", message: `正在上传并解析「${file.name}」…` });
+    let record;
     try {
-      const record = await api.uploadDocument(file, "upload");
-      setUpload({ phase: "rebuilding", message: "上传成功，正在增量重建索引…" });
-      try {
-        await api.incrementalRebuild();
-      } catch (rebuildError) {
-        setUpload({ phase: "error", message: `上传成功但索引重建失败：${(rebuildError as Error).message}` });
-        return;
-      }
-      await load(query.trim(), offset);
-      const title = (record.title as string | undefined) || file.name;
-      setUpload({
-        phase: "done",
-        message: `「${title}」已入库并可检索。下一步可把它融入图谱：自动发现候选关系（proposed），经人工审核确认后才进入图谱与检索。`,
-      });
+      record = await api.uploadDocumentVersion(file, "upload");
     } catch (uploadError) {
       setUpload({ phase: "error", message: `上传失败：${(uploadError as Error).message}` });
+      return;
     }
+    if (record.status !== "active") {
+      // 解析未通过（含"这一页是扫描图、OCR 未启用"）：文件已存档，但进不了索引。
+      // 必须把原因说清楚——只说"失败"的话，用户唯一能做的就是反复重传同一个文件。
+      const diagnostics = record.parsing_diagnostics ?? {};
+      const scannedPages = diagnostics.ocr_required_pages?.length ?? 0;
+      const reason = scannedPages > 0
+        ? `其中 ${scannedPages} 页是扫描图（OCR 未启用），无法抽取文本`
+        : `解析未通过：${diagnostics.failure_reason ?? "原因未记录"}`;
+      setUpload({ phase: "error", message: `${reason}。文件已存档（版本 ${record.version}），但不会进入检索。` });
+      return;
+    }
+    setUpload({ phase: "rebuilding", message: `解析完成（版本 ${record.version}），正在更新索引…` });
+    try {
+      await api.incrementalRebuild();
+    } catch (rebuildError) {
+      if (isActivationGateError(rebuildError)) {
+        // 门禁拦的是"换切分口径"这件事，不是这次上传：材料已入库，只是索引没换。
+        // 把它渲染成"失败"会误导用户重传；这里给出唯一有效的下一步（人确认）。
+        setUpload({ phase: "gate", message: (rebuildError as Error).message });
+        return;
+      }
+      setUpload({ phase: "error", message: `材料已入库，但索引更新失败：${(rebuildError as Error).message}` });
+      return;
+    }
+    await load(query.trim(), offset);
+    setUpload({
+      phase: "done",
+      message: `「${record.title}」已入库并可检索（版本 ${record.version}）。下一步可把它融入图谱：自动发现候选关系（proposed），经人工审核确认后才进入图谱与检索。`,
+    });
+  };
+
+  /** 门禁确认后带 force 重试：换口径是人的决策，界面上必须有一次显式点击。 */
+  const confirmForceActivation = async () => {
+    setUpload({ phase: "rebuilding", message: "已确认切换切分口径，正在重建并激活索引…" });
+    try {
+      await api.incrementalRebuild(true);
+    } catch (forceError) {
+      setUpload({ phase: "error", message: `强制重建失败：${(forceError as Error).message}` });
+      return;
+    }
+    await load(query.trim(), offset);
+    setUpload({
+      phase: "done",
+      message: "索引已按新口径重建并激活。注意：已公布的检索指标对应旧口径，需要重跑评测基线后才能对外引用。",
+    });
   };
 
   const fuseIntoGraph = async () => {
@@ -222,11 +264,11 @@ export function KnowledgePage() {
           <UploadCloud size={22} />
           <div>
             <strong>上传制度文件</strong>
-            <span>点击选择或拖拽 .md 文件到此处，上传后自动更新检索。</span>
+            <span>点击选择或拖拽 .md / .txt / .pdf / .docx / .xlsx 文件到此处，上传后自动解析并更新检索。</span>
           </div>
           <input
             ref={fileInputRef}
-            accept=".md,text/markdown"
+            accept={UPLOAD_ACCEPT_ATTR}
             onChange={(event) => {
               const file = event.target.files?.[0];
               if (file) void handleUploadFile(file);
@@ -242,6 +284,11 @@ export function KnowledgePage() {
             {upload.phase === "uploading" || upload.phase === "rebuilding" || upload.phase === "extracting" ? (
               <span className="upload-spinner" aria-hidden="true" />
             ) : null}
+            {upload.phase === "gate" ? (
+              <button className="button secondary small" onClick={() => void confirmForceActivation()} type="button">
+                <Sparkles size={14} /> 确认强制切换口径
+              </button>
+            ) : null}
             {upload.phase === "done" ? (
               <button className="button secondary small" onClick={() => void fuseIntoGraph()} type="button">
                 <Sparkles size={14} /> 发现关联关系
@@ -252,7 +299,7 @@ export function KnowledgePage() {
                 去关系审核确认
               </button>
             ) : null}
-            {upload.phase === "error" || upload.phase === "extracted" || upload.phase === "done" ? (
+            {upload.phase === "error" || upload.phase === "extracted" || upload.phase === "done" || upload.phase === "gate" ? (
               <button className="upload-status-dismiss" onClick={() => setUpload({ phase: "idle", message: "" })} type="button" aria-label="关闭上传状态">
                 <X size={14} />
               </button>

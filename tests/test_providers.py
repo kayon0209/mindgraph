@@ -90,6 +90,35 @@ class ProviderTests(unittest.TestCase):
         with patch("httpx.post", return_value=bad):
             with self.assertRaisesRegex(NormalizedProviderError, "Malformed"): provider.complete([])
 
+    def test_openai_stream_surfaces_reasoning_without_mixing_into_answer(self):
+        """P1：思考模型的 reasoning_content 单独透传，不混进答案正文。
+
+        qwen3.8-flash 等开启思考的模型先流式发 reasoning_content（实测约 10s、
+        760 字符），再发 content；上游只读 content 会把思考阶段整段丢弃，用户侧
+        表现为 ``generation_started`` 后的死寂（假流式）。
+        这里锁三件事：两个别名都有产出、正文键不被污染、顺序保持。
+        """
+        provider = OpenAICompatibleProvider("deepseek", "https://example.test", "key", "model")
+        response = Mock(status_code=200)
+        response.iter_lines.return_value = [
+            'data: {"choices":[{"delta":{"reasoning_content":"先查制度。"}}]}',
+            'data: {"choices":[{"delta":{"reasoning":"再核时限。"}}]}',
+            'data: {"choices":[{"delta":{"content":"差旅费十个工作日。"}}]}',
+            "data: [DONE]",
+        ]
+        client = Mock()
+        with patch.object(
+            provider,
+            "_post",
+            return_value=(client, FakeStreamContext(response)),
+        ):
+            items = list(provider.stream([{"role": "user", "content": "x"}]))
+        # 逐条全等断言：既证明 reasoning 有产出，也证明它没有混进 delta
+        self.assertEqual(items[0], {"reasoning": "先查制度。"})
+        self.assertEqual(items[1], {"reasoning": "再核时限。"})
+        self.assertEqual(items[2], {"delta": "差旅费十个工作日。"})
+        self.assertNotIn("先查制度", items[2]["delta"])
+
     def test_registry_switches_only_allowlisted_models(self):
         provider = OpenAICompatibleProvider(
             "deepseek", "https://example.test", "key", "flash", configured_models=["flash", "pro"]

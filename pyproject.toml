@@ -43,7 +43,12 @@ dev = [
     "pre-commit>=4.0.0",
     "reportlab>=4.0.0",
 ]
-ocr = ["paddleocr>=2.9.0", "paddlepaddle>=3.0.0"]
+# PR-07 取舍（2026-09-12）：改用 rapidocr-onnxruntime 作为默认 OCR 引擎。
+# 理由：纯 pip、无系统二进制、模型随 wheel 分发，与本项目「Local Profile 零外部依赖」
+# 的定位一致；已在本机纯图像中文页上实测可用（46 行、置信度 1.00）。
+# 原 paddleocr 需同时装 paddlepaddle（体积大、平台相关问题多），降级为次选。
+# pymupdf 用于把 PDF 页渲染成位图供 OCR 消费（rapidocr 只吃图像）。
+ocr = ["rapidocr-onnxruntime>=1.4.0", "pymupdf>=1.28.0"]
 
 [build-system]
 requires = ["setuptools>=75.0", "wheel"]

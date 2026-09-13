@@ -98,7 +98,16 @@ class OpenAICompatibleProvider:
                         continue
                     choices = data.get("choices") or []
                     if choices and isinstance(choices[0], dict):
-                        delta_content = choices[0].get("delta", {}).get("content")
+                        delta = choices[0].get("delta", {}) or {}
+                        # 思考模型（qwen3.8-flash 等）先流式输出 reasoning_content
+                        # 再输出 content：只读 content 会把约 10s 的思考流整段丢弃，
+                        # 用户侧表现为 generation_started 后长时间死寂（P1 假流式）。
+                        # 思考流单独透传（reasoning），不混入答案正文。
+                        reasoning_content = delta.get("reasoning_content") or delta.get("reasoning")
+                        if reasoning_content:
+                            self.verified_models.add(self.model_name)
+                            yield {"reasoning": reasoning_content}
+                        delta_content = delta.get("content")
                         if delta_content:
                             self.verified_models.add(self.model_name)
                             yield {"delta": delta_content}

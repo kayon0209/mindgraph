@@ -1,19 +1,18 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import PlainTextResponse
 
-from api.auth import require_authenticated, require_role
+from api.auth import current_actor, require_authenticated, require_role
 from api.dependencies import get_container
 from api.schemas.feedback import BadCase, BadCaseUpdate, FeedbackCreate, FeedbackRecord
-
 
 router = APIRouter(tags=["feedback"])
 
 
 @router.post("/feedback", response_model=FeedbackRecord, status_code=201)
-def create_feedback(payload: FeedbackCreate, principal: dict = Depends(require_authenticated)):
-    """提交反馈：对任意已存在 request_id 可写（一 request 一反馈），但
-    preview/读取面按归属校验（见 feedback 工具与 bad-cases）。"""
-    return get_container().feedback.create_feedback(payload)
+def create_feedback(payload: FeedbackCreate, request: Request, principal: dict = Depends(require_authenticated)):
+    """提交反馈：仅问答所属 principal 可写（一 request 一反馈）；他人与
+    不存在的 request_id 返回同一 404，不暴露存在性（安全审查 F1）。"""
+    return get_container().feedback.create_feedback(payload, principal_id=current_actor(request))
 
 
 # ── bad-cases 是质量管理员面：含全体用户问答内容，仅 admin 可读（安全审查 F1） ──

@@ -11,7 +11,9 @@ import uuid
 
 from application.adaptive_retrieval_router import AdaptiveRetrievalRouter, RetrievalRouteDecision
 from application.policy_conflict_service import PolicyConflictService
+from application.query_analysis import QueryAnalysisService
 from application.query_understanding import QueryUnderstandingService
+from application.scope_terms import OUT_OF_SCOPE_TERMS
 from domain.contracts import error_event_data
 from domain.errors import RetrievalUnavailableError
 from domain.models import (
@@ -25,7 +27,8 @@ from domain.models import (
 )
 from infrastructure.database import ProductDatabase, dumps
 
-OUT_OF_SCOPE = ("工资", "薪资", "年终奖", "股票", "请假", "年假", "辞职", "离职", "wifi", "食堂", "系统提示词", "ignore previous", "system prompt")
+# PR-10：词表下沉到 scope_terms，供生产拦截与 query_analysis 的 shadow 观测共用同一份。
+OUT_OF_SCOPE = OUT_OF_SCOPE_TERMS
 REFUSAL = "抱歉，我只能回答公司报销相关问题。"
 INSUFFICIENT = "未在制度文件中找到足够依据。建议联系 HR/财务确认。"
 PERMISSION_DENIED = "当前账号没有权限访问相关制度内容。请联系管理员申请对应工作区/部门的访问权限。"
@@ -50,6 +53,7 @@ class ChatService:
         system_prompt: str | None = None,
         retrieval_router: AdaptiveRetrievalRouter | None = None,
         query_understanding: QueryUnderstandingService | None = None,
+        query_analysis: QueryAnalysisService | None = None,
         graph_default_enabled: bool = False,
         on_question_logged: Callable[[], None] | None = None,
     ) -> None:
@@ -61,6 +65,8 @@ class ChatService:
         self.policy_conflict_service = PolicyConflictService(database)
         self.retrieval_router = retrieval_router or AdaptiveRetrievalRouter()
         self.query_understanding = query_understanding or QueryUnderstandingService()
+        # PR-10：shadow 观测层（只写 trace，不参与路由/检索/生成）
+        self.query_analysis = query_analysis or QueryAnalysisService()
         # 计划 Phase 5 发布闸门的配置消费方：消融达标后由 GRAPH_DEFAULT_ENABLED
         # 打开服务端默认图路由；客户端 graph_enabled=false 始终可以关闭。
         self.graph_default_enabled = graph_default_enabled
@@ -73,8 +79,11 @@ class ChatService:
     def _route(self, request: ChatRequest) -> tuple[RetrievalRouteDecision, float]:
         started = time.perf_counter()
         graph_allowed = bool(getattr(request, "graph_enabled", False)) or self.graph_default_enabled
+        # PR-12：续问经服务端解析后，路由/检索吃 resolved_query（指代已展开）；
+        # question 原文继续承载 out-of-scope 判断与审计（改写不得绕过范围拦截）。
+        effective_question = getattr(request, "resolved_query", None) or request.question
         decision = self.retrieval_router.decide(
-            request.question,
+            effective_question,
             requested_strategy=request.retrieval_strategy,
             graph_allowed=graph_allowed,
             top_k=request.final_top_k,
@@ -88,7 +97,8 @@ class ChatService:
         return decision, round((time.perf_counter() - started) * 1000, 3)
 
     def _merge_query_variants(self, decision: RetrievalRouteDecision, request: ChatRequest) -> tuple[str, tuple[str, ...], str]:
-        plan = self.query_understanding.plan(request.question, decision)
+        effective_question = getattr(request, "resolved_query", None) or request.question
+        plan = self.query_understanding.plan(effective_question, decision)
         planned = plan.variants or (decision.search_query,)
         variants = tuple(dict.fromkeys(item for item in planned if item and item.strip()))
         return plan.mode, variants, plan.reasons[0] if plan.reasons else "no_query_understanding_required"
@@ -151,6 +161,13 @@ class ChatService:
             kwargs["source_ids"] = request.source_ids
         effective_query_date = (decision.filters or {}).get("effective_at") or request.query_date
         mode, variants, reason = self._merge_query_variants(decision, request)
+        # PR-11：把路由结果交给管线的条件式 rerank 判断（无该属性的管线静默跳过，
+        # 测试替身/旧实现不受影响）。
+        if hasattr(pipeline, "rerank_route"):
+            try:
+                pipeline.rerank_route = decision.route
+            except Exception:
+                logger.debug("rerank_route_injection_skipped", exc_info=True)
 
         def retrieve_variant(query_text: str):
             if "graph_enabled" not in parameters:
@@ -205,12 +222,40 @@ class ChatService:
             3,
         )
         trace.latency_ms["query_understanding_ms"] = 0.0
+        self._attach_query_analysis(trace, request.question)
         return trace
+
+    def _attach_query_analysis(self, trace, question: str) -> None:
+        """PR-10：把结构化查询分析以 **shadow** 方式挂到 trace 上。
+
+        三条硬约束：
+        1. **只写 trace**，不参与路由、检索或生成 —— 否则就不是 shadow；
+        2. 任何异常都必须吞掉并记 warning —— 观测层出错可以接受，
+           因为它拖垮生产问答不可接受；
+        3. 输出不含原始问题全文（见 ``QueryAnalysis.to_dict``）。
+        """
+        try:
+            started = time.perf_counter()
+            trace.query_analysis = self.query_analysis.analyze(question).to_dict()
+            trace.latency_ms["query_analysis_ms"] = round((time.perf_counter() - started) * 1000, 3)
+        except Exception as exc:  # noqa: BLE001 -- shadow 不得影响生产路径
+            logger.warning("query_analysis_shadow_failed", extra={"error": str(exc)[:200]})
+            trace.query_analysis = {}
 
     @staticmethod
     def _is_out_of_scope(question: str) -> bool:
         lowered = question.lower()
         return any(term in lowered for term in OUT_OF_SCOPE)
+
+    @staticmethod
+    def _attach_reasoning(result: AnswerResult, parts: list[str]) -> None:
+        """P1：把思考模型的 reasoning 原文挂到 trace 上（审计面）。
+
+        只在真有思考流时写。没有思考流的模型保持 ``None`` 而不是空串——
+        「没思考」与「思考了但内容为空」是两件事，报表里不能长得一样。
+        """
+        if parts and result.retrieval_trace is not None:
+            result.retrieval_trace.reasoning_text = "".join(parts)
 
     @staticmethod
     def _trace_model(trace) -> RetrievalTraceModel:
@@ -415,7 +460,8 @@ class ChatService:
         else:
             generation_start = time.perf_counter()
             try:
-                answer, raw_usage = provider.complete(self._messages(request.question, citations, trace.graph_links if trace else None))
+                effective_for_generation = getattr(request, "resolved_query", None) or request.question
+                answer, raw_usage = provider.complete(self._messages(effective_for_generation, citations, trace.graph_links if trace else None))
                 usage, state, degradation = UsageMetrics(**raw_usage), ResultState.answered, trace.degradation_reason
             except Exception as exc:
                 answer = "生成模型暂时不可用。已返回检索到的制度证据，请以引用原文为准。"
@@ -522,9 +568,15 @@ class ChatService:
         else:
             yield event("generation_started", {"stream_mode": "provider_native"})
             text_parts, usage, first_delta = [], UsageMetrics(), None
+            reasoning_parts: list[str] = []
             generation_start = time.perf_counter()
             try:
                 for item in provider.stream(self._messages(request.question, citations, trace.graph_links if trace else None)):
+                    if item.get("reasoning"):
+                        # 思考流（P1）：单独事件类型透传，不混入答案正文；
+                        # generation_started 后的死寂期（思考阶段）由此可见。
+                        reasoning_parts.append(item["reasoning"])
+                        yield event("reasoning_delta", {"text": item["reasoning"], "stream_mode": "provider_native"})
                     if item.get("delta"):
                         if first_delta is None:
                             first_delta = (time.perf_counter() - started) * 1000
@@ -539,6 +591,7 @@ class ChatService:
                     degraded=trace.degraded, degradation_reason=trace.degradation_reason, model=provider.model_name,
                     requested_provider=request.chat_provider or provider.provider_name, actual_provider=provider.provider_name,
                     index_version=trace.index_version)
+                self._attach_reasoning(result, reasoning_parts)
             except Exception as exc:
                 reason = getattr(exc, "code", "provider_error")
                 yield event("degraded", {"reason": reason, "actual_strategy": trace.actual_strategy})
@@ -550,6 +603,8 @@ class ChatService:
                     actual_strategy=trace.actual_strategy, degraded=True, degradation_reason=reason, model=provider.model_name,
                     requested_provider=request.chat_provider or provider.provider_name, actual_provider=provider.provider_name,
                     index_version=trace.index_version)
+                # 失败路径也留思考原文：生成中途炸掉时，「模型想到哪儿了」正是诊断依据。
+                self._attach_reasoning(result, reasoning_parts)
         self._persist(result, principal)
         yield event("citations", {"citations": [item.model_dump(mode="json") for item in citations]})
         yield event("usage", result.usage.model_dump(mode="json"))

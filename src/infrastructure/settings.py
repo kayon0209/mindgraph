@@ -154,6 +154,15 @@ class Settings(BaseSettings):
     # Assist 通道的时限与上限（沿用 chat 检索语义，仅作为通道级护栏）
     ASSIST_TIMEOUT_SECONDS: float = 60.0
     ASSIST_MAX_TOP_K: int = 10
+    # ── 可恢复澄清协议（PR-13）的 HMAC 盐 ──
+    # resume 校验要求盐跨进程稳定；空 = 未配置 → 生成端退回进程级随机盐
+    # （同进程能验、跨进程必败），resume 因此返回 server_misconfigured，
+    # 而不是伪造成功（fail-closed）。
+    # 为什么必须声明成字段而不是直接 os.getenv 读：pydantic-settings 只把
+    # .env 载入**已声明的字段**，不会写进 os.environ——用 os.getenv 读时
+    # ".env 里按文档配了盐"依然等于没配（PR-13 验收实测：配了盐 resume 全坏，
+    # 排查方向被误导到"卡片过期"）。优先级：进程环境变量 > .env > 默认值。
+    MINDGRAPH_CLARIFICATION_SALT: str = ""
 
     # ── Agentic Evidence Layer 阶段开关（ADR-003；M0 仅登记，不消费） ──
     # 依据《MindGraph Agent 化实施方案》M0 要求登记、后续里程碑按序消费：
@@ -209,6 +218,55 @@ class Settings(BaseSettings):
     # 失效，必须重跑消融并重新公布。
     INDEX_INCLUDED_SUBTREES: str = ""
 
+    # ── 切分策略（PR-03 单一来源）──
+    # 预设名（见 application.chunking_policy）；空 = legacy_v1（历史参数
+    # 500/1200/50 的精确快照）。未知名在运行时 fail-closed 拒绝。
+    # ⚠️ 换策略 = 改切分输出与 chunk ID 分母：必须重建索引并重跑检索回归，
+    # 已公布指标（R@5 等）随即失效。
+    CHUNKING_POLICY: str = ""
+
+    # ── Parent 上下文扩展（PR-09，默认关）──
+    # 打开后：命中带 parent lineage 的 child（m4 上传文档索引）时，预算内
+    # 用完整父块替换子块文本进入 LLM 上下文；扁平索引（mg-/m3-）自动跳过。
+    # 激活前提：双跑评测证明 Recall@5 不降、跨页/条款事实覆盖提升。
+    CONTEXT_EXPANSION_ENABLED: bool = False
+    CONTEXT_EXPANSION_MAX_CHARS: int = 1200
+
+    # ── 条件式 Rerank（PR-11，默认关）──
+    # 打开后：hybrid_rerank 策略按路由条件执行——exception_or_conflict /
+    # cross_policy 高收益路由跑 rerank，低收益路由跳过（省延迟非降级），
+    # 跳过原因进 trace。验收门禁：质量降 ≤1pp 且 P95/成本相对全量降 ≥20%。
+    CONDITIONAL_RERANK_ENABLED: bool = False
+
+    # ── 服务端会话上下文（PR-12，默认关）──
+    # 打开后：conversation 流式续问经 FollowupResolver 确定性解析（指代/槽位/
+    # 纠错），resolved_query 进检索，原文仍落库；SSE context_resolution 事件
+    # 携带替换证据与额外 token。关闭时恢复单轮语义（回滚即关 flag）。
+    CONVERSATION_SERVER_CONTEXT_ENABLED: bool = False
+    CONVERSATION_CONTEXT_MAX_TURNS: int = 5
+    CONVERSATION_CONTEXT_MAX_CHARS: int = 4000
+
+    # ── 索引激活一致性门禁（PR-04）──
+    # 激活前比对候选索引与活跃索引的切分口径/文档覆盖，不一致则拒绝改写 CURRENT。
+    # 2026-09-11 实测：69 chunks（扁平）与 98 chunks（StructuredChunker）两个版本
+    # 在同一根内并存，CURRENT 被切换过而无任何阻止 —— 本 flag 就为阻断这类
+    # 「未经认可的口径切换」而设。默认 fail-closed；置 false 即恢复旧激活流程
+    # （回滚路径），但切换后果仍由人承担。
+    INDEX_CONSISTENCY_GATE: bool = True
+
+    # ── OCR（PR-07）──────────────────────────────────────────────────────
+    # 默认**关闭**：OCR 是可选增强，装了引擎也不自动启用 —— 否则换台机器
+    # 行为就变了，且扫描件会被静默改写。启用 = 显式选择承担"识别文本进索引"的风险。
+    OCR_ENABLED: bool = False
+    # none | rapidocr。未知取值按 none 处理（见 get_ocr_provider）。
+    OCR_PROVIDER: str = "rapidocr"
+    # 低于该页级置信度的识别结果**不进索引**（宁可少收，不可错收）。
+    OCR_MIN_CONFIDENCE: float = 0.6
+    # 单页超时：到点不再等待并记该页失败。注意它不是强中断（见 provider 文档）。
+    OCR_TIMEOUT_SECONDS: float = 30.0
+    # 渲染 DPI：越高越慢越准。150 是中文印刷体的实用下限。
+    OCR_DPI: int = 150
+
     # ── 缓存 ──
     CACHE_ENABLED: bool = True
     ANSWER_CACHE_TTL_SECONDS: int = 3600
@@ -225,7 +283,7 @@ class Settings(BaseSettings):
     HEALTH_CHECK_INTERVAL_SECONDS: int = 30
 
     @model_validator(mode="after")
-    def _remap_deprecated_chat_provider(self) -> "Settings":
+    def _remap_deprecated_chat_provider(self) -> Settings:
         """防止「provider 名字与真实后端不符」再次隐身。
 
         历史问题：OpenAI 兼容槽的 provider 名长期写作 ``deepseek``，但端点早已改指
@@ -317,3 +375,13 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """获取全局配置单例（缓存，第一次加载后不变）。"""
     return Settings()
+
+
+def clarification_salt() -> str:
+    """部署的澄清盐，空串表示未配置。
+
+    唯一的读点（agent_service 生成端、clarification_service 校验端、
+    main.py 启动告警都调它）——盐是"跨进程一致"这条契约的根，四个地方各自
+    读一遍就会各自读错一遍：PR-13 实测的 .env 静默失效正是这么来的。
+    """
+    return get_settings().MINDGRAPH_CLARIFICATION_SALT

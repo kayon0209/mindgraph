@@ -3,8 +3,11 @@
 语义：owner 校验 → user 消息落库（稳定 sequence）→ 进程内复用
 mindgraph_chat.stream（与 /mindgraph/chat 同源事件，绝不 HTTP 自调用）→
 completed 事件时把 assistant 回答与 citations 快照按序落库。
-历史轮次的上下文通过 question 本身携带（Web 端拼装）；本端点不回放
-旧消息进 prompt——与 ChatService 单遍语义一致，避免第二套编排。
+
+PR-12：``CONVERSATION_SERVER_CONTEXT_ENABLED`` 打开时，服务端取最近窗口做
+确定性续问解析（指代/槽位/纠错），``resolved_query`` 进检索与生成，
+原文照常落库；SSE 先发 ``context_resolution`` 事件（替换证据 + 额外 token），
+多轮上下文的成本由此可观测。flag 关闭 = 单轮语义（历史行为）。
 """
 
 from __future__ import annotations
@@ -79,9 +82,50 @@ async def conversation_message_stream(
         include_retrieval_trace=False,
     )
 
+    # PR-12：服务端续问解析（flag 控制）。解析失败绝不阻断对话流——
+    # 降级为单轮语义并留 warning，不让上下文层把问答打挂。
+    resolution_payload: dict[str, Any] | None = None
+    settings_context_enabled = False
+    try:
+        from infrastructure.settings import get_settings
+
+        settings_context_enabled = bool(get_settings().CONVERSATION_SERVER_CONTEXT_ENABLED)
+    except Exception:
+        logger.warning("conversation_context_settings_unavailable", exc_info=True)
+    if settings_context_enabled:
+        try:
+            from application.followup_resolver import ConversationContextService, FollowupResolver
+            from infrastructure.settings import get_settings
+
+            settings = get_settings()
+            context_service = ConversationContextService(
+                service,
+                max_turns=settings.CONVERSATION_CONTEXT_MAX_TURNS,
+                max_context_chars=settings.CONVERSATION_CONTEXT_MAX_CHARS,
+            )
+            window = context_service.recent_window(conversation_id, principal_id=actor)
+            # 当前问题已在前面 append 进库——解析窗口必须排除它，否则指代
+            # 会绑定到本次问题自己（resolved == 原文，解析失效）。
+            window = [item for item in window if item.get("content") != payload.question]
+            resolution = FollowupResolver().resolve(payload.question, window)
+            if resolution.resolved_query and resolution.resolved_query != payload.question:
+                chat_request.resolved_query = resolution.resolved_query
+            resolution_payload = resolution.to_dict()
+        except Exception:
+            logger.exception("conversation_context_resolution_failed", extra={"conversation_id": conversation_id})
+            resolution_payload = None
+
     async def generate():
         completed_payload: dict[str, Any] | None = None
         try:
+            if resolution_payload is not None:
+                # 上下文解析证据先于检索事件发出：前端可据此展示"续问被理解为…"
+                context_event = {
+                    "request_id": getattr(request.state, "request_id", None),
+                    "event": "context_resolution",
+                    "data": resolution_payload,
+                }
+                yield f"event: context_resolution\ndata: {json.dumps(context_event, ensure_ascii=False, default=str)}\n\n"
             async for item in iter_sync_events(
                 lambda: get_container().mindgraph_chat.stream(chat_request),
                 executor=_shared_executor(),

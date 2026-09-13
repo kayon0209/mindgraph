@@ -22,6 +22,8 @@ export type RailState = {
   citationFidelity: boolean | null;
   usage: UsageInfo | null;
   degradedReason: string | null;
+  /** P1：模型思考流已开始（reasoning_delta 到达）——前端据此显示"思考中"，不再死寂 */
+  reasoningActive: boolean;
 };
 
 export const INITIAL_RAIL: RailState = {
@@ -33,6 +35,7 @@ export const INITIAL_RAIL: RailState = {
   citationFidelity: null,
   usage: null,
   degradedReason: null,
+  reasoningActive: false,
 };
 
 export type RailAction =
@@ -42,6 +45,8 @@ export type RailAction =
   | { type: "retrieval_routed"; route: RouteDecision }
   | { type: "retrieval_completed" }
   | { type: "generation_started" }
+  | { type: "reasoning_started" }
+  | { type: "reasoning_ended" }
   | { type: "citations"; citations: Citation[] }
   | { type: "usage"; usage: UsageInfo }
   | { type: "degraded"; reason: string | null }
@@ -69,9 +74,14 @@ export function railReducer(state: RailState, action: RailAction): RailState {
     case "retrieval_completed":
       return { ...state, steps: step(state, "retrieval", "done") };
     case "generation_started":
-      return { ...state, steps: step(state, "generation", "running") };
+      return { ...state, steps: step(state, "generation", "running"), reasoningActive: false };
+    case "reasoning_started":
+      // 思考模型（qwen3.8-flash）的 reasoning 流：可见的"思考中"，替代死寂
+      return { ...state, reasoningActive: true };
+    case "reasoning_ended":
+      return { ...state, reasoningActive: false };
     case "citations":
-      return { ...state, citations: action.citations };
+      return { ...state, citations: action.citations, reasoningActive: false };
     case "usage":
       return { ...state, usage: action.usage };
     case "degraded":
@@ -86,6 +96,7 @@ export function railReducer(state: RailState, action: RailAction): RailState {
         citationFidelity: action.result.citationFidelity,
         usage: action.result.usage ?? state.usage,
         degradedReason: action.result.degraded ?? state.degradedReason,
+        reasoningActive: false,
         steps: {
           scope: state.steps.scope === "running" ? "done" : state.steps.scope,
           retrieval: action.result.trace ? "done" : state.steps.retrieval,

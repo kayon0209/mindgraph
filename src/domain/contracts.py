@@ -30,6 +30,7 @@ SSE_EVENT_NAMES: Final[tuple[str, ...]] = (
     "degraded",
     "policy_conflict_detected",
     "generation_started",
+    "reasoning_delta",
     "answer_delta",
     "citations",
     "usage",

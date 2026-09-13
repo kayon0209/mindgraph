@@ -113,6 +113,16 @@ def _norm(value: Any) -> str:
     return text[len(prefix):] if text.startswith(prefix) else text
 
 
+def normalize_label(value: Any) -> str:
+    """公开的标签归一化入口（``_norm`` 的正式名字）。
+
+    索引侧与数据集侧必须用同一套归一化，否则「索引里有的标签」与「数据集里要的
+    标签」会各算各的，重叠数变成口径差的产物。对外的消费方见
+    ``application/evaluation_service.py``。
+    """
+    return _norm(value)
+
+
 def document_key(metadata: dict[str, Any] | None) -> str | None:
     """从 chunk metadata 里取一个跨 builder 可比的文档键。"""
     if not metadata:
@@ -453,4 +463,237 @@ def audit_index_consistency(
         "metadata_source_reason": note_index.reason,
         **classification,
         **coverage,
+    }
+
+
+# ── 索引根登记表：把「哪个根服务哪套数据集」变成可检测的代码契约 ─────────────
+#
+# 本机实测（2026-09-11）：仓库里有两个索引根，**都叫 CURRENT**，但服务两套互不
+# 相干的评测栈，且各自完全自洽：
+#
+# =======================  ============================================  ================
+# 根目录                     服务的系统 / 数据集                            标签命名空间
+# =======================  ============================================  ================
+# ``mindgraph_indexes``    线上问答管线 + golden v2（90 题）               ``vault_path``
+# ``retrieval_indexes``    历史 M1/M2 评测栈 + expense_qa_v1（34 题）      ``chunk_id``
+# =======================  ============================================  ================
+#
+# 实测重叠：mindgraph 根对 golden 的 13 个 vault_path **全中**、对 expense_qa_v1 的
+# 中文 chunk_id **0 中**；retrieval 根对 expense 的 17 个 chunk_id **全中**、对
+# golden 的 vault_path **0 中**。因此**不存在「哪个根是错的」**——但存在两类真风险：
+#
+# 1. **「统一根」不是无痛操作**。把 ``EvaluationService`` 的根换成
+#    ``mindgraph_indexes`` 会立刻抛 ``ValueError: No index version is compatible``
+#    （它的数据集标签是 ``差旅费报销管理办法.md::6`` 这类中文 chunk_id，
+#    ``mg-`` 根用的是 32 位 hex ID），``/api/v1/evaluations`` 直接坏掉。
+# 2. **接错栈是静默的**。新增代码随手写一个 ``ROOT / "data" / ...`` 常量就能接上
+#    另一套栈，表现是「跑得通，但测的不是线上系统」——数字看起来完全正常。
+#
+# 登记表负责消灭第 2 类：任何索引根都必须在此声明它的数据集与消费方，
+# ``tests/test_index_root_registry.py`` 断言「登记的根存在」+「根与它声明的数据集
+# 标签重叠 > 0」+「磁盘上的根没有漏登记」。于是接错栈会变成测试失败。
+#
+# ⚠️ 本表只声明事实，不改变任何读取行为：两个消费方（evaluation_service /
+# freeze_baseline）各自继续读自己的根，因为它们的**数据集粒度不同**。
+# 「让 /api/v1/evaluations 也测线上系统」是产品决策，另立任务，不在本表范围。
+INDEX_ROOT_REGISTRY_VERSION = "index_root_registry_v1"
+
+# label_key → 数据集里承载 gold 标签的字段名。
+# v1（expense_qa_v1）标注到 chunk 级，v2（golden v2）标注到文档级——这不是疏漏，
+# 而是两代评测对「期望证据」的粒度不同，故显式区分而不是取并集假装统一。
+_GOLD_LABEL_FIELDS: dict[str, tuple[str, ...]] = {
+    "chunk_id": ("gold_chunk_ids", "acceptable_chunk_ids"),
+    "vault_path": ("gold_vault_paths",),
+}
+
+
+@dataclass(frozen=True)
+class IndexRootSpec:
+    """一个索引根的服务契约：它服务哪套数据集、谁写入、谁读取。"""
+
+    name: str
+    purpose: str
+    dataset: str
+    label_key: str
+    builders: tuple[str, ...]
+    consumers: tuple[str, ...]
+
+    @property
+    def root(self) -> str:
+        """相对项目根的路径，用于写进报告与产物。"""
+        return f"data/{self.name}"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "root": self.root,
+            "purpose": self.purpose,
+            "dataset": self.dataset,
+            "label_key": self.label_key,
+            "builders": list(self.builders),
+            "consumers": list(self.consumers),
+        }
+
+
+INDEX_ROOT_REGISTRY: tuple[IndexRootSpec, ...] = (
+    IndexRootSpec(
+        name="mindgraph_indexes",
+        purpose="线上 MindGraph 问答检索（container.mindgraph_pipeline）与 golden v2 基线",
+        dataset="mindgraph_golden_v2.jsonl",
+        label_key="vault_path",
+        builders=("mg-（application/mindgraph_index_service.py）",),
+        consumers=(
+            "api/dependencies.py → ServiceContainer._init_mindgraph",
+            "scripts/freeze_baseline.py（live 检索）",
+        ),
+    ),
+    IndexRootSpec(
+        name="retrieval_indexes",
+        purpose="历史 M1/M2 评测栈：/api/v1/evaluations 与 evaluation.retrieval_eval 在用",
+        dataset="expense_qa_v1.jsonl",
+        label_key="chunk_id",
+        builders=(
+            "m3-（application/knowledge_service.py）",
+            "m4-（application/index_lifecycle_service.py）",
+        ),
+        consumers=(
+            "application/evaluation_service.py",
+            "evaluation/retrieval_eval.py",
+            "infrastructure/retrieval_factory.py",
+        ),
+    ),
+)
+
+
+def index_root_spec(name: str) -> IndexRootSpec:
+    """按目录名取登记项；未登记即报错，强制新增根先登记。"""
+    for spec in INDEX_ROOT_REGISTRY:
+        if spec.name == name:
+            return spec
+    known = ", ".join(spec.name for spec in INDEX_ROOT_REGISTRY)
+    raise KeyError(f"unregistered index root {name!r}; registered roots: {known}")
+
+
+def dataset_gold_labels(dataset_path: str | Path, label_key: str) -> set[str]:
+    """读数据集里的 gold 标签集合（按 ``label_key`` 决定读哪些字段）。
+
+    文件不可读或无有效标签时返回空集——调用方（门禁）会把它判为「绑定不成立」，
+    不在这里抛异常，免得审计路径因为数据文件缺失而整体崩掉。
+    """
+    fields = _GOLD_LABEL_FIELDS.get(label_key)
+    if not fields:
+        raise KeyError(f"unknown label_key {label_key!r}; known: {sorted(_GOLD_LABEL_FIELDS)}")
+    path = Path(dataset_path)
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return set()
+    labels: set[str] = set()
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        for field_name in fields:
+            for value in row.get(field_name) or []:
+                if value:
+                    labels.add(_norm(value))
+    return labels
+
+
+def version_label_set(
+    version_dir: str | Path,
+    label_key: str,
+) -> tuple[set[str], int]:
+    """读**指定索引版本目录**的标签集合，返回 ``(标签集, chunk 数)``。
+
+    与 :func:`index_label_set` 唯一的区别是**不读 ``CURRENT``**：调用方已经知道要看哪个
+    版本。用途是「在多个版本里挑一个与该数据集重叠最大的版本」——
+    ``application/evaluation_service.py`` 的 ``_compatible_index_version`` 靠它工作。
+
+    两者共用同一套归一化（:func:`_norm` / :func:`document_key`），这是有意的：
+    若「挑版本」与「验绑定」用两套口径，就会出现「选中了某版本、但绑定检查说不成立」。
+
+    ``label_key`` 未登记即报错（fail-closed）：历史上这里是一个 ``if/else``，
+    拼错的 key 会静默落到 ``document_key`` 分支，产出「看起来正常」的错标签集。
+    """
+    if label_key not in _GOLD_LABEL_FIELDS:
+        raise KeyError(f"unknown label_key {label_key!r}; known: {sorted(_GOLD_LABEL_FIELDS)}")
+    directory = Path(version_dir)
+    try:
+        chunks = json.loads((directory / "chunks.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return set(), 0
+    if not isinstance(chunks, list):
+        return set(), 0
+    labels: set[str] = set()
+    for chunk in chunks:
+        if not isinstance(chunk, dict):
+            continue
+        if label_key == "chunk_id":
+            value = chunk.get("chunk_id")
+            if value:
+                labels.add(_norm(value))
+        else:
+            key = document_key(chunk.get("metadata") if isinstance(chunk.get("metadata"), dict) else None)
+            if key:
+                labels.add(key)
+    return labels, len(chunks)
+
+
+def index_label_set(
+    index_root: str | Path,
+    label_key: str,
+) -> tuple[set[str], str | None, int]:
+    """取活跃索引的标签集合，返回 ``(标签集, 索引版本, chunk 数)``。
+
+    与 :func:`dataset_gold_labels` 用同一套归一化（:func:`_norm` / :func:`document_key`），
+    两边可比才算「这个根服务的正是这套数据集」。
+    """
+    root = Path(index_root)
+    try:
+        version = (root / "CURRENT").read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return set(), None, 0
+    if not version:
+        return set(), None, 0
+    labels, chunk_count = version_label_set(root / version, label_key)
+    return labels, version, chunk_count
+
+
+def index_root_binding_report(project_root: str | Path) -> dict[str, Any]:
+    """把登记表与磁盘实际状态对账，产出可读结论（门禁与审计共用）。
+
+    每项含 ``overlap``（根标签 ∩ 数据集 gold 标签）。``binding_ok`` 要求
+    ``overlap > 0``——这是「该根确实服务该数据集」的机器判据，也是本模块对
+    2026-09-11「双根差 8.4×」那次排查的最终收口：不是选一个根，而是把
+    「谁服务谁」写成可验证的事实。
+    """
+    project_root = Path(project_root)
+    dataset_dir = project_root / "evaluation" / "datasets"
+    entries: list[dict[str, Any]] = []
+    for spec in INDEX_ROOT_REGISTRY:
+        root_path = project_root / spec.root
+        labels, version, chunk_count = index_label_set(root_path, spec.label_key)
+        gold = dataset_gold_labels(dataset_dir / spec.dataset, spec.label_key)
+        overlap = labels & gold
+        entries.append({
+            **spec.to_dict(),
+            "exists": root_path.is_dir(),
+            "index_version": version,
+            "chunk_count": chunk_count,
+            "label_count": len(labels),
+            "dataset_label_count": len(gold),
+            "overlap": len(overlap),
+            "overlap_samples": sorted(overlap)[:_UNMATCHED_SAMPLE_LIMIT],
+            "binding_ok": bool(overlap),
+        })
+    return {
+        "registry_version": INDEX_ROOT_REGISTRY_VERSION,
+        "roots": entries,
+        "binding_ok": all(entry["binding_ok"] for entry in entries),
     }

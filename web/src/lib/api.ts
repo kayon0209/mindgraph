@@ -6,7 +6,7 @@ import type {
   ChatRequest,
   ConceptGapsResponse,
   ConfirmedRelationsResponse,
-  DocumentRecord,
+  DocumentVersionModel,
   EvaluationResponse,
   ExtractRelationsResult,
   HealthStatus,
@@ -18,37 +18,77 @@ import type {
   StreamEvent,
 } from "../types";
 
+import { contentVersion, slugifyLogicalId } from "./document-upload";
+
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || "/api/v1").replace(/\/$/, "");
 
 export class ApiError extends Error {
   constructor(
     message: string,
     public readonly status: number,
+    /** 后端错误体的 error.code（如 index_consistency_blocked）——调用方据此分支。 */
+    public readonly code?: string,
   ) {
     super(message);
     this.name = "ApiError";
   }
 }
 
+/**
+ * 从后端错误体里取出人能读的消息与机器可判的 code。
+ *
+ * 后端 ProductError 的响应体是 ``{"error": {"code", "message", "detail"}}``
+ * （见 api/exception_handlers._build_error_response），而 422 校验错误是
+ * ``{"detail": [...]}``。以前只读顶层 ``detail/message``，于是 404/409 这类
+ * 业务错误在界面上只剩 "Conflict" 这种 HTTP 状态文本——索引门禁那条带着
+ * "force=true 重试"指引的 409 也会被吞掉。
+ */
+export function describeApiError(body: unknown, fallback: string): { message: string; code?: string } {
+  if (!body || typeof body !== "object") return { message: fallback };
+  const record = body as Record<string, unknown>;
+  const nested = (record.error && typeof record.error === "object" ? record.error : {}) as Record<string, unknown>;
+  const code = typeof nested.code === "string" ? nested.code : undefined;
+  for (const candidate of [nested.message, record.message, nested.detail, record.detail]) {
+    if (typeof candidate === "string" && candidate.trim()) return { message: candidate, code };
+  }
+  const detail = nested.detail ?? record.detail;
+  if (Array.isArray(detail)) {
+    const parts = detail
+      .map((item) => (item && typeof item === "object" ? String((item as Record<string, unknown>).msg ?? "") : String(item)))
+      .filter(Boolean);
+    if (parts.length) return { message: parts.join("; "), code };
+  }
+  return { message: fallback, code };
+}
+
+async function send<T>(path: string, init: RequestInit): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`, init);
+  if (!response.ok) {
+    let parsed: unknown;
+    try {
+      parsed = await response.json();
+    } catch {
+      parsed = undefined; // 非 JSON 错误体：保留 HTTP 状态文本
+    }
+    const { message, code } = describeApiError(parsed, response.statusText);
+    throw new ApiError(message || `HTTP ${response.status}`, response.status, code);
+  }
+  return response.json() as Promise<T>;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
+  return send<T>(path, {
     ...init,
     headers: {
       "Content-Type": "application/json",
       ...init?.headers,
     },
   });
-  if (!response.ok) {
-    let detail = response.statusText;
-    try {
-      const body = (await response.json()) as { detail?: string; message?: string };
-      detail = body.detail || body.message || detail;
-    } catch {
-      // Keep the HTTP status text when the body is not JSON.
-    }
-    throw new ApiError(detail || `HTTP ${response.status}`, response.status);
-  }
-  return response.json() as Promise<T>;
+}
+
+/** multipart 上传：**不要**设置 Content-Type，boundary 必须由浏览器生成。 */
+async function requestForm<T>(path: string, body: FormData): Promise<T> {
+  return send<T>(path, { method: "POST", body });
 }
 
 export function parseSseFrames(input: string): { events: StreamEvent[]; remainder: string } {
@@ -174,27 +214,64 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ decision, reason }),
     }),
-  /** 材料上传（阶段A需求3）：multipart 走独立 fetch，不能复用 JSON request 助手 */
-  uploadDocument: async (file: File, category = "upload"): Promise<DocumentRecord> => {
-    const form = new FormData();
-    form.append("file", file);
-    form.append("category", category);
-    const response = await fetch(`${API_BASE}/knowledge/documents`, { method: "POST", body: form });
-    if (!response.ok) {
-      let detail = response.statusText;
-      try {
-        const body = (await response.json()) as { detail?: string; message?: string };
-        detail = body.detail || body.message || detail;
-      } catch {
-        // 非 JSON 错误体保留状态文本
-      }
-      throw new ApiError(detail || `HTTP ${response.status}`, response.status);
+  /**
+   * 材料上传：走**版本化生命周期**（`POST /knowledge/versions`），而不是只把文件
+   * 丢进 uploads/ 的旧入口。
+   *
+   * 旧入口（`POST /knowledge/documents`）不写 document_versions、没有页级账本、
+   * 不接 OCR——用它上传的材料拿不到任何新能力（P4 现场核对实测：页级账本 0 条）。
+   *
+   * 三步串联，缺一步这份材料对检索就是不可见的：
+   * ① 上传（draft）→ ② 状态流转 draft→pending_index→active（TRANSITIONS 不允许
+   * 跳级）→ ③ 增量重建索引（chunks 只在 active 之后才进得了索引）。
+   *
+   * 解析未通过（含需 OCR 的扫描页）时后端直接给 parse_failed，此时**不做**流转：
+   * 硬转会 409，而"解析失败"本身是需要告诉用户的信息，不该被一次伪造的流转盖掉。
+   */
+  uploadDocumentVersion: async (file: File, category = "upload"): Promise<DocumentVersionModel> => {
+    const buildForm = (version: string) => {
+      const form = new FormData();
+      form.append("file", file);
+      form.append("logical_document_id", slugifyLogicalId(file.name));
+      form.append("version", version);
+      form.append("category", category);
+      form.append("authority_level", "user_uploaded_reference");
+      return form;
+    };
+    let record: DocumentVersionModel;
+    try {
+      record = await requestForm<DocumentVersionModel>("/knowledge/versions", buildForm("v1"));
+    } catch (error) {
+      // 同名同版本已存在（`create_version` 以 logical_id+version 定位，不自动递增）。
+      // 用内容派生版本再试一次：内容真变了就是一次正常的版本更新；没变则第二次同样
+      // 冲突，错误照实抛给用户（"这份文件已在库中"）。不静默吞掉，调用方会展示
+      // record.version，用户能看到落到哪个版本上。
+      if (!(error instanceof ApiError) || error.status !== 409) throw error;
+      record = await requestForm<DocumentVersionModel>(
+        "/knowledge/versions",
+        buildForm(contentVersion(file.lastModified, file.size)),
+      );
     }
-    return response.json() as Promise<DocumentRecord>;
+    if (record.status !== "draft") return record;
+    for (const target of ["pending_index", "active"]) {
+      record = await request<DocumentVersionModel>(
+        `/knowledge/versions/${encodeURIComponent(record.document_id)}/transition?target=${target}`,
+        { method: "POST" },
+      );
+    }
+    return record;
   },
-  /** 上传后增量重建索引，使新材料进入检索 */
-  incrementalRebuild: () =>
-    request<Record<string, unknown>>("/knowledge/index/incremental-rebuild", { method: "POST" }),
+  /**
+   * 上传后增量重建索引，使新材料进入检索。
+   *
+   * ``force`` 是切分口径门禁的逃生口：候选索引与活跃索引的切分口径/文档覆盖不一致
+   * 时后端 409（防 2026-09-11 那类静默换口径），确认后带 force=true 再试一次。
+   */
+  incrementalRebuild: (force = false) =>
+    request<Record<string, unknown>>(
+      `/knowledge/index/incremental-rebuild${force ? "?force=true" : ""}`,
+      { method: "POST" },
+    ),
   /** 离线关系抽取（HITL：只产 proposed，需人工确认后入图） */
   extractRelations: (options?: { dry_run?: boolean; use_llm?: boolean }) =>
     request<ExtractRelationsResult>("/mindgraph/relations/extract", {

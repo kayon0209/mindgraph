@@ -119,6 +119,13 @@ class RetrievalTraceModel(BaseModel):
     route_decision: dict[str, Any] = Field(default_factory=dict)
     query_variants: list[str] = Field(default_factory=list)
     original_query: str | None = None
+    # P1：思考模型的 reasoning 阶段原文（拼好的完整文本，不是增量）。
+    # 为什么放进 trace 而不是只在 SSE 上过一遍：思考过程是「模型怎么得出这个结论」的
+    # 唯一证据，审计与回归要用它；而且 SSE 客户端断开后原文就没了。
+    # 安全性：模型只见过经 ACL 过滤后的证据，因此这里不会出现主体无权看的内容；
+    # 它会随 trace_json 进入 query_logs，与 trace 其余字段同级可读——这是有意的
+    # （审计面），不要在别处复制一份。
+    reasoning_text: str | None = None
 
 
 class UsageMetrics(BaseModel):
@@ -200,6 +207,9 @@ class ChatRequest(BaseModel):
     query_type: str | None = Field(default=None, max_length=40)
     # 计划 4.4：版本继承/条件/例外/冲突问题可配置最多 2 跳图扩展。
     graph_hops: int = Field(default=1, ge=1, le=2)
+    # PR-12：服务端续问解析的结果（指代/槽位/纠错已展开的完整问句）。
+    # 路由与检索用它；``question`` 保持原文用于落库与审计。None = 单轮语义。
+    resolved_query: str | None = Field(default=None, max_length=4000)
 
     @field_validator("query_date")
     @classmethod

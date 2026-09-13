@@ -1,0 +1,349 @@
+{
+  "generated_at": "2026-09-11T16:41:55+08:00",
+  "evidence_baseline_sha": "aa3943aad99f377970d16d1f7da9c0f3432fd3c3",
+  "usage": "one_pr_at_a_time",
+  "field_verification": {
+    "verified_at": "2026-09-11T21:15:00+08:00",
+    "verified_rounds": 2,
+    "document": "05-FIELD-VERIFICATION.md",
+    "authority": "overrides_pr_task_sheets_on_conflict",
+    "pr_coverage": "all 15 PR task sheets verified (round 1 covered PR-02..09/11/12/13; round 2 added PR-01/10/14/15)",
+    "baseline_sha_still_current": true,
+    "all_referenced_files_exist": true,
+    "gate_command_fixes": [
+      "targeted pytest runs MUST add --no-cov (pytest.ini has --cov-fail-under=55; single-file run exits 1)",
+      "ruff MUST add --select F821,F822,F823,E902 (unscoped run reports 5934 pre-existing findings)",
+      "mypy: 4 pre-existing errors in evaluation/answer_eval.py at HEAD (lines 286/306/489/490)"
+    ],
+    "phase_numbering_note": "pack uses M0-M6; docs/UPGRADE_PLAN.md uses UG-001..UG-008; repo implementation order is at AGENTS.md:77",
+    "branch_note": "currently on pr-01-freeze-baseline (HEAD 483b0be = PR-01 commit); main is aa3943a; do NOT stack PR-02 on the PR-01 branch, branch PR-02 from main",
+    "working_tree_note": "AS OF 2026-09-11T21:33 a PR IS ALREADY IN PROGRESS in this worktree (PR-02: src/application/feedback_service.py modified, tests/test_feedback_ownership.py added). Per 05-FIELD-VERIFICATION.md section 4.1 'timing B': do NOT commit, do NOT stash, do NOT rebase. The uncommitted set splits into class A (PR-01 hardening, goal-aligned) and class B (dataset dispatch in evaluation_service.py/dependencies.py, belongs to NO PR); keep both isolated so they never enter the in-progress PR's diff. A backup of all uncommitted work exists outside the repo at D:/demo/output/_mindgraph_uncommitted_backup_20260911/ (tracked-changes.patch + untracked-files.tgz).",
+    "blocking_human_decisions": [
+      "class B orphan changes ownership (section 4.1 B1 keep / B2 revert / B3 fold into PR-01) - NOT a blocker for the in-progress PR-02; decide after PR-02 acceptance",
+      "PR-01 evaluations endpoint default dataset",
+      "PR-04 chunking policy: which of the two paths (69 flat vs 98 StructuredChunker) is correct",
+      "PR-09 parent-chunk consumption strategy",
+      "PR-12 / PR-13: does MindGraph become multi-turn and add resumable clarification? This REPOSITIONS the project and overlaps BrandAgent's boundary - explicit human decision required BEFORE any code is written"
+    ],
+    "pr_corrections": {
+      "PR-01": "ALREADY PARTIALLY DONE: scripts/freeze_baseline.py exists and is committed at 483b0be (370 lines) plus ~217 uncommitted hardening lines; do not rewrite; actual HEAD is no longer the evidence baseline aa3943a; index_metadata.py (+243, uncommitted) is on the required-reading list",
+      "PR-10": "premise holds (adaptive_retrieval_router.py:287 hardcodes confidence to 0.85/0.95 only); BUT QueryUnderstandingService is ALREADY live in production at chat_service.py:91 - the new shadow analyzer must not modify it; no tests/test_query_understanding.py exists, create a new test file",
+      "PR-11": "premise holds unchanged: RERANKER_ENABLED=False at src/infrastructure/settings.py:113 with model BAAI/bge-reranker-base, LOCAL_FILES_ONLY=True, RERANK_TOP_N=10; all 5 required-reading files exist; note that requests routed to hybrid_rerank degrade to hybrid when the reranker is off (RetrievalTraceModel.degraded / degradation_reason at src/domain/models.py:110-111) and the ablation must account for those samples; PR-09 dependency must be rewritten first",
+      "PR-14": "TASK SHEET DIRECTION IS OFF: stage candidates / route_decision / query_variants / index_version ALREADY exist in query_logs.trace_json (RetrievalTraceModel at domain/models.py:100-121); feedback_service.py:33 only extracts trace['final_chunks']. Real gap is non-consumption, not missing collection. Also: feedback_service.py:32 uses a positional INSERT with 11 bare placeholders (any ADD COLUMN breaks it first) and bad_cases.request_id is UNIQUE so near-duplicate detection must span request_ids",
+      "PR-15": "ADR REFERENCE IS WRONG: ADR-005 is the single-node hardening ADR whose non-goals explicitly exclude multi-worker/external queues; write a NEW ADR (suggest ADR-006) instead of extending ADR-005; protocols already partly exist (retrieval/types.py:86-115 EmbeddingProvider/DenseRetriever/SparseRetriever/FusionStrategy/Reranker, domain/interfaces.py:6 ChatProvider, infrastructure/parsers/base.py:8 DocumentParser) so this is gap-filling not greenfield; task_service.py:47 proves the coupling premise; PR-09 dependency needs rewriting first | LOW PRIORITY: conflicts with ADR-005 non-goals (multi-worker / external queue are explicitly out of scope this round) and has no driving user demand; enterprise-scale work.",
+      "PR-02": "query_logs.principal_id already exists (database.py:289-296, schema v13) so NO migration; create_feedback has FOUR call sites, not two - (1) routes/feedback.py:16 pass current_actor(request); (2) agent_service.py _persist_assist INSERT must add the column; (3) src/application/evidence_tools/feedback_tool.py:143 ALSO calls it (missed by both the task sheet and the first verification round; reuse its existing :80 current_user = (scope or {}).get('user') or 'anonymous' which matches agent_service.py:174); (4) src/ui/api_client.py:190 is HTTP so no change. AUTH CALIBRE: require_authenticated()->dict vs current_actor()->str; write side persists a str so the query side MUST use current_actor. TEST TRAPS (all four are test-side, implementation is fine): (a) the route uses `from api.auth import current_actor` so patching api.auth.current_actor is INEFFECTIVE (proven: fb.current_actor is not auth.current_actor after patching) - patch feedback_route.current_actor instead; (b) a bare FastAPI() in the test must register ProductError->product_error_handler or business 404s render as 500; (c) _app() wraps the monkeypatch in try/finally with a return inside try, so finally fires at return and UNDOES the patch - use a pytest fixture with monkeypatch.setattr; (d) _payload() returns a dict but is passed to create_feedback(payload: FeedbackCreate) -> AttributeError. FALSE-PASS WARNING: the two tests expecting 404 also pass when EVERYTHING 404s, so the acceptance criterion is '8 passed AND removing AND principal_id=? makes them fail', not 'fewer red'. HARD LINE: never weaken the implementation (drop the ownership predicate / fail-open) to make tests green.",
+      "PR-03": "third chunking constant is INLINE at src/application/mindgraph_index_service.py:129 _chunk_text(sec_body, 500, 50) and it is the online index build point",
+      "PR-04": "98/69 is two chunking paths (StructuredChunker vs document_loader) proven by index metadata, not parameter drift; roots hold 16 and 7 version dirs with 3 metadata schemas and 4 dirs missing metadata.json",
+      "PR-05": "premise holds; answer_eval.py carries 4 pre-existing mypy errors; metric comes from offline frozen predictions, not the API",
+      "PR-06": "PREMISE LARGELY FALSE: page-level parsing ALREADY EXISTS. Evidence: src/infrastructure/parsers/ (base/registry/pdf/docx/text/xlsx); ParsedDocument.parser_version (src/domain/models.py:356) and document_lifecycle_service.py:75,82 already assemble parser diagnostics; ParsedElement.page_number (:341); StructuredChunk.page_start/page_end (:370-371); ParsedDocument.ocr_required_pages (:359); ParsedElement.ocr_derived (:347); ParsedElement.table_id/table_rows (:344-345). REAL GAP is only two things: (1) PERSISTENCE - none of the 30 CREATE TABLE statements declares ingestion_jobs / page_artifacts / document_pages, so per-page artifacts are dropped with the process and 'retry must not re-run successful pages' is PHYSICALLY IMPOSSIBLE; (2) no persisted state machine registered->extracting->parsed/ocr_required/failed->chunked with attempt counters. Executing the sheet verbatim would rewrite an existing parser layer. DEPENDENCY NOTE: parser deps mostly missing - fitz/pdfplumber/pdf2image/pytesseract/paddleocr/rapidocr_onnxruntime/cv2/onnxruntime all absent, but pypdf 6.17.0 and PIL 12.3.0 ARE present. SCHEMA CHANGE: this PR adds tables - additive only; acceptance report must state 'new tables only, no existing table/column altered'. SEQUENCING: src/document_loader.py is being modified by PR-03 - confirm PR-03 is closed before touching it.",
+      "PR-07": "no OCR engine installed at all; recommend rapidocr-onnxruntime; ocr_verify_rapidocr.py is ready to run; ocr_required_pages already produced at pdf.py:35,45-46,93",
+      "PR-08": "cross-page cut mechanism located at structured_chunker.py:18 (grouping key falls back to page:<n> when no heading_path); page_start/page_end already computed",
+      "PR-09": "Parent-Child ALREADY implemented (structured_chunker.py:24-33); retrieval-layer consumption count = 0; rewrite this task sheet before dispatch",
+      "PR-12": "REPOSITIONING RISK: src/application/conversation_service.py is PURE PERSISTENCE (get_messages/append_message/import_local_turns) with NO history replay into the prompt, and ChatRequest only carries conversation_id. Implementing PR-12 turns MindGraph from STATELESS SINGLE-TURN into STATEFUL MULTI-TURN - this silently contradicts the frozen project positioning ('single-turn, stateless, no multi-turn'). NOT a normal PR: it is a repositioning. STOP AND ASK THE HUMAN before starting.",
+      "PR-13": "BOUNDARY BLUR RISK: a resumable clarification (interrupt + resume) protocol is BrandAgent's territory per the project-boundary rule ('unified state + conditional routing + interrupt clarification = BrandAgent'). Table already exists (schema v14, clarification_requests, currently no business consumer) so no migration is needed, which makes it MORE tempting to just do. Blurring this boundary across projects is the single most fatal error in interview settings. STOP AND ASK THE HUMAN before starting."
+    },
+    "recommended_first_pr": "PR-02",
+    "recommended_order": [
+      "PR-02",
+      "PR-03",
+      "PR-04",
+      "PR-05",
+      "PR-06",
+      "PR-07",
+      "PR-08",
+      "PR-10",
+      "PR-11",
+      "PR-12",
+      "PR-13",
+      "PR-14",
+      "PR-09(rewrite first)",
+      "PR-15"
+    ],
+    "night_gate": {
+      "created_at": "2026-09-11T22:00:00+08:00",
+      "document": "06-NIGHT-GATE-LOG.md",
+      "mode": "read-only hourly polling; appends evidence to the log; never edits source",
+      "risk_checks": [
+        "R1 implementation security weakened",
+        "R2 test injection ineffective",
+        "R3 uncommitted pile-up without commits",
+        "R4 out-of-scope execution (PR-12/13)",
+        "R5 environment mutation (deps installed)"
+      ],
+      "known_state_at_creation": "PR-02 in flight; 6/8 ownership tests red due to ineffective monkeypatch (proven: api.routes.feedback.current_actor is a separate binding from api.auth.current_actor); implementation NOT weakened; zero commits since 483b0be"
+    },
+    "pr02_acceptance": {
+      "verified_at": "2026-09-11T22:25:00+08:00",
+      "verified_by": "verifier (independent, own test run - not the executor's self-report)",
+      "targeted_suite": "tests/test_feedback_ownership.py -> 8 passed (2.91s)",
+      "mutation_test": "PASSED. Replacing `AND principal_id=?` with `AND ? IS NOT NULL` (same binding count, ownership check disabled) -> 2 failed (assert 201 == 404 in test_other_principal_gets_uniform_not_found and test_null_owner_row_fail_closed), exit 1. The suite is NOT vacuous and the 404-expecting tests no longer false-pass. File restored byte-identically (sha256 16602ca6001121a1f938...).",
+      "implementation_reviewed": {
+        "src/api/routes/feedback.py": "13 lines - passes principal_id into FeedbackService",
+        "src/application/agent_service.py": "27 lines - INSERT 18 -> 19 cols with principal_id, value `principal or \"anonymous\"`",
+        "src/application/evidence_tools/feedback_tool.py": "2 lines - 4th call site, reuses :80 current_user calibre",
+        "src/application/feedback_service.py": "20 lines - fail-closed + ownership predicate intact"
+      },
+      "R1_implementation_weakened": false,
+      "verdict": "PR-02 code is deliverable."
+    },
+    "staged_index_defect": {
+      "severity": "BLOCKER before committing",
+      "detected_at": "2026-09-11T22:25:00+08:00",
+      "summary": "The executor has started `git add`. The staged snapshot is NOT self-consistent: tests/test_freeze_baseline.py IS staged and calls freeze_baseline.strip_volatile() (3 sites) / references VOLATILE_PATHS, while scripts/freeze_baseline.py (which defines them) is NOT staged (index == HEAD, 370 lines both). Committing now produces a commit whose own test suite errors with AttributeError: module 'scripts.freeze_baseline' has no attribute 'strip_volatile' (at least 3 cases).",
+      "evidence": [
+        "git diff --cached -- tests/test_freeze_baseline.py added lines :150/:271/:290 `from scripts import freeze_baseline`; :138/:140/:166 call strip_volatile",
+        "git show HEAD:scripts/freeze_baseline.py counts: strip_volatile=0, VOLATILE_PATHS=0, VOLATILE_LIST_ITEM_KEYS=0, INDEX_ROOT_REGISTRY=0",
+        "working tree counts: 1 / 2 / 2 / 3 - and that file sits in the unstaged (` M`) group",
+        "src/application/index_metadata.py (+243, defines INDEX_ROOT_REGISTRY) IS staged while its consumer scripts/freeze_baseline.py:49 is NOT",
+        "unstaged remainder: docs/GOLDEN_DATASET_CARD.md, evaluation/mindgraph_retrieval_eval.py, evaluation/runner.py, scripts/freeze_baseline.py"
+      ],
+      "root_lesson": "A green WORKING TREE does not mean a green STAGED COMMIT. pytest runs the working tree; git commit ships the index. Class A changes were split in half by the staging, so the commit is broken even though the working tree passes.",
+      "prescribed_split": {
+        "reset_first": "git reset   # --mixed, does not touch the working tree",
+        "commit_1_PR02": [
+          "src/application/feedback_service.py",
+          "src/api/routes/feedback.py",
+          "src/application/agent_service.py",
+          "src/application/evidence_tools/feedback_tool.py",
+          "tests/test_feedback_ownership.py"
+        ],
+        "commit_2_PR01_wrapup": [
+          "scripts/freeze_baseline.py",
+          "tests/test_freeze_baseline.py",
+          "evaluation/mindgraph_retrieval_eval.py",
+          "tests/test_mindgraph_retrieval_eval.py",
+          "docs/GOLDEN_DATASET_CARD.md",
+          "evaluation/runner.py",
+          "src/application/index_metadata.py",
+          "tests/test_index_root_registry.py"
+        ],
+        "commit_3_classB_orphan": [
+          "src/application/evaluation_service.py",
+          "src/api/dependencies.py",
+          "tests/test_evaluation_v2_migration.py"
+        ],
+        "post_commit_selfcheck": "git stash push -u -> full pytest -> git stash pop: proving the COMMITTED tree passes, which is stronger than proving the working tree passes"
+      },
+      "verifier_stance": "read-only; verifier does not touch the index or the code",
+      "status": "RESOLVED on 2026-09-11T22:25:51+08:00",
+      "resolution": "The executor did `git reset` (three times, see reflog) and then committed ONLY the 5 PR-02 files as d21c314. The staged half-split never reached a commit. Risk remains for the NEXT commit - the remaining 12 uncommitted items must still be staged in self-consistent groups (see section 9.3)."
+    },
+    "pr02_commit": {
+      "sha": "d21c314",
+      "subject": "fix(feedback): enforce per-principal feedback ownership (PR-02)",
+      "committed_at": "2026-09-11T22:25:51+08:00",
+      "branch": "pr-01-freeze-baseline",
+      "files": [
+        "src/api/routes/feedback.py",
+        "src/application/agent_service.py",
+        "src/application/evidence_tools/feedback_tool.py",
+        "src/application/feedback_service.py",
+        "tests/test_feedback_ownership.py"
+      ],
+      "clean_tree_verification": {
+        "method": "git clone --no-hardlinks D:/demo/mindgraph -> temp; git checkout d21c314; full pytest",
+        "result": "640 passed, 2 skipped, 0 failed (35.41s)",
+        "interpretation": "642 collected vs 680 in the working tree. Delta = 30 tests from the two untracked files (test_evaluation_v2_migration.py 20 + test_index_root_registry.py 10) plus 8 from HEAD's tests/test_freeze_baseline.py collecting 7 tests where the working-tree version collects 15. The PR-02 commit is therefore self-consistent and green."
+      },
+      "gate_checks": {
+        "ruff_ci_gate_F821_F822_F823_E902": "All checks passed (5 committed files)",
+        "ruff_full_rules_excl_RUF002_RUF003_E501": "5 findings vs 10 at HEAD baseline -> net 0 new, -5. No new lint debt introduced.",
+        "mypy": "3 errors in src/application/evidence_tools/feedback_tool.py:149-151 (dict[str, Any] | None not indexable) - PRE-EXISTING: those lines are byte-identical at 483b0be, the PR-02 diff only touches line 143."
+      },
+      "pushed": false,
+      "still_uncommitted": {
+        "count": 12,
+        "class_A_PR01_wrapup": [
+          "docs/GOLDEN_DATASET_CARD.md",
+          "evaluation/mindgraph_retrieval_eval.py",
+          "evaluation/runner.py",
+          "scripts/freeze_baseline.py",
+          "src/application/index_metadata.py",
+          "tests/test_freeze_baseline.py",
+          "tests/test_mindgraph_retrieval_eval.py",
+          "tests/test_index_root_registry.py"
+        ],
+        "class_B_orphan": [
+          "src/application/evaluation_service.py",
+          "src/api/dependencies.py",
+          "tests/test_evaluation_v2_migration.py"
+        ],
+        "pack_untracked": [
+          "docs/cursor-upgrade/"
+        ]
+      },
+      "executor_state": "The executor STOPPED right after committing PR-02 (last executor write = 22:25:51). No / no work started on PR-03. This matches the pack's own rule 'one PR at a time, do not start the next until the previous is accepted'.",
+      "verification_pitfall": "Do NOT verify a commit by `git archive <sha> | tar -x`. git archive carries no .git, and scripts/freeze_baseline.py:232 fails closed with 'git state unavailable: baseline must trace to a commit', producing 3 false test failures that look like commit defects. Use `git clone` + `git checkout <sha>` instead, or add a worktree."
+    },
+    "env_baseline": {
+      "probed_at": "2026-09-11T23:10:00+08:00",
+      "method": "importlib.import_module / grep / ls / find - read-only, reproduced on this machine",
+      "available": {
+        "pdf_text_extraction": "pypdf 6.17.0",
+        "imaging": "PIL 12.3.0",
+        "numeric": "numpy 2.5.2",
+        "rerank_stack": "torch + transformers + sentence_transformers all importable",
+        "local_embedding_model": "data/bge-small-zh-v1.5/model.safetensors (repo-local, works offline; BI-ENCODER - not usable as a cross-encoder)",
+        "parsers": "src/infrastructure/parsers/{base,registry,pdf,docx,text,xlsx}.py"
+      },
+      "missing": {
+        "ocr_engines": [
+          "fitz",
+          "pytesseract",
+          "paddleocr",
+          "rapidocr_onnxruntime",
+          "cv2",
+          "onnxruntime"
+        ],
+        "cross_encoder_model": "~/.cache/huggingface/ contains only .agent_harnesses.json - no hub/ directory; no ONNX/pytorch_model.bin/safetensors for a reranker in-repo"
+      },
+      "consequences": {
+        "PR-07/PR-08": "scanned-page path cannot run; 'low confidence -> needs_review' logic is writable, but the acceptance criterion 'scan fixture retrievable with traceable page numbers' needs an OCR engine installed (rapidocr-onnxruntime recommended, requires network)",
+        "PR-11": "off/all/conditional ablation NOT reproducible without downloading a model; the PR's own acceptance allows 'otherwise keep it off', so only the degraded/off path is deliverable",
+        "PR-06": "requires additive CREATE TABLE IF NOT EXISTS (schema change)"
+      },
+      "governance_flags": [
+        "PR-06 introduces new tables -> schema change; per repo red line it needs separate acknowledgement, and the acceptance report must declare additive-only",
+        "mindgraph/.workbuddy/ is untracked automation noise and MUST NOT enter any commit",
+        "docs/cursor-upgrade/ is untracked by design (this pack); do not add"
+      ],
+      "night_goal_verdict": "Dependency chain is 03->04->06->07->08->09->11->15 and 05->10. PR-12/PR-13 are STOP-AND-ASK (repositioning / boundary) and PR-14 depends on PR-12, so those three must not be executed. PR-11 ablation is blocked by the missing model; PR-08 is blocked by PR-07's missing OCR. Realistic overnight goal: close PR-03, then PR-04, PR-05, PR-10, PR-06, then 07/08/09 if an OCR engine can be installed, then PR-11's degraded path. '15 PRs all green in one night' is NOT achievable - the reason is dependency and missing capability, not effort."
+    },
+    "handoff": {
+      "effective_from": "2026-09-11T23:05:00+08:00",
+      "from": "external executor agent (zcode)",
+      "to": "this session",
+      "state_at_handoff": "PR-01 committed 483b0be; PR-02 committed d21c314 (independently verified, 8 passed + mutation test). The external executor then started PR-03 on its own: src/application/chunking_policy.py created, src/document_loader.py and src/infrastructure/settings.py modified. PR-03 is IN FLIGHT and was left untouched by the handoff.",
+      "role_conflict_acknowledged": "Verifier and executor are now the same agent, so the independent-verification property of section 9.4 no longer holds. Compensations: timestamped evidence in 06-NIGHT-GATE-LOG.md; the section 9.3 git-stash self-check after every commit; and the hourly read-only external inspection (separate session with no knowledge of this work)."
+    }
+  },
+  "prs": [
+    {
+      "id": "PR-01",
+      "phase": "M0",
+      "title": "冻结事实基线",
+      "dependencies": []
+    },
+    {
+      "id": "PR-02",
+      "phase": "M0",
+      "title": "修复反馈归属安全",
+      "dependencies": [
+        "PR-01"
+      ]
+    },
+    {
+      "id": "PR-03",
+      "phase": "M0",
+      "title": "建立 ChunkingPolicy 单一来源",
+      "dependencies": [
+        "PR-01"
+      ]
+    },
+    {
+      "id": "PR-04",
+      "phase": "M0",
+      "title": "全量与增量切分一致性门禁",
+      "dependencies": [
+        "PR-03"
+      ]
+    },
+    {
+      "id": "PR-05",
+      "phase": "M0",
+      "title": "冲突准确率分层归因",
+      "dependencies": [
+        "PR-01"
+      ]
+    },
+    {
+      "id": "PR-06",
+      "phase": "M1",
+      "title": "页级解析状态机与检查点",
+      "dependencies": [
+        "PR-04"
+      ]
+    },
+    {
+      "id": "PR-07",
+      "phase": "M1",
+      "title": "接入可替换 OCR Provider",
+      "dependencies": [
+        "PR-06"
+      ]
+    },
+    {
+      "id": "PR-08",
+      "phase": "M1",
+      "title": "跨页条款与续表恢复",
+      "dependencies": [
+        "PR-06",
+        "PR-07"
+      ]
+    },
+    {
+      "id": "PR-09",
+      "phase": "M1",
+      "title": "Parent–Child 语义切分双跑",
+      "dependencies": [
+        "PR-03",
+        "PR-08"
+      ]
+    },
+    {
+      "id": "PR-10",
+      "phase": "M2",
+      "title": "QueryAnalyzer Shadow 模式",
+      "dependencies": [
+        "PR-01",
+        "PR-05"
+      ]
+    },
+    {
+      "id": "PR-11",
+      "phase": "M2",
+      "title": "条件式 Cross-Encoder Rerank",
+      "dependencies": [
+        "PR-09",
+        "PR-10"
+      ]
+    },
+    {
+      "id": "PR-12",
+      "phase": "M3",
+      "title": "服务端会话上下文与指代解析",
+      "dependencies": [
+        "PR-10"
+      ]
+    },
+    {
+      "id": "PR-13",
+      "phase": "M3",
+      "title": "可恢复澄清协议",
+      "dependencies": [
+        "PR-10",
+        "PR-12"
+      ]
+    },
+    {
+      "id": "PR-14",
+      "phase": "M4",
+      "title": "Bad-case 全链路快照与重复失败升级",
+      "dependencies": [
+        "PR-02",
+        "PR-10",
+        "PR-12"
+      ]
+    },
+    {
+      "id": "PR-15",
+      "phase": "M6",
+      "title": "存储与队列接口抽象",
+      "dependencies": [
+        "PR-04",
+        "PR-06",
+        "PR-09"
+      ]
+    }
+  ]
+}

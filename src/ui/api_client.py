@@ -148,13 +148,6 @@ class ProductAPIClient:
     def index_status(self): return self._request("GET", "/knowledge/index/status")
     def rebuild_index(self): return self._request("POST", "/knowledge/index/rebuild", timeout=300.0)
     def delete_document(self, document_id): return self._request("DELETE", f"/knowledge/documents/{document_id}")
-    def upload_document(self, name, content):
-        return self._request(
-            "POST", "/knowledge/documents",
-            files={"file": (name, content, "text/markdown")},
-            data={"category": "upload"},
-        )
-
     def document_versions(self, status=None, category=None):
         return self._request(
             "GET", "/knowledge/versions",
@@ -162,6 +155,13 @@ class ProductAPIClient:
         )
 
     def upload_document_version(self, name, content, metadata):
+        """唯一上传入口（POST /knowledge/versions）。
+
+        旧入口 ``POST /knowledge/documents`` 只把文件写进 uploads/：不产生
+        document_versions、没有页级账本与解析诊断、不跑 OCR。客户端保留一份
+        ``upload_document`` 就等于把这条弱能力路径摆在手边（P4：同一次上传
+        的能力取决于调用者），因此已删除。
+        """
         media_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
         clean = {k: v for k, v in metadata.items() if v not in (None, "")}
         return self._request(
