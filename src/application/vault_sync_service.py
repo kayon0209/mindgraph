@@ -14,6 +14,7 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 import hashlib
 import json
+import logging
 from pathlib import Path
 import re
 from typing import Any, NamedTuple
@@ -26,6 +27,7 @@ from infrastructure.markdown_frontmatter import inject_mindgraph_id, parse_front
 SUPPORTED_SUFFIXES = {".md", ".markdown", ".html", ".htm"}
 ACCESS_LEVELS = {"excluded", "local_only", "redacted_cloud", "cloud_allowed"}
 POLICY_STATUSES = {"draft", "active", "expired", "superseded", "archived"}
+logger = logging.getLogger(__name__)
 
 # 同步时默认跳过的目录：虚拟环境 / 依赖 / 缓存 / VCS / 编辑器配置 / 回收站。
 # 避免 Playwright、node_modules 等依赖文档被当成知识塞进索引。
@@ -260,7 +262,11 @@ class VaultSyncService:
             try:
                 raw = path.read_text(encoding="utf-8")
                 fm, _, _ = parse_frontmatter(raw)
-            except Exception:
+            except (OSError, UnicodeDecodeError) as exc:
+                logger.debug(
+                    "source_ownership_preflight_skipped_file",
+                    extra={"path": str(path), "error_type": type(exc).__name__},
+                )
                 continue
 
             source_rel = path.relative_to(self.vault_path).as_posix()
