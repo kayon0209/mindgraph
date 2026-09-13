@@ -42,6 +42,24 @@ from retrieval.types import Chunk, RetrievalCandidate, RetrievalTrace
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
+# ── 缺运行期索引根时跳过而非变红（2026-09-13，与 CI 口径对齐）─────────────────
+# data/ 被 .gitignore 忽略——干净 worktree 与未 provision 的 CI 都不会检出
+# mindgraph_indexes / retrieval_indexes 两套索引根。依赖它们的用例因此恒定变红，
+# 且失败信息指向代码，会掩盖真实回归。AGENTS.md「提交态复核」已把该现象定名为
+# 假失败。这里对**数据依赖**用例逐个 skipif（判定原语复用 index_data_hint，已有
+# 单测）；不依赖数据的用例照常执行，不整文件跳过。有运行期数据的环境（含
+# scripts/verify_committed_state.py）里这些断言仍会真正跑到——判据是"数据在不在"，
+# 不是"哪个环境"。
+from index_data_hint import missing_runtime_index_roots  # noqa: E402
+
+_skip_without_runtime_index_roots = pytest.mark.skipif(
+    bool(missing_runtime_index_roots()),
+    reason=(
+        "缺运行期索引根（data/ 被 gitignore，CI 与干净 worktree 不会检出）——"
+        "假失败，非代码缺陷；见 AGENTS.md「提交态复核」与 index_data_hint.py"
+    ),
+)
+
 
 # ── 假检索：只造 RetrievalTrace，不碰索引、模型、网络 ──────────────────────────
 
@@ -123,6 +141,7 @@ def test_default_entry_is_unchanged_until_schema_change_is_authorized() -> None:
     assert split is None
 
 
+@_skip_without_runtime_index_roots
 def test_prompt_version_is_decided_by_the_stack_not_the_request_body(
     service: EvaluationService,
 ) -> None:
@@ -182,12 +201,14 @@ def _index_version(service: EvaluationService, dataset_name: str) -> str | None:
     return service._compatible_index_version(spec, split)
 
 
+@_skip_without_runtime_index_roots
 def test_v2_index_version_comes_from_the_online_root(service: EvaluationService) -> None:
     version = _index_version(service, "mindgraph_golden_v2")
     root = PROJECT_ROOT / index_root_spec("mindgraph_indexes").root
     assert version == (root / "CURRENT").read_text(encoding="utf-8").strip()
 
 
+@_skip_without_runtime_index_roots
 def test_v1_index_version_is_unchanged_by_the_migration(service: EvaluationService) -> None:
     """零回归：v1 仍绑在历史根上，选的还是同一个版本。"""
     version = _index_version(service, "expense_qa_v1")
@@ -257,6 +278,7 @@ def test_v2_failure_detail_keeps_the_filter_key() -> None:
 # ── 4. 端到端：run 落库、指标非空、口径自证 ───────────────────────────────────
 
 
+@_skip_without_runtime_index_roots
 def test_execute_completes_with_non_empty_metrics(service: EvaluationService) -> None:
     run = service.create(EvaluationRunCreate(dataset_name="mindgraph_golden_v2"))
     service.execute(run.run_id)
@@ -282,6 +304,7 @@ def test_execute_completes_with_non_empty_metrics(service: EvaluationService) ->
     assert finished.configuration["resolved"]["top_k"] == 5
 
 
+@_skip_without_runtime_index_roots
 def test_execute_records_failures_with_their_category(service: EvaluationService, tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(evaluation_service_module, "_V2_RESULT_ROOT", tmp_path / "v2_results")
     service._mindgraph_retrieve = fake_retrieve_factory(hit=False)
@@ -296,6 +319,7 @@ def test_execute_records_failures_with_their_category(service: EvaluationService
     assert all(item["strategy"] == "hybrid" for item in finished.failed_cases)
 
 
+@_skip_without_runtime_index_roots
 def test_execute_fails_closed_when_metrics_are_empty(service: EvaluationService, monkeypatch) -> None:
     """护栏本身也要被证明有效：指标为空时 run 必须是 failed，不是 completed。"""
     original = service._run_v2
@@ -316,6 +340,7 @@ def test_execute_fails_closed_when_metrics_are_empty(service: EvaluationService,
     assert "no summary metrics" in (finished.error or "")
 
 
+@_skip_without_runtime_index_roots
 def test_execute_requires_a_wired_retrieval_factory(tmp_path, monkeypatch) -> None:
     """没注入检索工厂时必须是显式失败，而不是悄悄回落到别的栈。"""
     monkeypatch.setattr(evaluation_service_module, "_V2_RESULT_ROOT", tmp_path / "v2_results")
@@ -330,6 +355,7 @@ def test_execute_requires_a_wired_retrieval_factory(tmp_path, monkeypatch) -> No
     assert "not wired" in (finished.error or "")
 
 
+@_skip_without_runtime_index_roots
 def test_split_alias_restricts_the_run_to_that_split(service: EvaluationService) -> None:
     run = service.create(EvaluationRunCreate(dataset_name="mindgraph_golden_v2_regression"))
     service.execute(run.run_id)

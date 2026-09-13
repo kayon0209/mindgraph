@@ -38,6 +38,21 @@ DATASET_DIR = PROJECT_ROOT / "evaluation" / "datasets"
 LEGACY_DATASET = "expense_qa_v1.jsonl"
 GOLDEN_V2_DATASET = "mindgraph_golden_v2.jsonl"
 
+# ── 缺运行期索引根时跳过而非变红（2026-09-13，与 CI 口径对齐）─────────────────
+# data/ 被 .gitignore 忽略——干净 worktree 与未 provision 的 CI 都不会检出两套
+# 索引根，本文件读磁盘现状的用例会恒定变红且失败信息指向代码（假失败）。
+# 判定原语复用 index_data_hint（已有单测）；不读磁盘的用例（登记表结构、
+# 参数校验类）照常执行。有运行期数据的环境里这些断言仍会真正跑到。
+from index_data_hint import missing_runtime_index_roots  # noqa: E402
+
+_skip_without_runtime_index_roots = pytest.mark.skipif(
+    bool(missing_runtime_index_roots()),
+    reason=(
+        "缺运行期索引根（data/ 被 gitignore，CI 与干净 worktree 不会检出）——"
+        "假失败，非代码缺陷；见 AGENTS.md「提交态复核」与 index_data_hint.py"
+    ),
+)
+
 
 def test_registry_is_not_empty_and_names_are_unique() -> None:
     names = [spec.name for spec in INDEX_ROOT_REGISTRY]
@@ -45,6 +60,7 @@ def test_registry_is_not_empty_and_names_are_unique() -> None:
     assert len(names) == len(set(names)), f"登记表出现重名：{names}"
 
 
+@_skip_without_runtime_index_roots
 def test_every_registered_root_exists_on_disk() -> None:
     for spec in INDEX_ROOT_REGISTRY:
         root = PROJECT_ROOT / spec.root
@@ -59,6 +75,7 @@ def test_every_registered_dataset_exists_on_disk() -> None:
         )
 
 
+@_skip_without_runtime_index_roots
 @pytest.mark.parametrize("spec", INDEX_ROOT_REGISTRY, ids=lambda spec: spec.name)
 def test_root_label_set_intersects_its_dataset(spec) -> None:
     """核心门禁：每个根必须与它声明的数据集有标签交集。
@@ -98,6 +115,7 @@ def test_index_root_spec_rejects_unknown_name() -> None:
         index_root_spec("no-such-root")
 
 
+@_skip_without_runtime_index_roots
 def test_binding_report_marks_every_root_ok() -> None:
     report = index_root_binding_report(PROJECT_ROOT)
     assert report["binding_ok"] is True, f"{report}{runtime_data_hint()}"
@@ -109,6 +127,7 @@ def test_binding_report_marks_every_root_ok() -> None:
         assert entry["overlap"] > 0, f"{entry['name']} 与 {entry['dataset']} 无交集"
 
 
+@_skip_without_runtime_index_roots
 def test_legacy_and_online_label_spaces_do_not_intersect() -> None:
     """两栈的标签空间不相交 —— 这正是必须「显式分派」而不能「统一根」的原因。
 
@@ -132,6 +151,7 @@ def test_legacy_and_online_label_spaces_do_not_intersect() -> None:
     )
 
 
+@_skip_without_runtime_index_roots
 def test_golden_v2_labels_absent_from_legacy_root() -> None:
     """golden v2 与历史评测根无关：两栈的"期望证据"粒度本就不同。"""
     legacy_root = PROJECT_ROOT / index_root_spec("retrieval_indexes").root

@@ -23,6 +23,21 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "freeze_baseline.py"
 
+# ── 缺运行期索引根时跳过而非变红（2026-09-13，与 CI 口径对齐）─────────────────
+# 同 test_evaluation_v2_migration.py / test_index_root_registry.py 的口径：
+# 判定原语复用 index_data_hint，逐用例 skipif，不整文件跳过。本文件仅
+# test_freeze_baseline_declares_index_root_and_exposes_both_roots 读真实
+# 索引根（known_roots 要同时读两套根的 CURRENT），其余用例全部走 fixture。
+from index_data_hint import missing_runtime_index_roots  # noqa: E402
+
+_skip_without_runtime_index_roots = pytest.mark.skipif(
+    bool(missing_runtime_index_roots()),
+    reason=(
+        "缺运行期索引根（data/ 被 gitignore，CI 与干净 worktree 不会检出）——"
+        "假失败，非代码缺陷；见 AGENTS.md「提交态复核」与 index_data_hint.py"
+    ),
+)
+
 _REQUIRED_GOLDEN_FIELDS = (
     "case_id", "question", "category", "split", "expected_behavior",
     "gold_vault_paths", "required_facts", "forbidden_facts",
@@ -524,6 +539,7 @@ def test_freeze_baseline_declares_dataset_digest_method(fixture_root: dict[str, 
     ).read_text(encoding="utf-8")
 
 
+@_skip_without_runtime_index_roots
 def test_freeze_baseline_declares_index_root_and_exposes_both_roots(
     fixture_root: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
