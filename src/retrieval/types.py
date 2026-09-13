@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
-from typing import Any, Protocol, Sequence
+from typing import Any, Protocol
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,15 @@ class RetrievalTrace:
     route_decision: dict[str, Any] = field(default_factory=dict)
     query_variants: list[str] = field(default_factory=list)
     original_query: str | None = None
+    # PR-10：QueryAnalyzer 的 **shadow** 输出。只观测，不参与路由/检索/生成；
+    # 缺省为空 dict，旧代码与旧产物不受影响。
+    query_analysis: dict[str, Any] = field(default_factory=dict)
+    # PR-09：parent 上下文扩展的决策账本（expanded/duplicates/reason codes）。
+    # 扩展开关关闭时恒为空 dict。
+    context_expansion: dict[str, Any] = field(default_factory=dict)
+    # PR-11：条件式 rerank 的决策与排名变化账本；开关关闭或降级时为空。
+    rerank_decision: dict[str, Any] = field(default_factory=dict)
+    rerank_rank_changes: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -80,6 +90,10 @@ class RetrievalTrace:
             "route_decision": self.route_decision,
             "query_variants": self.query_variants,
             "original_query": self.original_query,
+            "query_analysis": self.query_analysis,
+            "context_expansion": self.context_expansion,
+            "rerank_decision": self.rerank_decision,
+            "rerank_rank_changes": self.rerank_rank_changes,
         }
 
 

@@ -20,7 +20,6 @@ from typing import Any
 from .pipeline import RetrievalPipeline, filter_candidates_by_source
 from .types import RetrievalCandidate, RetrievalTrace
 
-
 DEFAULT_GRAPH_HOPS = 1
 MAX_GRAPH_HOPS = 2
 
@@ -48,6 +47,15 @@ class MindGraphRetrievalPipeline:
         # mindgraph_id → chunks 预建索引：图扩展不再逐关系遍历全语料
         # （旧实现 O(relations×corpus)；管线随索引激活整体重建，无需失效逻辑）。
         self._chunks_by_mindgraph_id: dict[str, list] | None = None
+
+    @property
+    def rerank_route(self) -> str:
+        return getattr(self.base, "_rerank_route", "")
+
+    @rerank_route.setter
+    def rerank_route(self, route: str) -> None:
+        # PR-11：chat 侧路由结果下传到基础管线的条件式 rerank 判断。
+        setattr(self.base, "_rerank_route", route)
 
     def _mindgraph_id_index(self) -> dict[str, list]:
         if self._chunks_by_mindgraph_id is None:

@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 import json
 import os
-import uuid
-from datetime import datetime, timezone
 from pathlib import Path
+import uuid
 
 import faiss
 import numpy as np
 
-from domain.errors import NotFoundError
+from application.chunking_policy import ChunkingPolicy  # PR-03 单一来源：m4 manifest 同源
+from application.index_snapshot import evaluate_activation_gate, load_snapshot
+from domain.errors import IndexConsistencyError, NotFoundError
 from infrastructure.database import ProductDatabase, dumps, loads
 from retrieval.embeddings import BGEEmbeddingProvider
 from retrieval.types import Chunk
@@ -24,9 +26,9 @@ class IndexLifecycleService:
         try: return (self.index_root / "CURRENT").read_text(encoding="utf-8").strip()
         except OSError: return None
 
-    def build(self, operator: str = "local"):
+    def build(self, operator: str = "local", *, force: bool = False):
         provider = BGEEmbeddingProvider(); active = self.documents.active_chunks(include_historical=True)
-        version = datetime.now(timezone.utc).strftime("m4-%Y%m%dT%H%M%SZ-") + uuid.uuid4().hex[:8]; directory = self.index_root / version; directory.mkdir()
+        version = datetime.now(UTC).strftime("m4-%Y%m%dT%H%M%SZ-") + uuid.uuid4().hex[:8]; directory = self.index_root / version; directory.mkdir()
         chunks: list[Chunk] = []
         vectors: list[list[float]] = []
         reused = 0
@@ -38,7 +40,7 @@ class IndexLifecycleService:
                     vector = json.loads(row["embedding_json"]); reused += 1
                 else:
                     vector = provider.embed_documents([item["text"]])[0]
-                    self.database.execute("INSERT OR REPLACE INTO embedding_cache VALUES (?,?,?,?,?,?)", (provider.model_name, provider.model_revision, checksum, provider.dimension, dumps(vector), datetime.now(timezone.utc).isoformat()))
+                    self.database.execute("INSERT OR REPLACE INTO embedding_cache VALUES (?,?,?,?,?,?)", (provider.model_name, provider.model_revision, checksum, provider.dimension, dumps(vector), datetime.now(UTC).isoformat()))
                 vectors.append(vector)
                 chunks.append(Chunk(chunk_id=item["child_chunk_id"], text=item["text"], document_id=item["document_id"], chunk_index=len(chunks), section_path=" / ".join(item["heading_path"]), metadata=item))
             if not chunks: raise ValueError("No active chunks")
@@ -48,20 +50,20 @@ class IndexLifecycleService:
                 "searchable_document_versions": sorted({f"{item['logical_document_id']}:{item['document_version']}" for item in active}),
                 "active_chunk_ids": [item.chunk_id for item in chunks], "embedding_model_name": provider.model_name,
                 "embedding_model_revision": provider.model_revision, "vector_dimension": provider.dimension,
-                "chunker": {"child_size": 500, "parent_size": 1200, "overlap": 50}, "bm25": {"k1": 1.5, "b": 0.75},
+                "chunking_policy": ChunkingPolicy.from_settings().manifest_payload(), "bm25": {"k1": 1.5, "b": 0.75},
                 "rrf": {"constant": 60}, "reranker_model": os.getenv("RERANKER_MODEL_NAME", "BAAI/bge-reranker-base"),
-                "created_at": datetime.now(timezone.utc).isoformat(), "corpus_checksum": __import__('hashlib').sha256(''.join(item['checksum'] for item in active).encode()).hexdigest(),
+                "created_at": datetime.now(UTC).isoformat(), "corpus_checksum": __import__('hashlib').sha256(''.join(item['checksum'] for item in active).encode()).hexdigest(),
                 "build_status": "validated", "previous_index_version": previous, "chunk_count": len(chunks), "metadata_count": len(chunks), "reused_embeddings": reused, "new_embeddings": len(chunks)-reused}
             (directory / "metadata.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"); (directory / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
             loaded = faiss.read_index(str(directory / "dense.faiss")); assert loaded.ntotal == len(chunks)
             self.database.execute("INSERT INTO index_builds VALUES (?,?,?,?,?,?,?)", (version, "validated", dumps(manifest), previous, manifest["created_at"], None, None))
-            self.activate(version, operator, "validated build")
-            self.database.execute("UPDATE document_versions SET indexed_at=?,status='active' WHERE status='active'", (datetime.now(timezone.utc).isoformat(),))
+            self.activate(version, operator, "validated build", force=force)
+            self.database.execute("UPDATE document_versions SET indexed_at=?,status='active' WHERE status='active'", (datetime.now(UTC).isoformat(),))
             return manifest
         except Exception as exc:
             failure = {"index_version": version, "build_status": "failed", "failure_reason": f"{type(exc).__name__}: {exc}"}
             (directory / "manifest.json").write_text(json.dumps(failure, ensure_ascii=False, indent=2), encoding="utf-8")
-            self.database.execute("INSERT OR REPLACE INTO index_builds VALUES (?,?,?,?,?,?,?)", (version, "failed", dumps(failure), self._current(), datetime.now(timezone.utc).isoformat(), None, failure["failure_reason"]))
+            self.database.execute("INSERT OR REPLACE INTO index_builds VALUES (?,?,?,?,?,?,?)", (version, "failed", dumps(failure), self._current(), datetime.now(UTC).isoformat(), None, failure["failure_reason"]))
             raise
 
     def versions(self): return [self._public(row) for row in self.database.fetch_all("SELECT * FROM index_builds ORDER BY created_at DESC")]
@@ -70,11 +72,60 @@ class IndexLifecycleService:
         if not row: raise NotFoundError("Index version not found")
         return self._public(row)
 
-    def activate(self, version, operator="local", reason="manual activation"):
+    def _consistency_gate(self, version: str, previous: str | None, *, force: bool = False) -> None:
+        """PR-04：激活一致性门禁，在 ``CURRENT`` 被改写**之前**拦截。
+
+        只拦两类「无人知晓就换掉证据体系」的切换：
+        - **切分口径变化**（含构建入口/schema 变化，如 69 chunks 扁平 ↔ 98 chunks 结构化）；
+        - **文档丢失**（09-09 那类静默缩水）。
+
+        不拦 chunk_id 命名空间不相交：文档换版本会让 chunk_id 全变，那是正常重建。
+        缺 manifest 也只降级为「不可比」——全仓有 4 个版本目录没有 metadata.json，
+        把它当失败会让索引永远激活不了。
+
+        P2 验收修复：``force=True`` 是显式逃生口（与 m3 rebuild 的 force 同语义）——
+        换口径=换 chunk 命名空间=已公布指标失效，必须是人的决策而非默认。
+        409 的 detail 携带 gate 报告与重试指引，让第一次撞上的人有路可走。
+        """
+        if not previous:
+            return  # 首次构建：无从比较，不冒充判断
+        from infrastructure.settings import get_settings
+
+        if not get_settings().INDEX_CONSISTENCY_GATE:
+            return
+        gate = evaluate_activation_gate(
+            load_snapshot(self.index_root, previous), load_snapshot(self.index_root, version)
+        )
+        if not gate["blocked"]:
+            return
+        if force:
+            return  # 显式放行：调用方已见过 409 并确认
+        report = gate["report"]
+        detail = ", ".join(gate["reasons"])
+        if report["chunking_changed"]:
+            detail += (
+                f"; 切分口径 {report['chunking']['previous']['schema']}"
+                f"{report['chunking']['previous']['child_size']}/{report['chunking']['previous']['overlap']}"
+                f" -> {report['chunking']['candidate']['schema']}"
+                f"{report['chunking']['candidate']['child_size']}/{report['chunking']['candidate']['overlap']}"
+            )
+        if report["documents_removed"]:
+            detail += f"; 丢失文档 {report['documents_removed'][:10]}"
+        raise IndexConsistencyError(
+            f"index activation blocked: {detail}；确认要切换请带 force=true 重试（换口径会使已公布的检索指标失效，需重跑评测基线）",
+            detail={"reasons": gate["reasons"], "report": {
+                "chunking_changed": report["chunking_changed"],
+                "documents_removed": report["documents_removed"][:20],
+            }},
+        )
+
+    def activate(self, version, operator="local", reason="manual activation", force: bool = False):
         row = self.get(version)
         if row["status"] != "validated": raise ValueError("Only validated indexes can be activated")
-        previous = self._current(); temp = self.index_root / "CURRENT.tmp"; temp.write_text(version, encoding="utf-8"); temp.replace(self.index_root / "CURRENT")
-        now = datetime.now(timezone.utc).isoformat(); self.database.execute("UPDATE index_builds SET activated_at=? WHERE index_version=?", (now, version))
+        previous = self._current()
+        self._consistency_gate(version, previous, force=force)  # PR-04：CURRENT 改写前的最后一道闸
+        temp = self.index_root / "CURRENT.tmp"; temp.write_text(version, encoding="utf-8"); temp.replace(self.index_root / "CURRENT")
+        now = datetime.now(UTC).isoformat(); self.database.execute("UPDATE index_builds SET activated_at=? WHERE index_version=?", (now, version))
         self.database.execute("INSERT INTO index_audit VALUES (?,?,?,?,?,?,?)", (str(uuid.uuid4()), "activate", previous, version, operator, reason, now)); self.invalidate(); return self.get(version)
 
     def rollback(self, operator="local", reason="manual rollback"):
@@ -86,7 +137,7 @@ class IndexLifecycleService:
         target = self.get(previous)
         if target["status"] != "validated": raise ValueError("Previous index is not validated")
         temp = self.index_root / "CURRENT.tmp"; temp.write_text(previous, encoding="utf-8"); temp.replace(self.index_root / "CURRENT")
-        now = datetime.now(timezone.utc).isoformat(); self.database.execute("INSERT INTO index_audit VALUES (?,?,?,?,?,?,?)", (str(uuid.uuid4()), "rollback", current, previous, operator, reason, now)); self.invalidate(); return self.get(previous)
+        now = datetime.now(UTC).isoformat(); self.database.execute("INSERT INTO index_audit VALUES (?,?,?,?,?,?,?)", (str(uuid.uuid4()), "rollback", current, previous, operator, reason, now)); self.invalidate(); return self.get(previous)
 
     @staticmethod
     def _public(row):

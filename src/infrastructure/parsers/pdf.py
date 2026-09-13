@@ -94,6 +94,73 @@ class PDFParser:
             metadata=metadata,
         )
 
+    def parse_pages(self, data: bytes, document_name: str, page_numbers: list[int]) -> ParsedDocument:
+        """只解析指定页 —— 供「重试不重跑成功页」使用。
+
+        与 :meth:`parse` 的**已知差异**（必须知道，否则重试产物会被误当成等价物）：
+        重复页眉抑制依赖跨页统计，单页模式下无从统计，因此**跳过**并在
+        warnings 里标注。重试页的文本可能比首次解析多出页眉，checksum 随之变化。
+        这是有意的取舍：宁可文本略有冗余，也不要让单页结果静默伪装成全量结果。
+        """
+        try:
+            reader = PdfReader(BytesIO(data))
+        except Exception as exc:
+            raise ValueError("Corrupted or unsupported PDF") from exc
+        total = len(reader.pages)
+        if not page_numbers:
+            raise ValueError("parse_pages requires at least one page number")
+        out_of_range = [number for number in page_numbers if number < 1 or number > total]
+        if out_of_range:
+            raise ValueError(f"Page out of range: {out_of_range} (document has {total} pages)")
+
+        selected = sorted(set(page_numbers))
+        warnings: list[str] = [f"single_page_mode: pages {selected} of {total}"]
+        ocr_pages: list[int] = []
+        elements: list[ParsedElement] = []
+        order = 0
+        for page_number in selected:
+            spans = self._extract_spans(reader.pages[page_number - 1])
+            if not spans:
+                text = (reader.pages[page_number - 1].extract_text() or "").splitlines()
+                spans = [_Span(text=line.strip(), x=0.0, y=float(index)) for index, line in enumerate(text) if line.strip()]
+            if not spans or len("".join(span.text for span in spans).strip()) < 20:
+                ocr_pages.append(page_number)
+                warnings.append(f"page {page_number}: ocr_required")
+                continue
+            current_table: list[list[str]] = []
+            for row in self._group_rows(spans):
+                texts = [cell.text.strip() for cell in row if cell.text.strip()]
+                if not texts:
+                    continue
+                if len(texts) >= 2:
+                    current_table.append(texts)
+                    continue
+                if current_table:
+                    order = self._emit_table(elements, current_table, order, page_number)
+                    current_table = []
+                elements.append(self._paragraph_element(" ".join(texts), order, page_number))
+                order += 1
+            if current_table:
+                order = self._emit_table(elements, current_table, order, page_number)
+
+        return ParsedDocument(
+            document_id=hashlib.sha256(document_name.encode()).hexdigest()[:16],
+            document_name=document_name,
+            file_type="pdf",
+            checksum=hashlib.sha256(data).hexdigest(),
+            parser_name=self.name,
+            parser_version=self.version,
+            elements=elements,
+            warnings=list(dict.fromkeys(warnings)),
+            ocr_required_pages=ocr_pages,
+            metadata={
+                "page_count": total,
+                "requested_pages": selected,
+                "single_page_mode": True,
+                "layout_mode": "visitor_text",
+            },
+        )
+
     def _extract_spans(self, page) -> list[_Span]:
         spans: list[_Span] = []
 

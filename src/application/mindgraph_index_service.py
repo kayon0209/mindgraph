@@ -24,6 +24,7 @@ import uuid
 import faiss
 import numpy as np
 
+from application.chunking_policy import ChunkingPolicy
 from application.index_metadata import document_key
 from document_loader import _chunk_text, _split_by_markdown_headers
 from infrastructure.database import ProductDatabase, dumps, loads
@@ -53,6 +54,7 @@ class MindGraphIndexService:
         index_root: Path,
         provider: Any | None = None,
         on_activated: Callable[[], None] | None = None,
+        policy: ChunkingPolicy | None = None,
     ) -> None:
         self.db = db
         self.vault_root = Path(vault_root)
@@ -60,6 +62,9 @@ class MindGraphIndexService:
         self.index_root.mkdir(parents=True, exist_ok=True)
         self.provider = provider or BGEEmbeddingProvider()  # 尊重 BGE_LOCAL_FILES_ONLY 环境变量（默认 true=离线安全；设 false 即首次自动下载）
         self.on_activated = on_activated
+        # PR-03：切分参数单一来源。此处曾有内联字面量 _chunk_text(sec_body, 500, 50)
+        # ——不读任何常量，是线上索引最隐蔽的漂移点；现在一律经 policy 取值。
+        self.policy = policy or ChunkingPolicy.from_settings()
 
     # ------------------------------------------------------------------ #
     # 查询待索引笔记
@@ -126,7 +131,7 @@ class MindGraphIndexService:
         chunks: list[Chunk] = []
         idx = 0
         for section_path, sec_body in _split_by_markdown_headers(body):
-            for sub in _chunk_text(sec_body, 500, 50):
+            for sub in _chunk_text(sec_body, self.policy.child_size, self.policy.overlap):
                 chunks.append(Chunk(
                     chunk_id=f"{note['note_id']}::{idx}",
                     text=sub,
@@ -215,6 +220,44 @@ class MindGraphIndexService:
                 "index_document_coverage_unchanged",
                 extra={"index_version": version, "documents": len(current_keys)},
             )
+
+    def _chunking_gate(self, previous_version: str | None, version: str, *, force: bool = False) -> None:
+        """P2 验收修复：CURRENT 改写前的切分口径门禁（与 m4 同源语义）。
+
+        只拦「切分口径变化」：mg 路径的文档增删是合法剪枝（扫描阶段物理
+        删除笔记），交由 _report_shrinkage 的 ERROR 告警承载，这里不重复拦。
+        首次构建（无 previous）与缺 manifest 的历史版本（不可比）不冒充判断。
+
+        ``force=True`` 显式放行（与 m3/m4 的 force 同语义）：换口径=换 chunk
+        命名空间=已公布指标失效，必须是人的决策。409 文案带重试指引。
+        """
+        if not previous_version:
+            return
+        from infrastructure.settings import get_settings
+
+        if not get_settings().INDEX_CONSISTENCY_GATE:
+            return
+        if force:
+            return  # 显式放行：调用方已见过 409 并确认
+        from application.index_snapshot import evaluate_activation_gate, load_snapshot
+
+        gate = evaluate_activation_gate(
+            load_snapshot(self.index_root, previous_version),
+            load_snapshot(self.index_root, version),
+            allow_document_removal=True,  # 文档删除走既有 shrinkage 告警，不在此拦
+        )
+        if not gate["blocked"]:
+            return
+        from domain.errors import IndexConsistencyError
+
+        raise IndexConsistencyError(
+            "MindGraph 索引的切分口径发生变化，已拒绝激活（改口径会使已公布的检索指标失效，需重跑评测基线）："
+            + "; ".join(gate["reasons"])
+            + "；确认要切换请带 force=true 重试",
+            detail={"reasons": gate["reasons"], "report": {
+                "chunking_changed": True,  # 本门禁只拦口径变化，reasons 必含 chunking_changed
+            }},
+        )
 
     # ------------------------------------------------------------------ #
     # embedding 缓存（按 chunk 正文 checksum）
@@ -316,6 +359,8 @@ class MindGraphIndexService:
                 "build_status": "validated",
                 "previous_index_version": previous,
                 "strategy": "mindgraph_incremental",
+                # PR-03：切分参数进 manifest——评测与追溯据此绑定结果与参数
+                "chunking_policy": self.policy.manifest_payload(),
             }
             (directory / "metadata.json").write_text(
                 json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -341,6 +386,11 @@ class MindGraphIndexService:
             # 被删除的笔记，所以缩小可能是合法的——但它必须可见，不能像 m3- 那条路径
             # 一样在无人知晓的情况下把语料换小。
             self._report_shrinkage(previous, chunks, version)
+            # P2 验收修复：切分口径门禁（与 m4 同源）。mg 是 09-11 事故路径之一，
+            # 但其文档删除是合法剪枝——因此这里只拦「口径变化」，文档增删交由
+            # _report_shrinkage 的 ERROR 告警（不阻断）承载。build 的 force
+            # 是显式逃生口（换口径=指标失效，须是人的决策）。
+            self._chunking_gate(previous, version, force=force)
             self._activate(version)
             if self.on_activated is not None:
                 try:

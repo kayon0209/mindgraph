@@ -185,7 +185,6 @@ def test_messages_sequence_unique_rejects_duplicates(tmp_path: Path):
 def test_migration_failure_does_not_bump_version(tmp_path: Path):
     """迁移失败（DDL 破坏）时版本号不前移——沿用 additive 幂等策略的失败语义：
     initialize 内 executescript 原子失败即整体不生效（SQLite 事务内回滚）。"""
-    import sqlite3
 
     path = tmp_path / "broken.sqlite3"
     database = ProductDatabase(path)
@@ -293,11 +292,108 @@ def test_v15_upgrades_to_v16_additively_preserving_notes(tmp_path: Path):
 
         database.initialize()
 
-        assert _stored_version(database) == 16
+        # 断言「不倒退、v16 结构仍在」，不断言精确等于 16：
+        # 后续版本（如 v17）同样必须保留 v16 的表，钉死 16 会让每个新版本都改一次历史测试。
+        assert _stored_version(database) >= 16
         assert set(V16_ONLY_TABLES) <= _table_names(database)
         row = database.fetch_one("SELECT source_id, acl_json FROM notes WHERE note_id='legacy-note'")
         assert row is not None
         assert row["source_id"] == "legacy-source"
         assert row["acl_json"] == '{"allow":["workspace:legacy"]}'
+    finally:
+        database.close()
+
+
+# PR-06：页级摄取状态机与检查点（纯新增表）
+V17_ONLY_TABLES = (
+    "ingestion_jobs",
+    "page_artifacts",
+)
+
+
+def test_v16_upgrades_to_v17_additively_preserving_notes(tmp_path: Path):
+    """v16 → v17 必须是**纯新增**：既有笔记与 v16 表都要原样保留。
+
+    PR-06 显式承诺「仅新增表，未改既有表结构/列」，这条测试就是该承诺的守卫。
+    """
+    database = ProductDatabase(tmp_path / "v16-to-v17.sqlite3")
+    database.initialize()
+    try:
+        database.execute(
+            "INSERT INTO notes (note_id, vault_path, title, content_hash, frontmatter_json, ai_access_level, "
+            "source_id, source_path, acl_json, acl_public, created_at, updated_at) VALUES "
+            "('legacy-note', 'legacy/a.md', 'Legacy', 'hash', '{}', 'local_only', "
+            "'legacy-source', 'legacy/a.md', '{\"allow\":[\"workspace:legacy\"]}', 0, 't', 't')"
+        )
+        with database.connect() as connection:
+            for table in V17_ONLY_TABLES:
+                connection.execute(f"DROP TABLE IF EXISTS {table}")
+            connection.execute("UPDATE schema_meta SET version=16")
+
+        database.initialize()
+
+        from infrastructure.database import SCHEMA_VERSION
+        # 守卫语义：旧库 re-initialize 必然升到当前 SCHEMA_VERSION
+        #（v18 起 escalation 表随之就位，见下方 v18 守卫）
+        assert _stored_version(database) == SCHEMA_VERSION
+        assert set(V17_ONLY_TABLES) <= _table_names(database)
+        # 纯新增：v16 的表与既有数据都不能动
+        assert set(V16_ONLY_TABLES) <= _table_names(database)
+        row = database.fetch_one("SELECT source_id, acl_json FROM notes WHERE note_id='legacy-note'")
+        assert row is not None
+        assert row["source_id"] == "legacy-source"
+        assert row["acl_json"] == '{"allow":["workspace:legacy"]}'
+    finally:
+        database.close()
+
+
+# PR-14：重复失败升级信号（纯新增表）
+V18_ONLY_TABLES = (
+    "bad_case_escalations",
+)
+
+
+def test_v17_upgrades_to_v18_additively_preserving_bad_cases(tmp_path: Path):
+    """v17 → v18 必须是纯新增：既有 bad_cases 与 v17 表原样保留。
+
+    PR-14 显式承诺「升级信号独立成表，不动 bad_cases schema」，这条测试
+    就是该承诺的守卫。
+    """
+    database = ProductDatabase(tmp_path / "v17-to-v18.sqlite3")
+    database.initialize()
+    try:
+        from datetime import UTC, datetime
+
+        now = datetime.now(UTC).isoformat()
+        database.execute(
+            "INSERT INTO query_logs (request_id, question, question_hash, answer, result_state,"
+            " requested_strategy, actual_strategy, trace_json, citations_json, timing_json,"
+            " usage_json, created_at, principal_id) VALUES"
+            "('req-legacy', '旧问题', 'hash-legacy', '旧答案', 'answered',"
+            " 'hybrid', 'hybrid', '{}', '[]', '{}', '{}', ?, 'user-a')",
+            (now,),
+        )
+        database.execute(
+            "INSERT INTO bad_cases (bad_case_id, request_id, question, answer, retrieved_chunks_json,"
+            " error_category, status, reviewer_note, resolution, created_at, updated_at) VALUES"
+            "('bc-legacy', 'req-legacy', '旧问题', '旧答案', '[]', 'unclassified', 'new', NULL, NULL, ?, ?)",
+            (now, now),
+        )
+        with database.connect() as connection:
+            connection.execute("DROP TABLE IF EXISTS bad_case_escalations")
+            connection.execute("UPDATE schema_meta SET version=17")
+
+        database.initialize()
+
+        from infrastructure.database import SCHEMA_VERSION
+
+        assert _stored_version(database) == SCHEMA_VERSION
+        assert set(V18_ONLY_TABLES) <= _table_names(database)
+        assert set(V17_ONLY_TABLES) <= _table_names(database)
+        # 纯新增：既有 bad_case 数据原样保留
+        row = database.fetch_one("SELECT question, status FROM bad_cases WHERE bad_case_id='bc-legacy'")
+        assert row is not None
+        assert row["question"] == "旧问题"
+        assert row["status"] == "new"
     finally:
         database.close()

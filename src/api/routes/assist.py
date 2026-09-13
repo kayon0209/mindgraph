@@ -40,6 +40,54 @@ router = APIRouter(prefix="/assist", tags=["assist"])
 ASSIST_TIMEOUT_MESSAGE = "处理超时：本次请求未在限定时间内完成，请稍后重试或缩小问题范围。"
 
 
+@router.post("/clarifications/{clarification_id}/resume")
+async def resume_clarification(clarification_id: str, request: Request):
+    """PR-13：可恢复澄清协议的 resume 端点。
+
+    语义（与 ClarificationService 状态机一一对应，全部是 **200 业务态**——
+    状态机可判定，不靠 4xx 猜测；SSE/轮询客户端拿到的永远是结构化结果）：
+    - ``resumed`` / ``already_consumed`` / ``expired`` / ``not_found``；
+    - ``server_misconfigured``：部署缺 ``MINDGRAPH_CLARIFICATION_SALT``（PR-13
+      验收发现的坑）。它与 ``not_found`` 严格区分——否则"系统没配好"会被当成
+      "卡片不存在/过期"，排查方向完全错。判定在归属/过期/已消费之后，非 owner
+      与不存在的 id 仍然只得到 ``not_found``；
+    - 跨主体与不存在不可区分（``not_found``，不暴露存在性——PR-02 语义原则）；
+    - resume 成功返回原问题集 + 原检索预算；重复恢复幂等，不重复副作用。
+    """
+    import json as _json
+
+    from pydantic import BaseModel, Field
+
+    class ResumeBody(BaseModel):
+        answers: list[str] = Field(default_factory=list, max_length=10)
+        conversation_id: str | None = Field(default=None, max_length=100)
+
+    container = get_container()
+    # 空 body 合法（只查询状态）：默认 {}
+    raw = await request.body()
+    payload = _json.loads(raw or b"{}")
+    body = ResumeBody(**payload)
+
+    from application.clarification_service import ClarificationService
+
+    service = ClarificationService(container.database)
+    outcome = service.resume(
+        clarification_id=clarification_id,
+        principal_id=current_actor(request),
+        answers=body.answers,
+        conversation_id=body.conversation_id,
+    )
+    record_access_audit(
+        container.database,
+        actor=current_actor(request),
+        action="clarification_resume",
+        resource=f"assist/clarifications/{clarification_id}",
+        decision="allow",
+        metadata={"state": outcome.state, "answers_count": len(body.answers)},
+    )
+    return outcome.to_dict()
+
+
 @router.post("", response_model=AssistResult)
 def assist(payload: AssistRequest, request: Request) -> AssistResult:
     """同步 Assist：进程内复用 ChatService.answer，返回带 verdict 的信封。

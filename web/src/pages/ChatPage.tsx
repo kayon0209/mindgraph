@@ -527,7 +527,13 @@ export function ChatPage() {
     if (event.event === "generation_started") {
       dispatch({ type: "generation_started" });
     }
+    // P1：思考流（思考模型的 reasoning 阶段）——首个 chunk 打开"思考中"标记，
+    // 首个 answer_delta 或 citations 关闭它。不渲染思考正文（审计面在后端 trace）。
+    if (event.event === "reasoning_delta") {
+      dispatch({ type: "reasoning_started" });
+    }
     if (event.event === "answer_delta" && typeof data.text === "string") {
+      dispatch({ type: "reasoning_ended" });
       patchTurnWith((turn) => (
         shouldSuppressAnswer(turn) ? {} : { answer: `${turn.answer}${data.text}` }
       ));
@@ -1093,10 +1099,15 @@ export function ChatPage() {
                       {turn.state === "streaming" ? (
                         <>
                           <LoaderCircle className="spin" size={16} />
-                          {/* I3：长耗时生成必须有进度反馈；>15s 给出预期管理 */}
-                          <span className="answer-timer">
-                            已用时 {elapsed}s{elapsed >= 15 ? " · 复杂问题需要更久，请耐心等待" : ""}
-                          </span>
+                          {/* P1：思考模型的 reasoning 阶段显式可见——替代 10s+ 死寂 */}
+                          {rail.reasoningActive && !turn.answer ? (
+                            <span className="answer-timer">思考中…</span>
+                          ) : (
+                            /* I3：长耗时生成必须有进度反馈；>15s 给出预期管理 */
+                            <span className="answer-timer">
+                              已用时 {elapsed}s{elapsed >= 15 ? " · 复杂问题需要更久，请耐心等待" : ""}
+                            </span>
+                          )}
                         </>
                       ) : (
                         /* U6：任意历史轮次都可以把证据轨定位到自己（并自动展开折叠的证据轨） */

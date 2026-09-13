@@ -52,5 +52,29 @@ class DocumentParserTests(unittest.TestCase):
         chunks = StructuredChunker(child_size=120, parent_size=500, overlap=20).chunk(parsed)
         self.assertGreater(len(chunks), 1); self.assertTrue(all(item.parent_chunk_id and item.child_chunk_id for item in chunks)); self.assertTrue(chunks[0].heading_path)
 
+    def test_clause_numbers_follow_document_order_not_lexicographic(self):
+        """条款号是字符串，字典序 ≠ 文档序。
+
+        ``sorted()`` 会把「第十一条」排到「第二条」前（二 U+4E8C < 十 U+5341）、
+        把「1.10.」排到「1.2.」前（'1' < '2'）。chunk 的 clause_numbers 是下游
+        用来判断"这段覆盖了哪几条"的唯一线索，排错序就是读错——必须按出现顺序。
+        """
+        for text, expected in (
+            ("# 制度\n第十一条 出差审批。\n第二条 报销时限。", ["第十一条", "第二条"]),
+            ("# 制度\n1.2. 出差审批。\n1.10. 报销时限。", ["1.2.", "1.10."]),
+        ):
+            with self.subTest(text=text):
+                parsed = default_parser_registry.parse(text.encode(), "policy.md")
+                (chunk,) = StructuredChunker().chunk(parsed)
+                self.assertEqual(chunk.clause_numbers, expected)
+
+    def test_clause_numbers_dedupe_but_keep_first_position(self):
+        """同一父块内重复出现的条款号只留一次，且留在首次出现的位置。"""
+        parsed = default_parser_registry.parse(
+            "# 制度\n第二条 报销时限。\n第二条 补充说明。\n第三条 不合规处理。".encode(), "policy.md"
+        )
+        (chunk,) = StructuredChunker().chunk(parsed)
+        self.assertEqual(chunk.clause_numbers, ["第二条", "第三条"])
+
 
 if __name__ == "__main__": unittest.main()

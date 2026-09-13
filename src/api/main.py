@@ -134,6 +134,16 @@ def _warn_if_index_diverges() -> None:
         logger.error("index_corpus_divergence", extra=report)
 
 
+def _clarification_salt_warning_needed(settings) -> bool:
+    """是否需要在启动时警告"澄清盐未配置"。
+
+    门控理由：澄清卡生成端由 AGENT_ASSIST_ENABLED 控制、resume 端点由
+    ASSIST_ENABLED 控制；两者都关时这条告警只是噪音，会训练运维忽略启动日志
+    （真正的告警就淹在里面了）。纯函数，便于直接测三条组合。
+    """
+    return bool(settings.ASSIST_ENABLED or settings.AGENT_ASSIST_ENABLED) and not settings.MINDGRAPH_CLARIFICATION_SALT
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """启动时初始化 ServiceContainer，关闭时清理资源。"""
@@ -141,6 +151,13 @@ async def lifespan(app: FastAPI):
     logger.info("application_starting", extra={"environment": _settings.ENVIRONMENT})
     _warn_if_auth_disabled()
     _warn_if_index_diverges()
+    # P3：澄清 resume 依赖跨进程稳定盐；缺省时 resume 返回 server_misconfigured。
+    # 启动即警告（而不是等用户撞上），部署文档见 .env.example。
+    if _clarification_salt_warning_needed(_settings):
+        logger.warning(
+            "clarification_salt_missing",
+            extra={"hint": "set MINDGRAPH_CLARIFICATION_SALT (e.g. `python -c \"import secrets; print(secrets.token_hex(32))\"`) to enable resumable clarifications"},
+        )
     container = get_container()
     logger.info("service_container_initialized")
     # M4-A 缺口修复：TASK_WORKER_ENABLED=true 时拉起单实例任务轮询线程
@@ -203,14 +220,24 @@ if _settings.rate_limit_effective:
 
 # ── 异常处理器注册 ──
 
-app.add_exception_handler(ProductError, product_error_handler)  # type: ignore[arg-type]
-app.add_exception_handler(AuthenticationError, authentication_error_handler)  # type: ignore[arg-type]
-app.add_exception_handler(AuthorizationError, authorization_error_handler)  # type: ignore[arg-type]
-app.add_exception_handler(RateLimitError, rate_limit_handler)  # type: ignore[arg-type]
-app.add_exception_handler(RequestValidationError, validation_error_handler)  # type: ignore[arg-type]
-app.add_exception_handler(ValueError, value_error_handler)  # type: ignore[arg-type]
-app.add_exception_handler(StarletteHTTPException, http_exception_handler)  # type: ignore[arg-type]
-app.add_exception_handler(Exception, unhandled_error_handler)
+
+def register_exception_handlers(target: FastAPI) -> None:
+    """把统一异常处理器装到 target 上。
+
+    单独成函数是为了"用 FastAPI() 只挂某个子路由"的契约测试：漏掉这一步时，
+    业务异常（409/422/404）会退化成 500，测试测的就不是线上行为了。
+    """
+    target.add_exception_handler(ProductError, product_error_handler)  # type: ignore[arg-type]
+    target.add_exception_handler(AuthenticationError, authentication_error_handler)  # type: ignore[arg-type]
+    target.add_exception_handler(AuthorizationError, authorization_error_handler)  # type: ignore[arg-type]
+    target.add_exception_handler(RateLimitError, rate_limit_handler)  # type: ignore[arg-type]
+    target.add_exception_handler(RequestValidationError, validation_error_handler)  # type: ignore[arg-type]
+    target.add_exception_handler(ValueError, value_error_handler)  # type: ignore[arg-type]
+    target.add_exception_handler(StarletteHTTPException, http_exception_handler)  # type: ignore[arg-type]
+    target.add_exception_handler(Exception, unhandled_error_handler)
+
+
+register_exception_handlers(app)
 
 # ── 路由注册 ──
 

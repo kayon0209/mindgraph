@@ -12,6 +12,31 @@ import pytest
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _BUSINESS_DATABASE = (_PROJECT_ROOT / "data" / "product" / "product.sqlite3").resolve()
 
+# Windows 进程环境块中单个变量（key=value）的长度上限，CPython 的 os.putenv
+# 超限即抛 ValueError。
+_ENVIRON_MAX_ENTRY = 32767
+
+
+def restore_environ(snapshot: dict[str, str]) -> None:
+    """把 ``os.environ`` 还原到快照；超出环境块上限的变量只能跳过。
+
+    为什么不能直接 ``os.environ.update(snapshot)``：只要快照里存在一个超长变量
+    （CI / 工具链注入的大块 JSON 配置很常见，本机会看到约 500KB 的那种），
+    Windows 会在写回时抛
+    ``ValueError: the environment variable is longer than 32767 characters``。
+    它发生在 **teardown**，于是表现为「一批本该通过的测试集体失败/报错」，而且
+    异常之后剩下的变量都没还原，后续测试继续被污染 —— 排查成本极高，指向的
+    却是一个和被测代码无关的宿主环境问题。
+
+    超长变量在本项目里没有消费方（``grep ACC_PRODUCT_CONFIG`` 零命中），
+    跳过它远好过让整轮测试变成假失败。
+    """
+    os.environ.clear()
+    for key, value in snapshot.items():
+        if len(key) + len(value) + 1 > _ENVIRON_MAX_ENTRY:
+            continue  # 超长条目无法写回（宿主注入的约 500KB 配置块即此类）
+        os.environ[key] = value
+
 
 @pytest.fixture(scope="session", autouse=True)
 def block_business_database_in_tests():
@@ -77,8 +102,23 @@ def clean_env(monkeypatch):
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
-    os.environ.clear()
-    os.environ.update(old_environ)
+    # 经 restore_environ 而不是 os.environ.update：超长变量无法写回，直接 update
+    # 会在 teardown 抛 ValueError，把整轮测试变成假失败（见函数 docstring）。
+    restore_environ(old_environ)
+
+
+@pytest.fixture
+def stub_embedding(monkeypatch: pytest.MonkeyPatch) -> None:
+    """把 m4 ``build()`` 用的 BGE provider 换成确定性替身。
+
+    定义在 conftest 而不是 ``index_build_fixture.py``：非 conftest 模块里的
+    fixture 不会被其他测试文件发现（只有 conftest 与显式 ``pytest_plugins``
+    才进入 fixture 搜索路径）。替身类本身留在 ``index_build_fixture.py``，
+    与文档来源替身同处一文件。
+    """
+    from index_build_fixture import StubEmbedding
+
+    monkeypatch.setattr("application.index_lifecycle_service.BGEEmbeddingProvider", StubEmbedding)
 
 
 @pytest.fixture

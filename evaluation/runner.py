@@ -30,10 +30,10 @@ from evaluation.mindgraph_retrieval_eval import (
     evaluate_retrieval_cases,
     load_golden_dataset,
 )
-try:
-    from src.retrieval.types import Chunk, RetrievalCandidate, RetrievalTrace
-except ModuleNotFoundError:
-    from retrieval.types import Chunk, RetrievalCandidate, RetrievalTrace
+# 只按 ``retrieval.types`` 一个身份导入：``mindgraph_retrieval_eval`` 已把
+# ``src.retrieval.*`` 别名写回 sys.modules，这里再留一条 ``from src.retrieval.types``
+# 的兜底分支就会把同一文件加载成第二个模块对象，isinstance 恒 False（P0-4）。
+from retrieval.types import Chunk, RetrievalCandidate, RetrievalTrace
 from evaluation.routing_eval import evaluate_routing_cases
 from evaluation.threshold_runner import run as run_threshold_report
 

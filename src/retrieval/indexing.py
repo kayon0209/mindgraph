@@ -1,15 +1,30 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 import hashlib
-import json
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from document_loader import DEFAULT_CHUNK_OVERLAP, DEFAULT_CHUNK_SIZE, load_all_kb_chunks
+from application.chunking_policy import ChunkingPolicy  # noqa: E402  # PR-03：单一来源
+from document_loader import load_all_kb_chunks
 
 from .dense import FAISSDenseRetriever
 from .types import Chunk, EmbeddingProvider
+
+
+def index_metadata(chunks: list[Chunk]) -> dict[str, Any]:
+    """m3 索引的 manifest 数据（含切分策略投影），供 build 与测试共用。
+
+    PR-09：``chunk_size``/``chunk_overlap`` 与 ``chunking_policy`` 同源——
+    历史上前者硬绑 LEGACY_V1 常量，选了其他预设后 manifest 自相矛盾。
+    """
+    policy = ChunkingPolicy.from_settings()
+    return {
+        "chunk_size": policy.child_size,
+        "chunk_overlap": policy.overlap,
+        "chunking_policy": policy.manifest_payload(),
+        "corpus_sha256": corpus_hash(chunks),
+    }
 
 
 def load_corpus(doc_dirs, *, included_subtrees=None) -> list[Chunk]:
@@ -39,17 +54,15 @@ def build_versioned_index(
     indexes_root: Path,
     version: str | None = None,
 ) -> tuple[FAISSDenseRetriever, Path]:
-    version = version or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    version = version or datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     index_dir = indexes_root / version
     if index_dir.exists():
         raise FileExistsError(f"Index version already exists: {index_dir}")
     retriever = FAISSDenseRetriever(provider, index_dir)
     metadata: dict[str, Any] = {
         "index_version": version,
-        "index_created_at": datetime.now(timezone.utc).isoformat(),
-        "chunk_size": DEFAULT_CHUNK_SIZE,
-        "chunk_overlap": DEFAULT_CHUNK_OVERLAP,
-        "corpus_sha256": corpus_hash(chunks),
+        "index_created_at": datetime.now(UTC).isoformat(),
+        **index_metadata(chunks),
     }
     retriever.build(chunks, metadata)
     (indexes_root / "CURRENT").write_text(version, encoding="utf-8")

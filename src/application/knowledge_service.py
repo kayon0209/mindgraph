@@ -1,13 +1,13 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 import hashlib
 import json
 import logging
-import re
-import uuid
-from datetime import datetime, timezone
 from pathlib import Path
+import re
 from typing import cast
+import uuid
 
 from application.index_metadata import (
     document_key,
@@ -16,11 +16,11 @@ from application.index_metadata import (
     index_document_keys,
     load_note_index,
 )
-from domain.errors import ConflictError, IndexShrinkageError, NotFoundError
+from application.index_snapshot import evaluate_activation_gate, load_snapshot  # P2：切分口径守卫
+from domain.errors import ConflictError, IndexConsistencyError, IndexShrinkageError, NotFoundError
 from domain.models import DocumentRecord, IndexStatus
 from retrieval.embeddings import BGEEmbeddingProvider
 from retrieval.indexing import build_versioned_index, load_corpus
-
 
 SAFE_NAME = re.compile(r"[^\w\-.\u4e00-\u9fff]+")
 logger = logging.getLogger("mindgraph.knowledge")
@@ -82,7 +82,7 @@ class KnowledgeService:
         records = []
         for category, directory in (("official", self.docs_dir), ("upload", self.upload_dir)):
             for path in sorted(directory.glob("*.md")):
-                modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+                modified = datetime.fromtimestamp(path.stat().st_mtime, UTC)
                 pending = indexed_dt is None or modified > indexed_dt
                 records.append(DocumentRecord(
                     document_id=self.document_id(path.name), document_name=path.name, knowledge_category=category,
@@ -192,7 +192,24 @@ class KnowledgeService:
                 detail={"guard": guard, "previous_index_version": previous},
             )
 
-        version = datetime.now(timezone.utc).strftime("m3-%Y%m%dT%H%M%SZ-") + uuid.uuid4().hex[:8]
+        version = datetime.now(UTC).strftime("m3-%Y%m%dT%H%M%SZ-") + uuid.uuid4().hex[:8]
+        # P2 验收修复：切分口径守卫——m3 是 09-11 实测「69↔98 chunks 静默互切」的
+        # 肇事路径，shrinkage 守卫只看文档覆盖，抓不到同文档数下换切分入口的
+        # 操作。口径变化（含 CHUNKING_POLICY 换预设）必须显式 force 才放行。
+        try:
+            gate = evaluate_activation_gate(
+                load_snapshot(self.index_root, previous),
+                load_snapshot(self.index_root, version),
+                allow_document_removal=True,  # 文档覆盖已由上方 shrinkage 守卫负责
+            )
+        except Exception:
+            gate = None  # 守卫自身故障不得拦死重建（索引快照只读失败则跳过）
+        if gate is not None and gate["blocked"] and "chunking_changed" in gate["reasons"] and not force:
+            raise IndexConsistencyError(
+                "索引重建的切分口径与活跃索引不一致，已拒绝激活"
+                "（换口径=换 chunk 命名空间=已公布指标失效）；确认请显式 force=true。",
+                detail={"gate_reasons": gate["reasons"], "previous_index_version": previous},
+            )
         try:
             _, _ = build_versioned_index(BGEEmbeddingProvider(), chunks, self.index_root, version)  # 尊重 BGE_LOCAL_FILES_ONLY（默认 true；设 false 允许首次自动下载）
             self._save_pending_deletions([])

@@ -290,12 +290,38 @@ export type ProposedRelationsResponse = {
 
 export type ConfirmedRelationsResponse = { confirmed: RelationItem[] };
 
-/** POST /knowledge/documents 上传回执（后端 DocumentRecord 的前端视图） */
+/** POST /knowledge/documents 上传回执（**已弃用入口**，仅保留类型给历史客户端） */
 export type DocumentRecord = {
   document_id?: string;
   title?: string;
   category?: string;
   status?: string;
+  [key: string]: unknown;
+};
+
+/**
+ * POST /knowledge/versions 回执（后端 DocumentVersionModel 的前端视图）。
+ *
+ * 只声明前端真正用到的字段 + 索引签名：后端模型有二十来个字段，逐一对齐会变成
+ * 一份需要跟着后端改的镜像，漏一个字段就编译不过。这里要的是"用到的那几个类型明确"。
+ */
+export type DocumentVersionModel = {
+  document_id: string;
+  logical_document_id: string;
+  version: string;
+  title: string;
+  status: string;
+  file_type?: string;
+  knowledge_category?: string;
+  authority_level?: string;
+  parsing_diagnostics?: {
+    status?: string;
+    failure_reason?: string;
+    warnings?: string[];
+    ocr_required_pages?: number[];
+    [key: string]: unknown;
+  };
+  created_at?: string;
   [key: string]: unknown;
 };
 

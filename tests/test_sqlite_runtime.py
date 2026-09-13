@@ -151,3 +151,31 @@ def test_relation_seed_rejects_unsafe_runtime_before_opening_database(
         seed_script.load_notes(str(tmp_path / "product.sqlite3"))
 
     assert connection_attempted is False
+
+
+def test_conflict_attribution_rejects_unsafe_runtime_before_opening_database(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """``scripts/attribute_conflict_cases.py`` 是全仓唯一默认直连产品库的脚本。
+
+    补上守卫之前它是 fail-closed 的唯一例外——而它连的是**读写**模式的产品库，
+    正是运行时门禁要防的那类入口。本测试钉住"守卫在 connect 之前"。
+    """
+    import infrastructure.sqlite_runtime as sqlite_runtime
+    import scripts.attribute_conflict_cases as attribution_script
+
+    connection_attempted = False
+
+    def forbidden_connect(*args: object, **kwargs: object) -> None:
+        nonlocal connection_attempted
+        connection_attempted = True
+        raise AssertionError("sqlite3.connect must not run for an unsafe runtime")
+
+    monkeypatch.setattr(sqlite_runtime.sqlite3, "sqlite_version", "3.46.1")
+    monkeypatch.setattr(attribution_script.sqlite3, "connect", forbidden_connect)
+
+    with pytest.raises(RuntimeError, match=r"SQLite 3\.46\.1.*WAL-reset"):
+        attribution_script.load_policy_versions(tmp_path / "product.sqlite3")
+
+    assert connection_attempted is False

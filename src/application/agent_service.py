@@ -24,19 +24,19 @@ schema 授权后另行实现），不在本层预埋半成品 API。
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+from datetime import UTC, datetime, timedelta
 import hashlib
 import hmac
 import logging
 import time
-import uuid
-from collections.abc import Iterable
-from datetime import UTC, datetime, timedelta
 from typing import Any
+import uuid
 
-from application.agent_execution_policy import ExecutionPlan, ExecutionStep
+from application.agent_execution_policy import ExecutionStep
 from application.chat_service import ChatService
 from application.citation_integrity import CitationIntegrityValidator
-from application.evidence_query_service import EvidenceQueryService, EvidenceQueryResult
+from application.evidence_query_service import EvidenceQueryResult, EvidenceQueryService
 from domain.errors import RetrievalUnavailableError
 from domain.evidence import EvidenceResultState
 from domain.models import ChatRequest, Citation, ResultState
@@ -48,14 +48,20 @@ CLARIFICATION_TTL_MINUTES = 30
 
 def _clarification_salt() -> bytes:
     """澄清 token 的 HMAC 盐（审查 F10）：部署经 MINDGRAPH_CLARIFICATION_SALT
-    注入；缺省时进程级随机——源码可见的固定盐不可用于伪造。当前 token 仅用于
-    澄清卡展示面的定位与过期判定（前端拼接新请求，不做服务端恢复），跨进程
-    一致性无消费方；若未来引入服务端 resume 校验，需先落地独立的
-    clarification_requests 持久化契约（见模块 docstring）。"""
-    import os as _os
+    注入，缺省时退回进程级随机盐——源码可见的固定盐不可用于伪造。
+
+    读 ``get_settings()`` 而不是 ``os.getenv``：pydantic-settings 只把 .env 载入
+    已声明的字段、不写进 os.environ，直读环境变量会让"按 .env.example 配了盐"
+    变成静默无效（PR-13 验收实测的坑）。
+
+    进程级随机盐只在同进程内自洽；自 PR-13 起 resume 是**跨进程契约**
+    （见 clarification_service 模块 docstring），所以生产部署必须显式配盐。
+    """
     import secrets as _secrets
 
-    salt = _os.getenv("MINDGRAPH_CLARIFICATION_SALT", "")
+    from infrastructure.settings import get_settings
+
+    salt = get_settings().MINDGRAPH_CLARIFICATION_SALT
     if not salt:
         cached = getattr(_clarification_salt, "_random", None)
         if cached is None:
@@ -149,11 +155,32 @@ class AgentService:
         )
 
         # ── 澄清路由特例：结构化提问，不检索 ──
-        # P0-1：此路径只发 clarification_required + completed(waiting_for_input)
-        # 后关流，不产出 answer_delta；用户补充后由前端拼成新请求重新提交。
+        # PR-13：clarification_required 同步持久化（clarification_requests 表的
+        # 业务消费方），owner 可在有效期内服务端幂等恢复——前端不再只是
+        # "自己拼新问题"。落库失败不阻断澄清卡下发（resume 是增益不是依赖）。
         if decision.route == "clarification_required":
             questions = self._clarification_questions(request.question)
-            clarification_id, context_hash, expires_at = make_clarification_token(request.question, questions)
+            # 签名 key 与 ClarificationService.record 的校验口径一致：问句 hash
+            # （DB 只存 hash；口径不一致会让 resume 校验必然失败）。
+            import hashlib as _hashlib
+
+            question_hash = _hashlib.sha256(request.question.encode("utf-8")).hexdigest()[:16]
+            clarification_id, context_hash, expires_at = make_clarification_token(question_hash, questions)
+            try:
+                from application.clarification_service import ClarificationService
+
+                ClarificationService(self.chat_service.database).record(
+                    clarification_id=clarification_id,
+                    principal_id=((access_scope or {}).get("user") if access_scope else None) or "anonymous",
+                    questions=questions,
+                    context_hash=context_hash,
+                    expires_at=expires_at,
+                    conversation_id=getattr(request, "conversation_id", None),
+                    original_question=request.question,
+                    retrieval_budget={"final_top_k": request.final_top_k, "graph_enabled": decision.graph_enabled},
+                )
+            except Exception:
+                logger.exception("clarification_record_failed", extra={"request_id": request_id})
             yield self._event(
                 request_id, "clarification_required",
                 {
@@ -171,6 +198,7 @@ class AgentService:
         executed = 0
         gate_reached = False
         used_names: list[str] = []
+        principal = (access_scope or {}).get("user") if access_scope else None
         for index, step in enumerate(plan.steps):
             if not step.counts_toward_budget:
                 break  # finalize 由生成段处理
@@ -203,7 +231,7 @@ class AgentService:
             )
             if policy.should_halt(state, gate_reached=gate_reached):
                 # fail-closed：不扩图、不生成，走现有终态呈现
-                for event in self._terminal_without_generation(request_id, request, result, started, tool_calls_executed=executed):
+                for event in self._terminal_without_generation(request_id, request, result, started, tool_calls_executed=executed, principal=principal):
                     yield event
                 return
 
@@ -217,7 +245,7 @@ class AgentService:
             text = "已找到相关制度证据，但生成模型未配置。请直接查看引用。"
             yield self._event(request_id, "answer_delta", {"text": text, "stream_mode": "deterministic"})
             for event in self._finalize_completed(request_id, request, result, text, ResultState.model_unavailable, started,
-                                                  tool_calls_executed=executed, fallback_reason=fallback_reason):
+                                                  tool_calls_executed=executed, fallback_reason=fallback_reason, principal=principal):
                 yield event
             return
 
@@ -245,14 +273,14 @@ class AgentService:
             yield self._event(request_id, "loop_fell_back", {"reason": fallback_reason})
             for event in self._finalize_completed(
                 request_id, request, result, "本次回答未通过引用校验，已改为仅显示证据。", ResultState.system_error, started,
-                integrity_failed=True, tool_calls_executed=executed, fallback_reason=fallback_reason,
+                integrity_failed=True, tool_calls_executed=executed, fallback_reason=fallback_reason, principal=principal,
             ):
                 yield event
             return
         # 校验通过后才发正文
         yield self._event(request_id, "answer_delta", {"text": answer, "stream_mode": "provider_native"})
         for event in self._finalize_completed(request_id, request, result, answer, ResultState.answered, started,
-                                              usage=usage, tool_calls_executed=executed, fallback_reason=fallback_reason):
+                                              usage=usage, tool_calls_executed=executed, fallback_reason=fallback_reason, principal=principal):
             yield event
 
     # ── 步骤执行器 ──
@@ -308,7 +336,7 @@ class AgentService:
 
     # ── 终态组装 ──
 
-    def _terminal_without_generation(self, request_id: str, request: ChatRequest, result: EvidenceQueryResult, started: float, *, tool_calls_executed: int = 0) -> Iterable[dict[str, Any]]:
+    def _terminal_without_generation(self, request_id: str, request: ChatRequest, result: EvidenceQueryResult, started: float, *, tool_calls_executed: int = 0, principal: str | None = None) -> Iterable[dict[str, Any]]:
         state = result.bundle.result_state
         if state is EvidenceResultState.conflicting_evidence:
             text = "检测到同一制度在查询日期存在多个有效版本，已停止生成答案。请由制度责任人确认有效版本。"
@@ -320,12 +348,13 @@ class AgentService:
             text = "未在制度文件中找到足够依据。建议联系 HR/财务确认。"
             final_state = ResultState.insufficient_evidence
         yield self._event(request_id, "answer_delta", {"text": text, "stream_mode": "deterministic"})
-        yield from self._finalize_completed(request_id, request, result, text, final_state, started, tool_calls_executed=tool_calls_executed)
+        yield from self._finalize_completed(request_id, request, result, text, final_state, started, tool_calls_executed=tool_calls_executed, principal=principal)
 
     def _finalize_completed(
         self, request_id: str, request: ChatRequest, result: EvidenceQueryResult, answer: str, state: ResultState, started: float,
         *, usage: dict[str, Any] | None = None, integrity_failed: bool = False,
         tool_calls_executed: int = 0, fallback_reason: str | None = None,
+        principal: str | None = None,
     ) -> Iterable[dict[str, Any]]:
         payload: dict[str, Any] = {
             "request_id": request_id,
@@ -343,14 +372,16 @@ class AgentService:
         }
         if usage:
             payload["usage"] = usage
-        self._persist_assist(request_id, request, payload)
+        self._persist_assist(request_id, request, payload, principal)
         yield self._event(request_id, "citations", {"citations": payload["citations"]})
         yield self._event(request_id, "completed", payload)
 
-    def _persist_assist(self, request_id: str, request: ChatRequest, payload: dict[str, Any]) -> None:
+    def _persist_assist(self, request_id: str, request: ChatRequest, payload: dict[str, Any], principal: str | None = None) -> None:
         """assist 轮落 query_logs（prompt_version=assist-agent-v1 标记渠道）：
         M2 验收要求 fallback 触发率与工具调用数可回溯统计，仅靠 SSE 事件无法
-        事后查询。落库失败绝不阻断应答（与 ChatService._persist 同策略）。"""
+        事后查询。落库失败绝不阻断应答（与 ChatService._persist 同策略）。
+        principal_id 与 ChatService._persist_or_raise 同口径（PR-02：assist 渠道
+        归属此前恒 NULL，导致反馈面 fail-closed 全拒）。"""
         import hashlib
 
         from infrastructure.database import dumps
@@ -367,8 +398,8 @@ class AgentService:
                 """INSERT INTO query_logs (
                     request_id, question, question_hash, answer, result_state, requested_strategy, actual_strategy,
                     trace_json, citations_json, timing_json, usage_json, created_at, index_version, prompt_version,
-                    requested_provider, actual_provider, query_date, category_filter_json
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    requested_provider, actual_provider, query_date, category_filter_json, principal_id
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     request_id, question,
                     hashlib.sha256((request.question + "mindgraph-question-salt").encode()).hexdigest(),
@@ -379,6 +410,7 @@ class AgentService:
                     datetime.now(UTC).isoformat(), payload.get("index_version"), "assist-agent-v1",
                     request.chat_provider or "", "assist",
                     request.query_date, dumps([]),
+                    principal or "anonymous",
                 ),
             )
         except Exception:

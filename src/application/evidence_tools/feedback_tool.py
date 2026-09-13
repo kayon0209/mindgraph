@@ -140,7 +140,7 @@ def make_submit_feedback_handler():
             comment=comment if isinstance(comment, str) and comment.strip() else None,
         )
         try:
-            record = FeedbackService(database).create_feedback(payload)
+            record = FeedbackService(database).create_feedback(payload, principal_id=current_user)
         except ConflictError:
             # 并发竞态（preview 后另一路提交）→ 读回返回，语义同幂等
             row = database.fetch_one("SELECT feedback_id, rating, created_at FROM feedback WHERE request_id=?", (request_id,))
