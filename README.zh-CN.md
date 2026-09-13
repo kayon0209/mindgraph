@@ -21,6 +21,7 @@
 
 <p>
   <a href="#为什么是-mindgraph">为什么是 MindGraph</a> ·
+  <a href="#证据保障">证据保障</a> ·
   <a href="#功能特性">功能特性</a> ·
   <a href="#技术栈">技术栈</a> ·
   <a href="#快速开始">快速开始</a> ·
@@ -30,11 +31,11 @@
   <a href="#常见问题">FAQ</a>
 </p>
 
-<img src="assets/hero-governed-source-flow-v2.png" alt="MindGraph — 来源登记与 dry-run 审计先治理证据，再进入检索或受控 Agent 执行" width="100%">
+<img src="assets/hero-governed-source-flow-v4.png" alt="MindGraph — 来源登记、dry-run 审计、范围检索与正文实际引用先治理证据；审计失败会停止并等待人工处理" width="100%">
 
 </div>
 
-MindGraph 把 Markdown 或 Obsidian Vault 变成人与 AI Agent 都能使用的本地证据层。它将混合检索与版本、生命周期、权限、冲突和引用检查放进同一条链路——只有当证据足以支撑答案时，才让 LLM 开始生成。
+MindGraph 把 Markdown 或 Obsidian Vault 变成人与 AI Agent 都能使用的**本地、受治理证据层**。它将混合检索与来源归属、版本、生命周期、权限、冲突和引用检查放进同一条链路——只有当证据足以支撑答案时，才让 LLM 开始生成。
 
 当前首个垂直场景是报销、财务与企业制度合规；同一套证据链也适用于任何重视时效、权限和可追溯性的 Markdown 知识库。
 
@@ -44,7 +45,7 @@ MindGraph 把 Markdown 或 Obsidian Vault 变成人与 AI Agent 都能使用的�
 
 | 普通 RAG | MindGraph |
 |---|---|
-| 可能召回语义相近但已经归档的 60 天规则 | 根据状态和生效日期过滤证据 |
+| 可能召回语义相近但已经归档的 60 天规则 | 按来源、状态和生效日期过滤证据 |
 | 两个版本同时有效时，可能混在一起回答 | 在调用 LLM 前返回 `conflicting_evidence` |
 | 答案流畅，但很难确认来自哪个版本 | 返回来源、版本、日期与检索 trace |
 
@@ -54,9 +55,16 @@ MindGraph 把 Markdown 或 Obsidian Vault 变成人与 AI Agent 都能使用的�
 
 | | | | |
 |---|---|---|---|
-| **本地优先**<br><sub>SQLite + 本地索引<br>知识保留在自己的环境</sub> | **证据优先**<br><sub>Citation + 检索 trace<br>随时回到原始来源</sub> | **理解版本**<br><sub>生命周期与生效日期<br>证据冲突时停止生成</sub> | **Agent-ready**<br><sub>REST + SSE + MCP<br>接入 Agent 工作流</sub> |
+| **本地优先**<br><sub>SQLite + 本地索引<br>知识保留在自己的环境</sub> | **证据优先**<br><sub>Citation + 检索 trace<br>随时回到原始来源</sub> | **理解版本**<br><sub>生命周期与生效日期<br>证据冲突时停止生成</sub> | **受控 Agent 接入**<br><sub>REST + SSE + MCP<br>默认只读，能力按开关开启</sub> |
 
 </div>
+
+## 证据保障
+
+- **先确认来源归属，再允许同步**：目录必须先登记规范化来源并通过审计，才可写入；一篇笔记不会被另一个来源静默接管，不安全审计会阻断操作。
+- **端到端的范围检索**：调用方可以用 `source_ids` 限定来源；基础检索与关系扩展都会执行相同的来源、ACL、状态和生效日期边界。
+- **引用与事实对齐**：响应会区分“检索到的候选证据”和“正文实际引用的证据”，让答案级引用校验有明确语义。
+- **完整性风险一律失败关闭**：来源归属歧义、无效 ACL、危险的索引缩水与证据冲突都会停止不安全链路，而不会由模型静默猜测。
 
 ## 功能特性
 
@@ -64,20 +72,21 @@ MindGraph 把 Markdown 或 Obsidian Vault 变成人与 AI Agent 都能使用的�
 
 - **混合检索**：BGE / FAISS Dense + BM25 Sparse + RRF 融合
 - **自适应路由**：根据问题意图选择合适的检索策略
-- **受控关系扩展**：只有人工确认的关系才能补充证据；当消融没有带来真实增益时，默认图路径保持关闭
+- **受控关系扩展**：只有人工确认的关系才能补充证据；扩展过程中仍执行来源与 ACL 范围约束
 
 ### 证据与治理
 
-- **可溯源回答**：SSE 流式输出、citation 与检索 trace
+- **可溯源回答**：SSE 流式输出、citation 与检索 trace，并明确区分候选证据和正文实际引用的证据
 - **制度生命周期**：稳定 `policy_key`、版本、状态和生效日期过滤
 - **生成前冲突检测**：多个有效版本冲突时不调用 LLM
-- **权限治理**：API Key / OIDC、workspace / department ACL 与审计日志
+- **权限治理**：API Key / OIDC、workspace / department ACL、审计日志，以及 `AUTH_MODE=off` 下的默认只读边界
+- **索引运行韧性**：声明语料范围、启动一致性审计，并阻断危险的索引缩水
 
 ### 接口与评测
 
 - **Web 与 Obsidian 客户端**：问答、检查证据、审核关系和比较评测结果
 - **Agent 执行**：REST/SSE、受 feature flag 约束的后台任务与受治理 MCP 工具
-- **评测账本**：检索、答案可信度、路由、图门槛、延迟和成本统一留档
+- **评测账本**：检索、确定性答案可信度、路由、图门槛、延迟和成本统一留档
 
 ## 技术栈
 
@@ -228,12 +237,12 @@ python scripts/run_routing_evaluation.py
 python scripts/run_answer_evaluation.py --live --strategy hybrid
 ```
 
-当前冻结集（`mindgraph_golden_v2.jsonl`，版本 `2.4.0`）包含 90 条已批准案例，来源为合成 demo vault 与公开 handbook。覆盖版本替代、审批阈值、例外、跨制度问题、多条件组合、精确事实、Graph-needed 对照、ACL 受限、无答案、同义表达与歧义。检索评测 Recall@K、Precision@K、MRR 和 nDCG@K 并按 query_type/difficulty 分层输出；答案评测 citation F1、拒答正确性、版本有效性、必需事实、禁用事实、ACL 泄漏、冲突识别准确率、延迟、Token 与估算成本。以上均为本地开发/回归指标，不代表生产基准。
+当前冻结集（`mindgraph_golden_v2.jsonl`，版本 `2.4.0`）包含 90 条已批准案例，来源为合成 demo vault 与公开 handbook。覆盖版本替代、审批阈值、例外、跨制度问题、多条件组合、精确事实、Graph-needed 对照、ACL 受限、无答案、同义表达与歧义。检索评测 Recall@K、Precision@K、MRR 和 nDCG@K 并按 query_type/difficulty 分层输出；`deterministic-answer-v2` 答案评测会分别度量候选证据与正文实际引用证据的一致性、拒答正确性、版本有效性、必需事实、禁用事实、ACL 泄漏、冲突识别准确率、延迟、Token 与估算成本。以上均为本地开发/回归指标，不代表生产基准。
 
 ### MindGraph 现在是什么
 
 - 带人工确认关系扩展的本地优先 Hybrid RAG
-- 版本感知、引用优先并支持 MCP
+- 版本感知、引用优先、来源范围可控并支持 MCP
 - 提供公开合成 Vault 与确定性离线验收
 
 ### MindGraph 还不是什么
@@ -243,18 +252,18 @@ python scripts/run_answer_evaluation.py --live --strategy hybrid
 
 ## 项目状态
 
-| 已完成 | 下一步 | 后续探索 |
+| 当前能力 | 下一步重点 | 后续探索 |
 |---|---|---|
-| Hybrid 检索与自适应路由 | 结构感知分片检查 | Typed policy edges |
-| 版本冲突生成前拦截 | Golden 集 → 60–80 条分层案例（当前 90，已达计划最低覆盖） | 实体—事件双图 |
-| ACL、OIDC 与审计 | 证据反馈与可写 MCP 提议 | 社区发现 |
-| Web、Obsidian 与只读 MCP | 更完整的 Ruff、mypy 与覆盖率门禁 | 多跳推理 |
+| Hybrid 检索、自适应路由与按来源范围约束的证据 | 更具代表性、可独立复核的评测覆盖 | 类型化制度关系边 |
+| 版本冲突生成前拦截、来源归属审计与索引完整性保护 | 更完整的 Ruff、mypy 与覆盖率门禁 | 实体—事件双图 |
+| ACL、OIDC、审计与默认只读访问 | 人工复核的证据反馈与受控写入流程 | 社区发现 |
+| Web、Obsidian 与 MCP 能力开关 | 在企业接入中验证连接器和 ACL 覆盖 | 多跳推理 |
 
 产品边界和完整路线见 [`docs/PRODUCT_STRATEGY.md`](docs/PRODUCT_STRATEGY.md)。
 
 ## 目录同步的来源归属（schema v16）
 
-管理员目录端点默认执行 **dry-run**：它只登记并校验规范化来源、记录来源归属审计，不会创建、更新、裁剪、索引或 ACL 回填笔记。只有同一 connector 与来源已经获得 **clean audit** 后，才可显式传入 `dry_run=false` 同步。未知归属、根目录重叠、来源停用和无效 ACL 都是 fail-closed finding。本版本中 **directory-root task** 不是资料导入入口。
+管理员目录端点默认执行 **dry-run**：它只登记并校验规范化来源、记录来源归属审计，不会创建、更新、裁剪、索引或 ACL 回填笔记。只有同一 connector 与来源已经获得 **clean audit** 后，才可显式传入 `dry_run=false` 同步。真实同步前会预检完整来源集合；一个来源下的稳定笔记 ID 不能接管另一来源已归属的笔记。未知归属、根目录重叠、来源停用和无效 ACL 都是 fail-closed finding。本版本中 **directory-root task** 不是资料导入入口。
 
 ## 常见问题
 
@@ -262,9 +271,9 @@ python scripts/run_answer_evaluation.py --live --strategy hybrid
 
 不需要。离线验证路径（路径 A）使用确定性的 Fake Embedding / Fake LLM；只有需要真实、可溯源的回答时，才在 `.env` 中配置模型 Provider。
 
-**为什么 MCP 只读？**
+**为什么 MCP 默认只读？**
 
-MindGraph 把证据视为受治理的数据。可写操作（关系提议、证据反馈、评测写回）有意推迟到路线图中，避免 Agent 静默修改证据层。
+MindGraph 把证据视为受治理的数据。8 个基础工具只读；少量受控写能力可独立开启，并经过显式确认、认证、ACL 和审计校验，但不能写回知识来源内容，也不能自动确认关系。
 
 **MindGraph 与普通 RAG 有什么区别？**
 

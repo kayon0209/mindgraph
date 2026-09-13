@@ -21,6 +21,7 @@
 
 <p>
   <a href="#why-mindgraph">Why MindGraph</a> ·
+  <a href="#evidence-guarantees">Evidence guarantees</a> ·
   <a href="#features">Features</a> ·
   <a href="#tech-stack">Tech Stack</a> ·
   <a href="#quickstart">Quickstart</a> ·
@@ -30,11 +31,11 @@
   <a href="#faq">FAQ</a>
 </p>
 
-<img src="assets/hero-governed-source-flow-v2.png" alt="MindGraph — source registration and dry-run audit gate governed evidence before retrieval or controlled Agent execution." width="100%">
+<img src="assets/hero-governed-source-flow-v4.png" alt="MindGraph — source registration, dry-run audit, scoped retrieval and actual-answer citations govern evidence before generation; failed audits stop for human handling." width="100%">
 
 </div>
 
-MindGraph turns a Markdown or Obsidian vault into a local evidence layer for people and AI agents. It combines hybrid retrieval with version, lifecycle, access-control, conflict and citation checks—so an answer is generated only when the evidence is fit to support it.
+MindGraph turns a Markdown or Obsidian vault into a **local, governed evidence layer** for people and AI agents. It combines hybrid retrieval with source ownership, version, lifecycle, access-control, conflict and citation checks—so an answer is generated only when the evidence is fit to support it.
 
 The first vertical is policy-heavy knowledge such as expense, finance and compliance. The same evidence pipeline can support any Markdown knowledge base where freshness, permissions and traceability matter.
 
@@ -44,7 +45,7 @@ The first vertical is policy-heavy knowledge such as expense, finance and compli
 
 | Generic RAG | MindGraph |
 |---|---|
-| May retrieve the semantically similar but archived 60-day policy | Filters evidence by status and effective date |
+| May retrieve the semantically similar but archived 60-day policy | Filters evidence by source, status and effective date |
 | May silently mix two active versions | Returns `conflicting_evidence` before calling the LLM |
 | Produces a fluent answer with unclear provenance | Returns the source, version, date and retrieval trace |
 
@@ -54,9 +55,16 @@ The first vertical is policy-heavy knowledge such as expense, finance and compli
 
 | | | | |
 |---|---|---|---|
-| **Local-first**<br><sub>SQLite and local indexes<br>Keep knowledge under your control</sub> | **Evidence-first**<br><sub>Citations and retrieval traces<br>Return to the original source</sub> | **Version-aware**<br><sub>Lifecycle and effective dates<br>Stop on conflicting evidence</sub> | **Agent-ready**<br><sub>REST, SSE and MCP<br>Use from agent workflows</sub> |
+| **Local-first**<br><sub>SQLite and local indexes<br>Keep knowledge under your control</sub> | **Evidence-first**<br><sub>Citations and retrieval traces<br>Return to the original source</sub> | **Version-aware**<br><sub>Lifecycle and effective dates<br>Stop on conflicting evidence</sub> | **Controlled Agent access**<br><sub>REST, SSE and MCP<br>Default read-only, gated actions</sub> |
 
 </div>
+
+## Evidence guarantees
+
+- **Source ownership before sync:** register and audit a canonical directory before it can write. A note cannot silently move from one source to another, and an unsafe audit blocks the operation.
+- **Scoped retrieval, end to end:** callers can narrow a request to selected `source_ids`; the same source, ACL, status and effective-date boundaries apply to base retrieval and relation expansion.
+- **Citations mean what they say:** the response distinguishes retrieved candidate evidence from the subset actually cited in the answer body, making answer-level citation checks meaningful.
+- **Fail closed where integrity matters:** ambiguous ownership, malformed ACLs, unsafe index shrinkage and evidence conflicts stop the unsafe path rather than being silently “fixed” by the model.
 
 ## Features
 
@@ -64,20 +72,21 @@ The first vertical is policy-heavy knowledge such as expense, finance and compli
 
 - **Hybrid retrieval:** BGE / FAISS dense search + BM25 sparse search + RRF fusion
 - **Adaptive routing:** selects an appropriate retrieval strategy from query intent
-- **Controlled graph expansion:** only human-confirmed relations can add evidence; graph gating keeps the default path disabled when ablation shows no real gain
+- **Controlled graph expansion:** only human-confirmed relations can add evidence; source and ACL scopes remain in force during expansion
 
 ### Evidence & governance
 
-- **Grounded answers:** streaming responses with citations and retrieval traces
+- **Grounded answers:** streaming responses with citations, retrieval traces, and a clear distinction between offered and actually cited evidence
 - **Policy lifecycle:** stable `policy_key`, version, status and effective-date filtering
 - **Conflict-before-generation:** conflicting active versions stop the LLM call
-- **Governed access:** API key / OIDC, workspace / department ACLs and audit logs
+- **Governed access:** API key / OIDC, workspace / department ACLs, audit logs, and read-only defaults when `AUTH_MODE=off`
+- **Resilient index operations:** declared corpus scope, startup consistency checks, and a guard that blocks unsafe index shrinkage
 
 ### Interfaces & evaluation
 
 - **Web and Obsidian clients:** ask, inspect evidence, review relations and compare runs
 - **Agent execution:** REST/SSE, feature-gated background tasks and governed MCP tools
-- **Evaluation ledger:** retrieval, answer trust, routing, graph gate, latency and cost in one history
+- **Evaluation ledger:** retrieval, deterministic answer trust, routing, graph gate, latency and cost in one history
 
 ## Tech Stack
 
@@ -228,12 +237,12 @@ python scripts/run_routing_evaluation.py
 python scripts/run_answer_evaluation.py --live --strategy hybrid
 ```
 
-The current frozen set (`mindgraph_golden_v2.jsonl`, version `2.4.0`) contains 90 approved cases derived from the synthetic demo vault and public handbooks. It covers replacement, thresholds, exceptions, cross-policy questions, multi-condition cases, exact facts, graph-needed controls, ACL-restricted cases, no-answer cases, synonym/abbreviation and ambiguity. Retrieval reports Recall@K, Precision@K, MRR and nDCG@K with per-query_type/difficulty stratification; answer evaluation reports citation F1, refusal correctness, version validity, required facts, forbidden facts, ACL leakage, conflict accuracy, latency, tokens and estimated cost. These are local development/regression measurements, not production benchmark claims.
+The current frozen set (`mindgraph_golden_v2.jsonl`, version `2.4.0`) contains 90 approved cases derived from the synthetic demo vault and public handbooks. It covers replacement, thresholds, exceptions, cross-policy questions, multi-condition cases, exact facts, graph-needed controls, ACL-restricted cases, no-answer cases, synonym/abbreviation and ambiguity. Retrieval reports Recall@K, Precision@K, MRR and nDCG@K with per-query_type/difficulty stratification; the `deterministic-answer-v2` evaluator separately measures offered-evidence and actually-cited-evidence fidelity, refusal correctness, version validity, required facts, forbidden facts, ACL leakage, conflict accuracy, latency, tokens and estimated cost. These are local development/regression measurements, not production benchmark claims.
 
 ### What MindGraph is today
 
 - A local-first Hybrid RAG system with controlled, human-confirmed relation expansion
-- Version-aware, citation-first and MCP-ready
+- Version-aware, citation-first, source-scoped and MCP-ready
 - Reproducible with a public synthetic vault and deterministic offline checks
 
 ### What it is not yet
@@ -243,18 +252,18 @@ The current frozen set (`mindgraph_golden_v2.jsonl`, version `2.4.0`) contains 9
 
 ## Project status
 
-| Now | Next | Later |
+| Current capability | Next focus | Later exploration |
 |---|---|---|
-| Hybrid retrieval and adaptive routing | Structure-aware chunk inspection | Typed policy edges |
-| Version-conflict interception | Golden set → 60–80 layered cases (currently 90, plan minimums met) | Entity-event dual graph |
-| ACL, OIDC and audit | Evidence feedback and writable MCP proposals | Community discovery |
-| Web, Obsidian and read-only MCP | Stronger Ruff, mypy and coverage gates | Multi-hop reasoning |
+| Hybrid retrieval, adaptive routing and source-scoped evidence | More representative, independently reviewed evaluation coverage | Typed policy edges |
+| Version-conflict interception, source ownership audit and index integrity guards | Stronger Ruff, mypy and coverage gates | Entity-event dual graph |
+| ACL, OIDC, audit and default read-only access | Human-reviewed evidence feedback and controlled write workflows | Community discovery |
+| Web, Obsidian and MCP capability gates | Connector and ACL coverage validated with enterprise deployments | Multi-hop reasoning |
 
 See [`docs/PRODUCT_STRATEGY.md`](docs/PRODUCT_STRATEGY.md) for the product boundary and roadmap.
 
 ## Source ownership for directory sync (schema v16)
 
-The administrator directory endpoint now defaults to **dry-run**. It registers and validates the canonical source, then records an ownership audit; it does not create, update, prune, index, or ACL-backfill notes. Use `dry_run=false` only after a **clean audit** for the same connector and source. Unknown ownership, overlapping roots, disabled sources, and malformed ACL are fail-closed findings. A **directory-root task** is not an import path in this release.
+The administrator directory endpoint now defaults to **dry-run**. It registers and validates the canonical source, then records an ownership audit; it does not create, update, prune, index, or ACL-backfill notes. Use `dry_run=false` only after a **clean audit** for the same connector and source. The full source set is preflighted before a real sync, and a stable note ID from one source cannot take over a note owned by another. Unknown ownership, overlapping roots, disabled sources, and malformed ACL are fail-closed findings. A **directory-root task** is not an import path in this release.
 
 ## FAQ
 
@@ -262,9 +271,9 @@ The administrator directory endpoint now defaults to **dry-run**. It registers a
 
 No. The offline validation path (`Option A`) runs with deterministic fake embeddings and a fake LLM. You only configure a model provider in `.env` when you want real, grounded answers.
 
-**Why is MCP read-only?**
+**Why is MCP read-only by default?**
 
-MindGraph treats evidence as governed data. Writable operations (relation proposals, evidence feedback, evaluation write-back) are deliberately deferred to the roadmap so that an agent cannot silently modify the evidence layer.
+MindGraph treats evidence as governed data. The eight base tools are read-only. A small set of scoped write actions can be enabled independently, with explicit confirmation, authentication, ACL and audit checks; they cannot write back to knowledge-source content or auto-confirm a relation.
 
 **How does MindGraph differ from a plain RAG pipeline?**
 
