@@ -14,6 +14,12 @@ from retrieval.reranker import CrossEncoderReranker
 from retrieval.sparse import BM25Retriever
 
 INDEX_ROOT = ROOT / "data" / "retrieval_indexes"
+# MindGraph 索引根与通用检索索引根是**两个命名空间**（见 application/index_snapshot.py
+# 的"不跨根比较"约定）：`retrieval_indexes` 索引 knowledge/ 语料（4 篇制度），
+# `mindgraph_indexes` 索引 vault 笔记（25 篇，与 notes 表同源）。
+# 启动自检 `_warn_if_index_diverges` 的对照基准是 notes 表，必须用这一个——
+# 用错根会把"两套语料本就不同"误报成 `index_corpus_divergence` ERROR。
+MINDGRAPH_INDEX_ROOT = ROOT / "data" / "mindgraph_indexes"
 
 
 def _rerank_top_n() -> int:
@@ -23,6 +29,22 @@ def _rerank_top_n() -> int:
     if value < 1:
         raise ValueError("RERANK_TOP_N must be a positive integer")
     return value
+
+
+def _build_reranker(settings) -> CrossEncoderReranker | None:
+    """按 settings 构造精排器（关闭时返回 None → 管线标记 reranker_disabled 降级）。
+
+    配置必须显式传进去：pydantic-settings 读 ``.env`` 但**不写回**
+    ``os.environ``，所以精排器内部用 ``os.getenv`` 读 RERANKER_LOCAL_PATH
+    在裸机启动时会拿不到值，表现为"权重明明放好了却仍整批降级"。
+    """
+    if not settings.RERANKER_ENABLED:
+        return None
+    return CrossEncoderReranker(
+        model_name=settings.RERANKER_MODEL_NAME or None,
+        local_files_only=bool(settings.RERANKER_LOCAL_FILES_ONLY),
+        local_path=settings.RERANKER_LOCAL_PATH or None,
+    )
 
 
 def _context_expansion_kwargs() -> dict[str, Any]:
@@ -42,7 +64,7 @@ def create_retrieval_pipeline(final_top_k: int = 5) -> RetrievalPipeline:
     dense = load_current_index(provider, INDEX_ROOT)
     chunks = dense.chunks
     sparse = BM25Retriever(chunks, float(settings.BM25_K1), float(settings.BM25_B))
-    reranker = CrossEncoderReranker() if settings.RERANKER_ENABLED else None
+    reranker = _build_reranker(settings)
     return RetrievalPipeline(
         dense, sparse, ReciprocalRankFusion(int(settings.RRF_CONSTANT)), reranker,
         candidate_count=int(settings.RETRIEVAL_CANDIDATE_COUNT),
@@ -75,7 +97,7 @@ def create_mindgraph_retrieval_pipeline(
     candidate_count = int(get_settings().RETRIEVAL_CANDIDATE_COUNT)
     rerank_top_n = _rerank_top_n()
     settings = get_settings()
-    reranker = CrossEncoderReranker() if settings.RERANKER_ENABLED else None
+    reranker = _build_reranker(settings)
 
     current = index_root / "CURRENT"
     if not current.exists():

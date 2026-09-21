@@ -124,6 +124,9 @@ class Settings(BaseSettings):
     RERANKER_ENABLED: bool = False
     RERANKER_MODEL_NAME: str = "BAAI/bge-reranker-base"
     RERANKER_LOCAL_FILES_ONLY: bool = True
+    # 本地权重目录（与 BGE_LOCAL_PATH 同构）。留空则用 <project>/data/bge-reranker-base；
+    # 该目录存在即直接加载，不再走 HF 仓库。
+    RERANKER_LOCAL_PATH: str = ""
     RERANK_TOP_N: int = 10
 
     # ── Graph 路由（计划 Phase 5 发布闸门） ──

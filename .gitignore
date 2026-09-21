@@ -93,3 +93,10 @@ web/_shot_*.mjs
 web/_uxfix_*.mjs
 web/_audit_*.mjs
 web/_mg_e2e.mjs
+
+# ── 本地 AI 工作记忆（含机器特定绝对路径，仅本机）──
+.workbuddy/
+
+# 每次评测都会覆盖的报告属于产物，不进仓库；同目录下的**结论性**文档
+# （graph-ablation.md / rerank-routing.md 等治理证据）仍会提交。
+docs/evaluation/retrieval-comparison.md

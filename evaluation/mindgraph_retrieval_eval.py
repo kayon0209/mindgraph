@@ -507,6 +507,9 @@ def evaluate_retrieval_cases(
     summary["mean_evidence_size"] = _mean([float(row["evidence_full_set"]["evidence_size"]) for row in scored])
     summary["p50_retrieval_ms"] = _percentile(total_latencies_ms, 0.50)
     summary["p95_retrieval_ms"] = _percentile(total_latencies_ms, 0.95)
+    # mean 是消融闸门（ablation_runner.evaluate_graph_gate）判别延迟回归的口径；
+    # 缺了它门控只能退到 p50 并记 limitation，判定力会下降。
+    summary["mean_retrieval_latency_ms"] = _mean(total_latencies_ms)
     summary["stratified"] = _stratified_metrics(cases, scored)
     failures = [row for row in scored if row["metrics"]["recall_at_k"] < 1.0]
     graph_limitations: list[str] = []

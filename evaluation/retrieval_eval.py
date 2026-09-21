@@ -14,8 +14,12 @@ from typing import Any, cast
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
+# ROOT 也必须进 path：以文件路径直接运行（`python evaluation/retrieval_eval.py`）时
+# ``evaluation`` 包自身不在 sys.path，下面 `from evaluation.baseline import ...`
+# 会 ModuleNotFoundError；只有 `python -m evaluation.retrieval_eval` 才碰巧能过。
+for _entry in (SRC, ROOT):
+    if str(_entry) not in sys.path:
+        sys.path.insert(0, str(_entry))
 
 from config import DOCS_DIR, UPLOAD_DIR
 from evaluation.baseline import DATASET_VERSION, load_dataset
@@ -92,8 +96,26 @@ def normalize_index_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def resolve_rerank_route(question: str, *, top_k: int = 5) -> str:
+    """按生产路由算出该问题的 rerank 路由名。
+
+    评测直接调 ``pipeline.retrieve``，不走 ``chat_service``，所以 rerank 路由不会
+    被注入。而条件式重排靠路由名决策：空路由会被 ``ConditionalRerankPolicy`` 判成
+    ``low_value_route`` → **全部跳过**，于是"条件式"这一档看起来等于"没开重排"，
+    延迟收益被误记成"重排本身没成本"。这里把生产路由器接进来，让评测口径与
+    生产口径一致。
+    """
+    from application.adaptive_retrieval_router import AdaptiveRetrievalRouter
+
+    decision = AdaptiveRetrievalRouter().decide(
+        question, requested_strategy="auto", graph_allowed=False, top_k=top_k,
+    )
+    return decision.route
+
+
 def build_pipeline(enable_reranker: bool, allow_model_downloads: bool = False,
-                   index_version: str | None = None) -> tuple[RetrievalPipeline, dict[str, Any]]:
+                   index_version: str | None = None,
+                   conditional_rerank: bool = False) -> tuple[RetrievalPipeline, dict[str, Any]]:
     provider = BGEEmbeddingProvider(local_files_only=not allow_model_downloads)
     if index_version:
         dense = FAISSDenseRetriever(provider, INDEX_ROOT / index_version)
@@ -115,6 +137,7 @@ def build_pipeline(enable_reranker: bool, allow_model_downloads: bool = False,
         candidate_count=int(os.getenv("RETRIEVAL_CANDIDATE_COUNT", "20")),
         rerank_top_n=int(os.getenv("RERANK_TOP_N", "10")),
         final_top_k=int(os.getenv("RETRIEVAL_FINAL_TOP_K", "5")),
+        conditional_rerank=conditional_rerank,
     )
     experiment_config = {
         **normalize_index_metadata(dense.metadata),
@@ -124,6 +147,7 @@ def build_pipeline(enable_reranker: bool, allow_model_downloads: bool = False,
         "rrf_constant": cast(ReciprocalRankFusion, pipeline.fusion).constant,
         "reranker_enabled": enable_reranker,
         "reranker_model_name": reranker.model_name if reranker else None,
+        "conditional_rerank": conditional_rerank,
         "rerank_top_n": pipeline.rerank_top_n,
         "final_top_k": pipeline.final_top_k,
         "candidate_count": pipeline.candidate_count,
@@ -132,13 +156,14 @@ def build_pipeline(enable_reranker: bool, allow_model_downloads: bool = False,
 
 
 def evaluate(repetitions: int, warmups: int, enable_reranker: bool, allow_model_downloads: bool = False,
-             split: str | None = None, index_version: str | None = None) -> dict[str, Any]:
+             split: str | None = None, index_version: str | None = None,
+             conditional_rerank: bool = False) -> dict[str, Any]:
     if repetitions < 1 or warmups < 0:
         raise ValueError("repetitions must be >=1 and warmups >=0")
     source_cases = load_dataset()
     cases = [case for case in source_cases if split is None or case["split"] == split]
     eligible = [case for case in cases if case["gold_chunk_ids"]]
-    pipeline, index_metadata = build_pipeline(enable_reranker, allow_model_downloads, index_version)
+    pipeline, index_metadata = build_pipeline(enable_reranker, allow_model_downloads, index_version, conditional_rerank)
     details: dict[str, list[dict[str, Any]]] = {strategy: [] for strategy in STRATEGIES}
 
     warmup_query = eligible[0]["question"]
@@ -146,6 +171,11 @@ def evaluate(repetitions: int, warmups: int, enable_reranker: bool, allow_model_
         for _ in range(warmups):
             pipeline.retrieve(warmup_query, strategy)
         for case in eligible:
+            # 条件式重排：评测不走 chat_service，路由必须在这里注入。否则
+            # ConditionalRerankPolicy 拿到空路由会把**所有**请求判成 low_value
+            # 而跳过，"条件式"这一档会退化成"没开重排"，延迟收益被误记。
+            if conditional_rerank and strategy == "hybrid_rerank":
+                pipeline.rerank_route = resolve_rerank_route(case["question"], top_k=pipeline.final_top_k)
             traces = [pipeline.retrieve(case["question"], strategy) for _ in range(repetitions)]
             representative = traces[-1]
             latency_samples = [trace.latency_ms["total_retrieval_ms"] for trace in traces]
@@ -186,6 +216,15 @@ def evaluate(repetitions: int, warmups: int, enable_reranker: bool, allow_model_
                 ), 4) for name in stage_names
             },
             "degraded_queries": sum(row["trace"]["degraded"] for row in rows),
+            # 条件式重排的分母：跳过是省延迟的**决策**（非降级），必须与
+            # degraded 分开统计，否则"rerank 收益"会被故障样本稀释。
+            "rerank_executed_queries": sum(
+                1 for row in rows if (row["trace"].get("rerank_decision") or {}).get("should_rerank")
+            ),
+            "rerank_skipped_queries": sum(
+                1 for row in rows
+                if (row["trace"].get("rerank_decision") or {}) and not row["trace"]["rerank_decision"].get("should_rerank")
+            ),
         }
 
     per_category = {}
@@ -206,6 +245,7 @@ def evaluate(repetitions: int, warmups: int, enable_reranker: bool, allow_model_
         "controls": {
             "repetitions": repetitions,
             "warmups_per_strategy": warmups,
+            "conditional_rerank": conditional_rerank,
             "latency_includes_model_loading": False,
             "cold_start_reported_separately": False,
             "top_k": pipeline.final_top_k,
@@ -315,6 +355,10 @@ def main() -> None:
     compare_parser.add_argument("--warmups", type=int, default=1)
     compare_parser.add_argument("--disable-reranker", action="store_true")
     compare_parser.add_argument("--allow-model-downloads", action="store_true")
+    compare_parser.add_argument(
+        "--conditional-rerank", action="store_true",
+        help="按生产路由决定是否跑 rerank：只给例外/冲突/跨制度等高收益路由付延迟",
+    )
     args = parser.parse_args()
 
     if args.command == "build-index":
@@ -323,7 +367,10 @@ def main() -> None:
         _, index_dir = build_versioned_index(provider, chunks, INDEX_ROOT, args.version)
         print(index_dir)
         return
-    result = evaluate(args.repetitions, args.warmups, not args.disable_reranker, args.allow_model_downloads)
+    result = evaluate(
+        args.repetitions, args.warmups, not args.disable_reranker, args.allow_model_downloads,
+        conditional_rerank=args.conditional_rerank,
+    )
     paths = save_results(result)
     print(json.dumps(result["summary"], ensure_ascii=False, indent=2))
     print("\n".join(map(str, paths)))
