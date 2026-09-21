@@ -118,11 +118,15 @@ def _warn_if_index_diverges() -> None:
     09-09 那类真事故反而更容易藏在里面。
     """
     from application.index_metadata import audit_index_consistency, parse_included_subtrees
-    from infrastructure.retrieval_factory import INDEX_ROOT
+    from infrastructure.retrieval_factory import MINDGRAPH_INDEX_ROOT
 
     included = parse_included_subtrees(getattr(_settings, "INDEX_INCLUDED_SUBTREES", ""))
+    # 对照基准必须是 MindGraph 索引根：报告里的"声明文档"来自 notes 表（vault 笔记），
+    # 而 INDEX_ROOT（retrieval_indexes）索引的是 knowledge/ 语料，两套本就不该一致。
+    # 用错根会把这种正常差异报成 divergence ERROR（实测：retrieval_indexes 报
+    # declared=25/indexed=5/undeclared=1，而 mindgraph_indexes 是 25/25 完全一致）。
     report = audit_index_consistency(
-        index_root=INDEX_ROOT,
+        index_root=MINDGRAPH_INDEX_ROOT,
         db_path=_settings.DATABASE_PATH,
         included_subtrees=included,
     )

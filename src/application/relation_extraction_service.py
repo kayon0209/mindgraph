@@ -36,6 +36,24 @@ EMBED_TRUNC_CHARS = 2000
 LLM_EXCERPT_CHARS = 500
 
 
+def _relation_method(candidate: dict) -> str:
+    """落库用的 extraction_method：经 LLM 判定的关系带 ``+llm`` 后缀。"""
+    signal = candidate.get("signal") or "unknown"
+    return f"{signal}+llm" if candidate.get("llm_model") else signal
+
+
+def _relation_model_version(candidate: dict) -> str:
+    """落库用的 model_version：经 LLM 判定的关系附上**实际**模型名。
+
+    只有 ``_llm_refine`` 真正调用成功才会给候选打 ``llm_model`` 标记；provider
+    不可用或调用失败时保留下来的规则候选**没有**该标记。于是 DB 里能区分
+    "LLM 判定后保留"与"LLM 没跑、直接落库"——不会出现"声称用了 LLM、
+    其实整批静默降级"这种事后无法自证的情况。
+    """
+    llm_model = candidate.get("llm_model")
+    return f"{MODEL_VERSION}+llm:{llm_model}" if llm_model else MODEL_VERSION
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -252,6 +270,9 @@ class RelationExtractionService:
                 relation_type = decision.get("relation_type", "related_to")
                 c["relation_type"] = relation_type if relation_type in ALLOWED_RELATION_TYPES else "related_to"
                 c["evidence_span"] = decision.get("reason") or c.get("evidence_span")
+                # 只有真正跑完 LLM 判定才打这个标记：provider 不可用 / 调用失败时
+                # 下面会原样保留规则候选，它们没有该标记，落库后仍记为纯规则产出。
+                c["llm_model"] = getattr(provider, "model_name", None) or "unknown"
                 c["confidence"] = round(min(0.95, max(c["confidence"], 0.7)), 3)
                 kept.append(c)
             # related=False → 丢弃该候选（LLM 判定不相关）
@@ -259,10 +280,22 @@ class RelationExtractionService:
 
     def _ask_llm(self, provider: Any, ta: str, ea: str, tb: str, eb: str) -> dict[str, Any]:
         system = (
-            "你是个人知识图谱的关系抽取助手。给定两篇笔记的标题与片段，"
-            "判断它们是否应建立知识关联。只输出 JSON："
-            '{"related": true/false, "relation_type": "related_to|references|contradicts|elaborates", '
-            '"reason": "一句话依据(中文)"}。不要输出其它内容。'
+            "你是企业制度知识图谱的关系抽取助手。给定两篇笔记的标题与片段，"
+            "判断它们之间是否存在**业务断言关系**（而不是仅仅主题相近）。\n"
+            "符合下列语义时 related=true 并给出对应 relation_type：\n"
+            "- EXCEPTION_TO：B 是 A 的例外/豁免情形\n"
+            "- SUPERSEDES：B 取代或废止 A（版本更替、新旧制度）\n"
+            "- HAS_LIMIT：B 给出 A 的额度/上限/时限等具体约束\n"
+            "- REQUIRES_APPROVAL：B 规定 A 的审批要求或审批人\n"
+            "- APPLIES_TO：B 界定 A 的适用范围或适用对象\n"
+            "- CONTRADICTS：B 与 A 的表述相互冲突\n"
+            "- references / elaborates / related_to：仅当不存在上述断言语义、"
+            "但确实互相引用或补充时才使用\n"
+            "related=false 的情形（重要）：同一文档的不同抓取记录、同一制度的不同版本片段、"
+            "仅因来源相同或主题词重合而相似——这些**不构成**两篇笔记之间的关系。\n"
+            "只输出 JSON："
+            '{"related": true/false, "relation_type": "<上述类型之一>", "reason": "一句话依据(中文)"}。'
+            "不要输出其它内容。"
         )
         user = (
             f"笔记A《{ta}》：\n{ea}\n\n"
@@ -360,7 +393,7 @@ class RelationExtractionService:
                     "proposed",
                     c.get("evidence"),
                     c["confidence"],
-                    MODEL_VERSION,
+                    _relation_model_version(c),
                     PROMPT_VERSION,
                     ts,
                     c.get("evidence_span"),
@@ -368,7 +401,7 @@ class RelationExtractionService:
                     c.get("source_document_version"),
                     effective_from.isoformat() if effective_from else None,
                     effective_to.isoformat() if effective_to else None,
-                    c.get("signal"),
+                    _relation_method(c),
                 ))
             if rows_to_insert:
                 # 批量落库走单事务：中途失败不留半成品候选集。

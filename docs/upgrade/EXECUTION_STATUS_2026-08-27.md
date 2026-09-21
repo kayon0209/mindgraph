@@ -31,6 +31,8 @@ python scripts/generate_public_candidates.py
 python scripts/ingest_knowledge.py
 python scripts/build_index.py
 python scripts/run_external_eval2.py
+python scripts/run_graph_ablation.py   # 2026-09-20 起：run_external_eval2.py 更名为此，并新增 repetitions
+                                        # 与 evaluation.ablation_runner 闸门判定（旧名已不再存在）
 python -m pytest -q --no-cov
 ruff check src/ scripts/ tests/ --config pyproject.toml --select F821,F822,F823,E902
 ```
